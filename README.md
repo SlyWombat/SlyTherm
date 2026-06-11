@@ -49,6 +49,8 @@ The production controller is a **wall-mounted ESP32-S3 touchscreen** (primary pi
 
 ## Quick start (current phase)
 
+> 🗺️ **New here or coming back after a break? Read [`NEXT-STEPS.md`](NEXT-STEPS.md)** — the full numbered sequence from today's state to a working thermostat, written for someone starting cold.
+
 1. Read [`docs/04-safety.md`](docs/04-safety.md) and [`docs/03-hardware-wiring.md`](docs/03-hardware-wiring.md).
 2. **Phase 0 — inventory the installed equipment** (wall-thermostat model, ODU nameplate, interface-board presence, IFC DIP switches, full low-voltage wiring map + wall-plate conductor count) — see [`docs/05-firmware-plan.md`](docs/05-firmware-plan.md). ⚠️ Never apply 24 VAC to `V/W2` while probing. This determines Path A vs Path B **before any ordering beyond the sniff rig**.
 3. Order parts from [`docs/ORDERING.md`](docs/ORDERING.md) — the sniff-rig minimum-viable cart (≈ CAD $180–200) is unchanged; the full dual-fuel build adds Phase-0-gated items (relay/sense hardware if Path B, sensors, optional R02P034), so the final cart price depends on the Phase 0 outcome.
