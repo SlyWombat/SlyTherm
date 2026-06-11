@@ -42,6 +42,8 @@ The production controller is a **wall-mounted ESP32-S3 touchscreen** (primary pi
 | [`docs/04-safety.md`](docs/04-safety.md) | Functional-safety review, failure modes & failsafes, certification/legal honesty |
 | [`docs/05-firmware-plan.md`](docs/05-firmware-plan.md) | Phased firmware plan, module layout, PlatformIO setup |
 | [`docs/06-home-assistant.md`](docs/06-home-assistant.md) | MQTT discovery, HA climate entity, diagnostics |
+| [`docs/07-ecobee-gap-analysis.md`](docs/07-ecobee-gap-analysis.md) | Feature gap analysis vs Ecobee Smart Thermostat Premium |
+| [`docs/08-firmware-platform-decision.md`](docs/08-firmware-platform-decision.md) | **Decision record:** custom PlatformIO + LVGL for the wall unit (issue #38 ESPHome spike) |
 | [`docs/ORDERING.md`](docs/ORDERING.md) | **Bill of materials with live purchasing links** and a minimum-viable cart |
 | [`docs/legacy-plan.md`](docs/legacy-plan.md) | *Historical* — the original heat-only project plan, superseded by the docs above |
 
@@ -53,6 +55,13 @@ The production controller is a **wall-mounted ESP32-S3 touchscreen** (primary pi
 4. Build the **sniff-only** rig and capture the bus (Phase 1 — see [`docs/05-firmware-plan.md`](docs/05-firmware-plan.md)). Note: a conventional (Path B) install yields little or no ClimateTalk traffic to sniff — an R02P034 reference thermostat is the fallback bus master.
 5. Track progress in [Issues](../../issues).
 
+## Flashing
+
+Two paths onto the ESP32-DevKitC bench rig:
+
+- **Web installer (no toolchain):** open [`web/installer/`](web/installer/) in Chrome/Edge (Web Serial; serve over `https://` or `localhost`) and flash a pre-built **Sniffer** or **Thermostat (bench)** image over USB. Merged images + ESP Web Tools manifests are built by `python3 tools/release.py` (version from the root `VERSION` file) and attached to tagged releases by CI. The thermostat image boots **demands-disabled** — flashing convenience never bypasses the Phase 2/3 safety gates.
+- **Developer path:** `pio run -e sniffer -t upload` (or `-e thermostat`), then `pio device monitor`.
+
 ## Reference prior art
 
 - [`kdschlosser/ClimateTalk`](https://github.com/kdschlosser/ClimateTalk) — Python protocol model (most complete message/command tables)
@@ -62,7 +71,7 @@ The production controller is a **wall-mounted ESP32-S3 touchscreen** (primary pi
 
 ## Tech stack
 
-ESP32-S3 wall touchscreen (PlatformIO sniff rig; production framework ESPHome-vs-PlatformIO is an open decision — see docs/05) · LVGL · RS-485 / CT-485 · 24 V relay/sense I/O (Path B) · MQTT · Home Assistant (+ Companion app) · supervisory mode/dual-fuel control with PID gas-demand shaping
+ESP32-S3 wall touchscreen (custom PlatformIO + LVGL — the ESPHome-vs-PlatformIO decision is settled in [`docs/08-firmware-platform-decision.md`](docs/08-firmware-platform-decision.md)) · LVGL · RS-485 / CT-485 · 24 V relay/sense I/O (Path B) · MQTT · Home Assistant (+ Companion app) · supervisory mode/dual-fuel control with PID gas-demand shaping
 
 ---
 

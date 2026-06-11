@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dettson Thermostat — Firmware Installer</title>
+<!-- Palette mirrors manual/theme/dettson.css (deep blue / amber / slate). -->
+<style>
+  :root {
+    --heading: #1e3a8a;
+    --body: #1e293b;
+    --muted: #475569;
+    --faint: #94a3b8;
+    --rule: #cbd5e1;
+    --warn: #b45309;
+    --warn-bg: #fffbeb;
+    --info: #1e40af;
+    --info-bg: #eff6ff;
+    --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 16px; line-height: 1.5;
+    background: #f8fafc; color: var(--body);
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+  header.masthead {
+    border-bottom: 2px solid var(--heading);
+    padding-bottom: 0.6rem; margin-bottom: 1.5rem;
+  }
+  h1 { color: var(--heading); font-size: 1.7rem; line-height: 1.25; margin: 0 0 0.2em; }
+  .subtitle { color: var(--muted); margin: 0; }
+  h2 { color: var(--heading); font-size: 1.2rem; border-bottom: 1px solid var(--rule);
+       padding-bottom: 0.2em; margin: 2em 0 0.6em; }
+  a { color: var(--info); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+  a:hover { border-bottom-style: solid; }
+  code {
+    font-family: 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', Menlo, monospace;
+    font-size: 0.9em; background: var(--code-bg);
+    border: 1px solid var(--rule); border-radius: 3px; padding: 0.1em 0.35em;
+  }
+  fieldset { border: 0; margin: 0; padding: 0; }
+  .fw-option {
+    display: block; background: #ffffff;
+    border: 1px solid var(--rule); border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 0.7rem 0; cursor: pointer;
+  }
+  .fw-option:has(input:checked) { border-color: var(--heading); box-shadow: 0 0 0 2px var(--heading); }
+  .fw-option input { margin-right: 0.6rem; accent-color: var(--heading); }
+  .fw-option .fw-name { font-weight: 600; color: var(--heading); }
+  .fw-option .fw-desc { display: block; color: var(--muted); font-size: 0.92em; margin: 0.25rem 0 0 1.7rem; }
+  .install-row { margin: 1.4rem 0 0.4rem; }
+  esp-web-install-button { --esp-tools-button-color: #1e3a8a; --esp-tools-button-text-color: #ffffff; }
+  .callout {
+    border-left: 4px solid var(--warn);
+    border-top: 1px solid var(--warn); border-right: 1px solid var(--warn);
+    border-bottom: 1px solid var(--warn);
+    background: var(--warn-bg); border-radius: 0 4px 4px 0;
+    padding: 0.7rem 1rem; margin: 1.2rem 0;
+  }
+  .callout strong:first-child { color: var(--warn); }
+  .callout.info { border-color: var(--info); background: var(--info-bg); }
+  .callout.info strong:first-child { color: var(--info); }
+  footer {
+    margin-top: 3rem; padding-top: 0.8rem;
+    border-top: 1px solid var(--rule);
+    color: var(--faint); font-size: 0.85em;
+  }
+</style>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <h1>Dettson ClimateTalk Thermostat</h1>
+    <p class="subtitle">Web firmware installer — ESP32-DevKitC bench images</p>
+  </header>
+
+  <p>Flash a pre-built firmware image straight from this page over USB.
+     Plug the ESP32-DevKitC into this computer, pick an image, and click
+     <strong>Install</strong>. No toolchain required.</p>
+
+  <h2>1 &middot; Choose a firmware image</h2>
+  <fieldset id="fw-picker">
+    <label class="fw-option">
+      <input type="radio" name="fw" value="firmware/manifest_sniffer.json" checked>
+      <span class="fw-name">Sniffer</span>
+      <span class="fw-desc">Phase 1/2 RX-only CT-485 bus sniffer with on-device web console — physically incapable of transmitting on the bus.</span>
+    </label>
+    <label class="fw-option">
+      <input type="radio" name="fw" value="firmware/manifest_thermostat.json">
+      <span class="fw-name">Thermostat (bench)</span>
+      <span class="fw-desc">Full control-loop application for the bench rig — MQTT/Home Assistant pipeline with the actuator stubbed to logging only.</span>
+    </label>
+  </fieldset>
+
+  <div class="callout">
+    <strong>Safety note.</strong> The thermostat image boots
+    <strong>DEMANDS&nbsp;DISABLED</strong>: the actuator only logs, CT-485 TX is
+    compiled out, and no relay pin is configured. Flashing convenience never
+    bypasses the Phase&nbsp;2/3 safety gates — live bus or relay output requires a
+    deliberate custom build with each gate opened (see
+    <a href="https://github.com/SlyWombat/dettson-climatetalk-thermostat/blob/main/docs/04-safety.md">docs/04-safety.md</a>).
+  </div>
+
+  <h2>2 &middot; Connect and install</h2>
+  <p class="install-row">
+    <esp-web-install-button id="install" manifest="firmware/manifest_sniffer.json"></esp-web-install-button>
+  </p>
+  <p class="fw-desc" style="color: var(--muted); font-size: 0.92em;">
+    Requires a browser with Web Serial: <strong>Chrome</strong> or
+    <strong>Edge</strong> on desktop, over <code>https://</code> (or
+    <code>localhost</code>). Firefox and Safari are not supported. If the device
+    is not detected, install the board's USB-serial driver (CP210x or CH340,
+    depending on the DevKitC variant).
+  </p>
+
+  <h2>3 &middot; First boot</h2>
+  <div class="callout info">
+    <strong>What to expect on the serial console</strong> (115200 baud — use the
+    <em>Logs &amp; Console</em> option in the install dialog, or
+    <code>pio device monitor</code>).
+    Both images need Wi-Fi credentials compiled in to do anything network-facing;
+    a web-flashed image without them falls back accordingly. The thermostat image
+    with no sensor input keeps its boot gate closed (boot-to-no-demand) and raises
+    the boot-grace alarm after 120&nbsp;s — that is the system working as
+    specified, not a bug. See the first-boot walkthroughs in
+    <a href="https://github.com/SlyWombat/dettson-climatetalk-thermostat/blob/main/src/main_thermostat.cpp">src/main_thermostat.cpp</a>
+    (bench quickstart) and
+    <a href="https://github.com/SlyWombat/dettson-climatetalk-thermostat/blob/main/src/main_sniffer.cpp">src/main_sniffer.cpp</a>.
+  </div>
+
+  <footer>
+    Dettson ClimateTalk Thermostat project &middot;
+    <a href="https://github.com/SlyWombat/dettson-climatetalk-thermostat">source &amp; documentation</a> &middot;
+    images built by <code>tools/release.py</code>
+  </footer>
+</main>
+<script>
+  const button = document.getElementById('install');
+  document.getElementById('fw-picker').addEventListener('change', (ev) => {
+    if (ev.target.name === 'fw') button.setAttribute('manifest', ev.target.value);
+  });
+</script>
+</body>
+</html>

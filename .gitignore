@@ -1,6 +1,7 @@
 # Secrets — NEVER COMMIT
 .env
 src/thermostat_secrets.h
+src/sniffer_secrets.h
 
 # PlatformIO
 .pio/
@@ -33,3 +34,6 @@ __pycache__/
 
 # Manual build output (manual/build.py)
 manual/build/
+
+# Release artifacts (tools/release.py) — published as GitHub release assets
+web/installer/firmware/

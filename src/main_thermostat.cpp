@@ -57,6 +57,11 @@
 
 #include <esp_system.h>
 #include <esp_timer.h>
+// IDF >= 5 (Arduino core 3.x) moved esp_efuse_mac_get_default() out of
+// esp_system.h; older cores have no esp_mac.h at all.
+#if __has_include(<esp_mac.h>)
+#include <esp_mac.h>
+#endif
 
 #include "CompressorGuard.h"
 #include "Ct485Core.h"

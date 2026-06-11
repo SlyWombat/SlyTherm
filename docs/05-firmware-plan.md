@@ -1,11 +1,11 @@
 # 05 — Firmware Plan
 
-**Framework — open decision (resolve early, before Phase 4):** the production controller is the wall-mounted ESP32-S3 touchscreen ([`03-hardware-wiring.md`](03-hardware-wiring.md)), and two stacks are viable for it:
+**Framework — DECIDED (issue #38, 2026-06-11): custom PlatformIO + LVGL** — see [`08-firmware-platform-decision.md`](08-firmware-platform-decision.md) for the full decision record (ESPHome retained only as an option for non-safety accessory nodes). Original framing kept for context: the production controller is the wall-mounted ESP32-S3 touchscreen ([`03-hardware-wiring.md`](03-hardware-wiring.md)), and two stacks were considered for it:
 
 1. **ESPHome + LVGL**, with the CT-485 stack written as an ESPHome **external component** (C++) — the `esphome-econet` project is the precedent and template. Buys OTA + safe-mode/rollback, Wi-Fi provisioning, HA integration, and the LVGL cookbook thermostat UI patterns essentially for free.
 2. **Custom PlatformIO (Arduino/ESP-IDF) + LVGL** — maximum control over task pinning and ISRs; more UI work by hand.
 
-**Pure-YAML ESPHome is not sufficient** — the CT-485 token/half-duplex timing requires real code either way. **Prototype the CT-485 external component early** (Phase 2–3 timeframe) to settle this; until then it is an open decision, not a commitment. The Phase 1–2 **sniff rig stays Arduino-for-ESP32 + PlatformIO on the ESP32-DevKitC** regardless. Modular either way: RS-485 PHY, CT-485 protocol, control logic, UI, and integration each in their own unit. Safety-first throughout (see [`04-safety.md`](04-safety.md)).
+**Pure-YAML ESPHome is not sufficient** — the CT-485 token/half-duplex timing requires real code either way. The CT-485 external component was prototyped (issue #38 spike, `spike/esphome/`) and the decision went to **option 2, custom PlatformIO + LVGL** — see [`08-firmware-platform-decision.md`](08-firmware-platform-decision.md). The Phase 1–2 **sniff rig stays Arduino-for-ESP32 + PlatformIO on the ESP32-DevKitC** regardless. Modular either way: RS-485 PHY, CT-485 protocol, control logic, UI, and integration each in their own unit. Safety-first throughout (see [`04-safety.md`](04-safety.md)).
 
 ## Module layout
 

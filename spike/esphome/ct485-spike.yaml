@@ -1,0 +1,62 @@
+# ct485-spike.yaml — SPIKE evidence for issue #38, not product code.
+#
+# Minimal ESPHome node for esp32dev that mounts the ct485_sniffer external
+# component (RX-only frame logging via lib/Ct485Frame + lib/Ct485Parser).
+# Wi-Fi credentials below are PLACEHOLDERS for compile-only verification —
+# never commit real credentials (see src/*_secrets.h.example pattern).
+#
+# Compile:
+#   ESPHOME_DATA_DIR=/tmp/esphome-spike esphome compile spike/esphome/ct485-spike.yaml
+
+esphome:
+  name: ct485-spike
+  friendly_name: CT-485 Spike
+  # Reuse the repo's pure-C++ libs WITHOUT vendoring copies: point PlatformIO's
+  # library finder at the repo lib/ tree. ESPHome generates lib_ldf_mode: off,
+  # so it must be forced back on for lib_extra_dirs to resolve includes.
+  platformio_options:
+    lib_ldf_mode: chain
+    lib_extra_dirs:
+      - /mnt/d/OneDrive/My Documents/ElectricRV/Development/Projects/Dettson/lib
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+logger:
+  level: DEBUG
+
+# --- connectivity stubs (compile-only placeholders) ---
+wifi:
+  ssid: "spike-placeholder-ssid"
+  password: "spike-placeholder-pass"
+  ap:
+    ssid: "CT485-Spike-Fallback"
+
+captive_portal:
+
+api:
+
+ota:
+  - platform: esphome
+
+# --- CT-485 bus (RX only; TX pin assigned but never driven by this spike) ---
+uart:
+  id: ct485_bus
+  rx_pin: GPIO16
+  tx_pin: GPIO17
+  baud_rate: 9600
+  rx_buffer_size: 2048
+
+ct485_sniffer:
+  uart_id: ct485_bus
+  frame_count:
+    name: "CT-485 valid frames"
+  last_decode:
+    name: "CT-485 last decode"

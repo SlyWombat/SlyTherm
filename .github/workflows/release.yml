@@ -1,0 +1,41 @@
+# Release: on tag v* build merged firmware images + manifests and attach them
+# (plus the two manual PDFs) to the GitHub release.
+#
+# NOTE: hosting web/installer on GitHub Pages is a manual follow-up — do NOT
+# configure Pages in this workflow. Until then the installer page is served
+# however the operator chooses; release assets are the canonical artifacts.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create the release / upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build merged images + manifests
+        run: python3 tools/release.py
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            web/installer/firmware/*.bin
+            web/installer/firmware/manifest_*.json
+            docs/manuals/USER_MANUAL.pdf
+            docs/manuals/INSTALLATION_MANUAL.pdf

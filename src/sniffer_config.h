@@ -1,11 +1,26 @@
-// sniffer_config.h — build-time configuration for the Phase 1 RX-only sniffer
-// (src/main_sniffer.cpp). Bench rig: ESP32-DevKitC, see docs/05 Phase 1 and
-// docs/02 §8. Protocol timing constants live in lib/Ct485Core/Ct485Core.h —
-// only sniffer-rig knobs belong here.
+// sniffer_config.h — build-time configuration for the Phase 1/2 RX-only
+// sniffer (src/main_sniffer.cpp). Bench rig: ESP32-DevKitC, see docs/05
+// Phase 1 and docs/02 §8. Protocol timing constants live in
+// lib/Ct485Core/Ct485Core.h — only sniffer-rig knobs belong here.
+//
+// Wi-Fi/MQTT credentials come from src/sniffer_secrets.h (gitignored; copy
+// src/sniffer_secrets.h.example) or -D build flags — never from this file.
 
 #pragma once
 #include <cstddef>
 #include <cstdint>
+
+#if __has_include("sniffer_secrets.h")
+#include "sniffer_secrets.h"
+#endif
+// Absent/partial secrets -> empty defaults: builds everywhere; with no SSID
+// the console falls back to its own SoftAP (kApSsid below).
+#ifndef SNIFFER_WIFI_SSID
+#define SNIFFER_WIFI_SSID ""
+#endif
+#ifndef SNIFFER_WIFI_PASS
+#define SNIFFER_WIFI_PASS ""
+#endif
 
 namespace sniffer {
 
@@ -35,20 +50,24 @@ constexpr uint32_t kAutobaudDwellMs    = 5000;
 constexpr uint32_t kAutobaudLockFrames = 3;
 constexpr uint32_t kAutobaudLockRatio  = 4;
 
+// ---- Web console (issue #57) ----
+constexpr uint16_t kHttpPort = 80;
+constexpr uint16_t kWsPort   = 81;
+constexpr uint32_t kStatusPeriodMs = 1000;  // WS status/counters broadcast
+
+// STA connect grace before falling back to SoftAP. The AP password is a
+// fixed bench convenience, NOT a secret (the console is read-only and the
+// rig only exists on the bench); change it here if your bench is hostile.
+constexpr uint32_t kWifiStaTimeoutMs = 15000;
+constexpr const char* kApSsid = "dettson-sniffer";
+constexpr const char* kApPass = "ct485sniff";
+
 }  // namespace sniffer
 
 #ifdef SNIFFER_MQTT
-// Optional MQTT streaming (default OFF). Enable with -DSNIFFER_MQTT and pass
-// credentials as build flags generated from .env — NEVER commit them:
-//   -DSNIFFER_WIFI_SSID='"..."' -DSNIFFER_WIFI_PASS='"..."'
-//   -DSNIFFER_MQTT_HOST='"..."' [-DSNIFFER_MQTT_PORT=1883]
-//   [-DSNIFFER_MQTT_USER='"..."' -DSNIFFER_MQTT_PASS='"..."']
-#ifndef SNIFFER_WIFI_SSID
-#define SNIFFER_WIFI_SSID ""
-#endif
-#ifndef SNIFFER_WIFI_PASS
-#define SNIFFER_WIFI_PASS ""
-#endif
+// Optional MQTT frame push. Compile the client in with -DSNIFFER_MQTT
+// (default OFF: no MQTT dependency in the default build); even when compiled
+// in, pushing starts DISABLED and is toggled at runtime from the web console.
 #ifndef SNIFFER_MQTT_HOST
 #define SNIFFER_MQTT_HOST ""
 #endif
