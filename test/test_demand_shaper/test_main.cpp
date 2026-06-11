@@ -1,0 +1,309 @@
+// DemandShaper unit tests: GasShaper floor-snap hysteresis + max-runtime trip,
+// HpInverterShaper slew/quantize/floor, HpRelayShaper duty + starts cap + gate.
+#include <unity.h>
+#include <cmath>
+#include "DemandShaper.h"
+#include "DettsonConfig.h"
+
+using namespace dettson;
+
+void setUp() {}
+void tearDown() {}
+
+// ------------------------------------------------------------------ GasShaper
+
+static void test_gas_boot_state_no_demand() {
+  GasShaper g;
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, 0));
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_FALSE(g.alarm());
+}
+
+static void test_gas_does_not_light_at_or_below_floor() {
+  GasShaper g;  // light threshold = 40 + 2 = 42
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(39.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(40.0f, 10));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(41.9f, 20));
+  TEST_ASSERT_FALSE(g.lit());
+}
+
+static void test_gas_lights_above_margin_and_tracks_request() {
+  GasShaper g;
+  TEST_ASSERT_EQUAL_FLOAT(45.0f, g.shape(45.0f, 0));
+  TEST_ASSERT_TRUE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(80.0f, g.shape(80.0f, 10));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, g.shape(100.0f, 20));
+}
+
+static void test_gas_clamps_overrange_request_to_100() {
+  GasShaper g;
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, g.shape(150.0f, 0));
+  TEST_ASSERT_FALSE(g.alarm());
+}
+
+static void test_gas_falling_holds_floor_then_extinguishes() {
+  GasShaper g;  // extinguish threshold = 40 - 5 = 35
+  g.shape(60.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(40.0f, g.shape(38.0f, 10));  // below floor: hold floor, stay lit
+  TEST_ASSERT_EQUAL_FLOAT(40.0f, g.shape(36.0f, 20));
+  TEST_ASSERT_TRUE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(35.0f, 30));   // clearly below: out
+  TEST_ASSERT_FALSE(g.lit());
+}
+
+static void test_gas_no_dither_at_floor_either_direction() {
+  GasShaper g;
+  // Lit, request oscillating just around the floor: burner never flaps off —
+  // sub-floor requests pin to the floor, in-band requests pass through.
+  g.shape(60.0f, 0);
+  for (uint32_t t = 10; t <= 100; t += 10) {
+    float req = (t / 10) % 2 ? 39.0f : 41.0f;
+    float expected = req < 40.0f ? 40.0f : req;
+    TEST_ASSERT_EQUAL_FLOAT(expected, g.shape(req, t));
+    TEST_ASSERT_TRUE(g.lit());
+  }
+  // Unlit, same oscillation: output pinned at 0 (never lights below 42).
+  GasShaper g2;
+  for (uint32_t t = 0; t <= 100; t += 10) {
+    float req = (t / 10) % 2 ? 39.0f : 41.0f;
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, g2.shape(req, t));
+  }
+  TEST_ASSERT_FALSE(g2.lit());
+}
+
+static void test_gas_relight_requires_full_on_threshold() {
+  GasShaper g;
+  g.shape(60.0f, 0);
+  g.shape(30.0f, 10);  // extinguished
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(41.0f, 20));  // 40..42: not enough to relight
+  TEST_ASSERT_EQUAL_FLOAT(42.0f, g.shape(42.0f, 30));
+}
+
+static void test_gas_invalid_input_drops_demand_and_alarms() {
+  GasShaper g;
+  g.shape(60.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(NAN, 10));
+  TEST_ASSERT_TRUE(g.inputAlarm());
+  TEST_ASSERT_FALSE(g.lit());
+  GasShaper g2;
+  g2.shape(60.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g2.shape(-5.0f, 10));
+  TEST_ASSERT_TRUE(g2.inputAlarm());
+}
+
+static void test_gas_max_runtime_trips_and_recovers_only_after_call_ends() {
+  GasShaper g;
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS / 2));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS));      // exactly at cap: still ok
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 1));   // exceeds -> trip
+  TEST_ASSERT_TRUE(g.runtimeAlarm());
+  // Still requesting: held at zero (no auto-relight into the same stuck call).
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 100));
+  // Call ends, fresh call later: a new timed run is allowed, alarm stays latched.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, kGasMaxRuntimeS + 200));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS + 300));
+  TEST_ASSERT_TRUE(g.runtimeAlarm());
+  g.clearAlarms();
+  TEST_ASSERT_FALSE(g.alarm());
+}
+
+static void test_gas_extinguish_resets_runtime_clock() {
+  GasShaper g;
+  g.shape(60.0f, 0);
+  g.shape(0.0f, 1000);            // run ends after 1000 s
+  g.shape(60.0f, 2000);           // new run
+  // Old start must not count: 2000 + max is fine, trips only past new start + max.
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 2000 + kGasMaxRuntimeS));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 2001 + kGasMaxRuntimeS));
+}
+
+// ----------------------------------------------------------- HpInverterShaper
+
+static void test_hp_inv_starts_at_floor_then_slews_up() {
+  HpInverterShaper h;  // floor 30, slew 10 %/min, step 5
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, h.shape(60.0f, 0));    // start at floor
+  TEST_ASSERT_EQUAL_FLOAT(40.0f, h.shape(60.0f, 60));   // +10 after 1 min
+  TEST_ASSERT_EQUAL_FLOAT(50.0f, h.shape(60.0f, 120));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, h.shape(60.0f, 180));  // reached target
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, h.shape(60.0f, 240));  // holds
+}
+
+static void test_hp_inv_quantizes_to_step() {
+  HpInverterShaper h;
+  h.shape(100.0f, 0);                                    // 30
+  TEST_ASSERT_EQUAL_FLOAT(35.0f, h.shape(100.0f, 30));   // +5 after 30 s
+  TEST_ASSERT_EQUAL_FLOAT(40.0f, h.shape(43.0f, 60));    // target 43 -> raw 40 -> q 40
+  TEST_ASSERT_EQUAL_FLOAT(45.0f, h.shape(43.0f, 90));    // raw 43 -> rounds to 45
+}
+
+static void test_hp_inv_small_dt_accumulates() {
+  HpInverterShaper h;
+  h.shape(100.0f, 0);  // 30
+  // 6 s calls = 1 % raw each; quantized output may not move every call but
+  // must not be lost to rounding.
+  float out = 0.0f;
+  for (uint32_t t = 6; t <= 60; t += 6) out = h.shape(100.0f, t);
+  TEST_ASSERT_EQUAL_FLOAT(40.0f, out);  // 30 + 10 %/min after 1 min
+}
+
+static void test_hp_inv_below_floor_request_runs_at_floor() {
+  HpInverterShaper h;
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, h.shape(10.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, h.shape(10.0f, 600));
+}
+
+static void test_hp_inv_drop_to_zero_is_immediate() {
+  HpInverterShaper h;
+  h.shape(100.0f, 0);
+  h.shape(100.0f, 300);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, h.shape(0.0f, 301));  // no slow ramp-down to off
+}
+
+static void test_hp_inv_slew_down_limited_but_not_below_floor() {
+  HpInverterShaper h;
+  h.shape(100.0f, 0);
+  for (uint32_t t = 60; t <= 420; t += 60) h.shape(100.0f, t);  // reach 100
+  TEST_ASSERT_EQUAL_FLOAT(90.0f, h.shape(30.0f, 480));          // -10/min
+  TEST_ASSERT_EQUAL_FLOAT(80.0f, h.shape(30.0f, 540));
+}
+
+static void test_hp_inv_invalid_input_zeroes_and_alarms() {
+  HpInverterShaper h;
+  h.shape(100.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, h.shape(NAN, 60));
+  TEST_ASSERT_TRUE(h.inputAlarm());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, h.shape(-1.0f, 120));
+}
+
+// -------------------------------------------------------------- HpRelayShaper
+
+struct FakeGate : public CompressorGate {
+  bool allowStart = true;
+  bool allowStop = true;
+  int startAsks = 0;
+  int stopAsks = 0;
+  bool canStart(uint32_t) override { ++startAsks; return allowStart; }
+  bool canStop(uint32_t) override { ++stopAsks; return allowStop; }
+};
+
+static void test_hp_relay_boot_off_and_first_start() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(0.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(50.0f, 10));  // gate said yes; no off-phase wait at boot
+  TEST_ASSERT_TRUE(r.on());
+  TEST_ASSERT_EQUAL_UINT8(1, r.startsInLastHour(10));
+}
+
+static void test_hp_relay_duty_cycle_timing() {
+  FakeGate gate;
+  HpRelayShaper r(gate);  // 3 starts/h -> period 1200 s; duty 50 % -> 600 on / 600 off
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(50.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(50.0f, 599));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(50.0f, 600));    // on-time served
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(50.0f, 1199));   // off-time pending
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(50.0f, 1200)); // next cycle
+  TEST_ASSERT_EQUAL_UINT8(2, r.startsInLastHour(1200));
+}
+
+static void test_hp_relay_request_zero_turns_off_via_gate() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  r.shape(80.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(0.0f, 100));
+  TEST_ASSERT_TRUE(gate.stopAsks > 0);
+}
+
+static void test_hp_relay_gate_refuses_stop_holds_on() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  r.shape(80.0f, 0);
+  gate.allowStop = false;  // min-on unsatisfied
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(0.0f, 100));  // timers honored on the way down
+  gate.allowStop = true;
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(0.0f, 400));
+}
+
+static void test_hp_relay_gate_refuses_start_stays_off() {
+  FakeGate gate;
+  gate.allowStart = false;
+  HpRelayShaper r(gate);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(100.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(100.0f, 100));
+  TEST_ASSERT_EQUAL_UINT8(0, r.startsInLastHour(100));
+  gate.allowStart = true;
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 200));
+}
+
+static void test_hp_relay_starts_per_hour_cap_holds_even_with_permissive_gate() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  // request 100 -> off-time 0, so only the budget brakes restarts.
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 0));    // start 1
+  r.shape(0.0f, 10);
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 20));   // start 2
+  r.shape(0.0f, 30);
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 40));   // start 3
+  r.shape(0.0f, 50);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(100.0f, 60));     // budget spent
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(100.0f, 3599));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 3601)); // start 1 aged out
+}
+
+static void test_hp_relay_full_demand_runs_continuously() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  r.shape(100.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 5000));   // > period: still on, no cycling
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(100.0f, 100000)); // no runtime cap on the HP (docs/05)
+  TEST_ASSERT_EQUAL_UINT8(0, r.startsInLastHour(100000));
+}
+
+static void test_hp_relay_invalid_input_drops_and_alarms() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  r.shape(80.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, r.shape(NAN, 100));
+  TEST_ASSERT_TRUE(r.inputAlarm());
+}
+
+static void test_hp_relay_invalid_input_still_respects_min_on() {
+  FakeGate gate;
+  HpRelayShaper r(gate);
+  r.shape(80.0f, 0);
+  gate.allowStop = false;
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, r.shape(NAN, 5));  // alarm, but no timer violation
+  TEST_ASSERT_TRUE(r.inputAlarm());
+}
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_gas_boot_state_no_demand);
+  RUN_TEST(test_gas_does_not_light_at_or_below_floor);
+  RUN_TEST(test_gas_lights_above_margin_and_tracks_request);
+  RUN_TEST(test_gas_clamps_overrange_request_to_100);
+  RUN_TEST(test_gas_falling_holds_floor_then_extinguishes);
+  RUN_TEST(test_gas_no_dither_at_floor_either_direction);
+  RUN_TEST(test_gas_relight_requires_full_on_threshold);
+  RUN_TEST(test_gas_invalid_input_drops_demand_and_alarms);
+  RUN_TEST(test_gas_max_runtime_trips_and_recovers_only_after_call_ends);
+  RUN_TEST(test_gas_extinguish_resets_runtime_clock);
+  RUN_TEST(test_hp_inv_starts_at_floor_then_slews_up);
+  RUN_TEST(test_hp_inv_quantizes_to_step);
+  RUN_TEST(test_hp_inv_small_dt_accumulates);
+  RUN_TEST(test_hp_inv_below_floor_request_runs_at_floor);
+  RUN_TEST(test_hp_inv_drop_to_zero_is_immediate);
+  RUN_TEST(test_hp_inv_slew_down_limited_but_not_below_floor);
+  RUN_TEST(test_hp_inv_invalid_input_zeroes_and_alarms);
+  RUN_TEST(test_hp_relay_boot_off_and_first_start);
+  RUN_TEST(test_hp_relay_duty_cycle_timing);
+  RUN_TEST(test_hp_relay_request_zero_turns_off_via_gate);
+  RUN_TEST(test_hp_relay_gate_refuses_stop_holds_on);
+  RUN_TEST(test_hp_relay_gate_refuses_start_stays_off);
+  RUN_TEST(test_hp_relay_starts_per_hour_cap_holds_even_with_permissive_gate);
+  RUN_TEST(test_hp_relay_full_demand_runs_continuously);
+  RUN_TEST(test_hp_relay_invalid_input_drops_and_alarms);
+  RUN_TEST(test_hp_relay_invalid_input_still_respects_min_on);
+  return UNITY_END();
+}

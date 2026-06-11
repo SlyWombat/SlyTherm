@@ -1,0 +1,7 @@
+# Parser sanity-test frame from the openHAB ClimateTalk thread, as quoted in
+# docs/02-protocol-climatetalk.md §8. NOTE (see tools/README.md): the leading
+# dst/src = 0x30 bytes are an ASCII-'0' adapter artifact, and the frame is
+# TRUNCATED in the source (buf[9] = 0x7c -> 124-byte payload, 136-byte total,
+# but only 22 bytes were quoted). It therefore does NOT Fletcher-validate and
+# is kept as a resync/garbage-handling fixture, not a valid-frame fixture.
+30 30 7d 07 d4 d1 9f 9a c6 7c 10 a2 01 ff 02 00 00 00 a5 00 a0 11
