@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="400" viewBox="0 0 840 400">
+  <!-- Hand-authored sensor placement do/don't graphic. Self-contained, inline styles. -->
+  <style>
+    .h { font-family: Helvetica, Arial, sans-serif; font-weight: bold; font-size: 18px; }
+    .b { font-family: Helvetica, Arial, sans-serif; font-size: 13px; fill: #333333; }
+    .s { font-family: Helvetica, Arial, sans-serif; font-size: 12px; fill: #555555; }
+  </style>
+  <rect x="0" y="0" width="840" height="400" fill="#ffffff"/>
+
+  <!-- ===== LEFT: GOOD ===== -->
+  <rect x="12" y="12" width="400" height="376" rx="10" fill="#f2faf3" stroke="#3aa65a" stroke-width="2"/>
+  <text x="212" y="40" text-anchor="middle" class="h" fill="#27753f">Good placement</text>
+
+  <!-- room outline -->
+  <rect x="44" y="60" width="336" height="220" fill="#ffffff" stroke="#666666" stroke-width="2"/>
+  <!-- floor hatch -->
+  <line x1="44" y1="280" x2="380" y2="280" stroke="#666666" stroke-width="3"/>
+  <!-- interior wall sensor at chest height -->
+  <rect x="58" y="150" width="22" height="22" rx="4" fill="#3aa65a"/>
+  <circle cx="69" cy="161" r="4" fill="#ffffff"/>
+  <!-- height arrow -->
+  <line x1="100" y1="172" x2="100" y2="280" stroke="#3aa65a" stroke-width="2"/>
+  <line x1="94" y1="178" x2="100" y2="172" stroke="#3aa65a" stroke-width="2"/>
+  <line x1="106" y1="178" x2="100" y2="172" stroke="#3aa65a" stroke-width="2"/>
+  <!-- sofa: occupied room -->
+  <rect x="220" y="230" width="110" height="34" rx="8" fill="#cfd8e3"/>
+  <rect x="220" y="208" width="26" height="40" rx="8" fill="#cfd8e3"/>
+  <text x="108" y="232" class="s">1.2&#8211;1.5 m above floor</text>
+  <text x="290" y="222" text-anchor="middle" class="s">room you occupy</text>
+  <!-- open air note -->
+  <circle cx="69" cy="161" r="34" fill="none" stroke="#3aa65a" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="160" y="120" class="s">interior wall, open air around it,</text>
+  <text x="160" y="136" class="s">away from sun and vents</text>
+
+  <text x="36" y="312" class="b">&#10003; Interior wall of a room you actually use</text>
+  <text x="36" y="332" class="b">&#10003; About chest height (1.2&#8211;1.5 m), air can flow around it</text>
+  <text x="36" y="352" class="b">&#10003; Bedrooms for night comfort, living areas for daytime</text>
+  <text x="36" y="372" class="b">&#10003; Occupancy sensors: clear view of the area they watch</text>
+
+  <!-- ===== RIGHT: AVOID ===== -->
+  <rect x="428" y="12" width="400" height="376" rx="10" fill="#fdf3f2" stroke="#d9534f" stroke-width="2"/>
+  <text x="628" y="40" text-anchor="middle" class="h" fill="#a93431">Avoid</text>
+
+  <!-- room outline -->
+  <rect x="460" y="60" width="336" height="220" fill="#ffffff" stroke="#666666" stroke-width="2"/>
+  <line x1="460" y1="280" x2="796" y2="280" stroke="#666666" stroke-width="3"/>
+
+  <!-- window with sun -->
+  <rect x="640" y="80" width="80" height="70" fill="#e9f2fd" stroke="#666666" stroke-width="2"/>
+  <line x1="680" y1="80" x2="680" y2="150" stroke="#666666" stroke-width="1.5"/>
+  <line x1="640" y1="115" x2="720" y2="115" stroke="#666666" stroke-width="1.5"/>
+  <circle cx="700" cy="68" r="12" fill="#f5c542"/>
+  <g stroke="#f5c542" stroke-width="2">
+    <line x1="700" y1="48" x2="700" y2="54"/><line x1="684" y1="58" x2="688" y2="62"/>
+    <line x1="716" y1="58" x2="712" y2="62"/><line x1="680" y1="68" x2="686" y2="68"/>
+  </g>
+  <!-- sensor in sunbeam -->
+  <rect x="668" y="158" width="20" height="20" rx="4" fill="#d9534f"/>
+  <line x1="652" y1="146" x2="700" y2="190" stroke="#d9534f" stroke-width="2"/>
+  <line x1="700" y1="146" x2="652" y2="190" stroke="#d9534f" stroke-width="2"/>
+  <text x="678" y="200" text-anchor="middle" class="s">direct sun</text>
+
+  <!-- heat register with rising air and sensor above -->
+  <rect x="490" y="266" width="56" height="12" fill="#9aa1ad"/>
+  <g stroke="#ff8a3d" stroke-width="2" fill="none">
+    <path d="M 500 260 C 496 250 504 244 500 234"/>
+    <path d="M 518 260 C 514 250 522 244 518 234"/>
+    <path d="M 536 260 C 532 250 540 244 536 234"/>
+  </g>
+  <rect x="508" y="206" width="20" height="20" rx="4" fill="#d9534f"/>
+  <line x1="494" y1="196" x2="540" y2="238" stroke="#d9534f" stroke-width="2"/>
+  <line x1="540" y1="196" x2="494" y2="238" stroke="#d9534f" stroke-width="2"/>
+  <text x="518" y="190" text-anchor="middle" class="s">above a vent</text>
+
+  <text x="452" y="312" class="b">&#10007; Direct sunlight, above heating/cooling vents or registers</text>
+  <text x="452" y="332" class="b">&#10007; Kitchens, bathrooms, near fireplaces or lamps</text>
+  <text x="452" y="352" class="b">&#10007; Exterior doors and drafty hallways</text>
+  <text x="452" y="372" class="b">&#10007; Behind curtains, furniture, or inside cabinets</text>
+</svg>

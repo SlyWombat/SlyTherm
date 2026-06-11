@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="520" viewBox="0 0 840 520">
+  <!-- Hand-authored mockup of the DT-1 home screen (matches ui/lvgl/screens.h).
+       Self-contained: inline styles, generic font families only. -->
+  <defs/>
+  <style>
+    .t  { font-family: Helvetica, Arial, sans-serif; }
+    .lbl { font-family: Helvetica, Arial, sans-serif; fill:#c8cdd6; }
+    .num { font-family: Helvetica, Arial, sans-serif; fill:#ffffff; font-weight:bold; font-size:13px; }
+  </style>
+
+  <!-- page background -->
+  <rect x="0" y="0" width="840" height="520" fill="#ffffff"/>
+
+  <!-- device bezel -->
+  <rect x="58" y="18" width="724" height="464" rx="22" fill="#23262c" stroke="#0f1114" stroke-width="3"/>
+  <!-- screen -->
+  <rect x="76" y="36" width="688" height="428" rx="6" fill="#14161b"/>
+
+  <!-- ===== Tab bar (12) ===== -->
+  <rect x="76" y="36" width="688" height="38" fill="#1b1e25"/>
+  <rect x="76" y="36" width="172" height="38" fill="#262b35"/>
+  <rect x="76" y="71" width="172" height="3" fill="#4da3ff"/>
+  <text x="162" y="61" text-anchor="middle" class="t" font-size="16" fill="#ffffff">Home</text>
+  <text x="334" y="61" text-anchor="middle" class="t" font-size="16" fill="#8a92a0">Sensors</text>
+  <text x="506" y="61" text-anchor="middle" class="t" font-size="16" fill="#8a92a0">Diagnostics</text>
+  <text x="678" y="61" text-anchor="middle" class="t" font-size="16" fill="#8a92a0">Settings</text>
+
+  <!-- ===== Alarm banner (10) ===== -->
+  <rect x="84" y="80" width="672" height="30" rx="5" fill="#5c4710"/>
+  <text x="100" y="100" class="t" font-size="14" fill="#ffd76e">! Sensor "Bedroom" offline — excluded from room average</text>
+
+  <!-- ===== Dial (1,2,3,4) ===== -->
+  <!-- background track: 270-degree arc -->
+  <path d="M 172.1 313.9 A 96 96 0 1 1 307.9 313.9" fill="none" stroke="#2c313b" stroke-width="12" stroke-linecap="round"/>
+  <!-- heat arc + knob -->
+  <path d="M 172.1 313.9 A 96 96 0 0 1 207.2 155.8" fill="none" stroke="#ff8a3d" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="207.2" cy="155.8" r="11" fill="#ff8a3d" stroke="#14161b" stroke-width="3"/>
+  <!-- cool arc + knob -->
+  <path d="M 323.1 198 A 96 96 0 0 1 307.9 313.9" fill="none" stroke="#4da3ff" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="323.1" cy="198" r="11" fill="#4da3ff" stroke="#14161b" stroke-width="3"/>
+  <!-- centre labels -->
+  <text x="240" y="240" text-anchor="middle" class="t" font-size="52" font-weight="bold" fill="#ffffff">21.5&#176;</text>
+  <text x="240" y="268" text-anchor="middle" class="t" font-size="17" fill="#9aa1ad">19.0 / 24.0</text>
+  <text x="240" y="295" text-anchor="middle" class="t" font-size="17" fill="#ff8a3d">Heating</text>
+
+  <!-- ===== Right status column (7,8,9) ===== -->
+  <rect x="420" y="128" width="336" height="56" rx="8" fill="#1b1e25"/>
+  <text x="436" y="151" class="t" font-size="14" fill="#8a92a0">Outdoor</text>
+  <text x="436" y="172" class="t" font-size="18" fill="#e8ebf0">&#8722;4.2 &#176;C &#160;(outdoor sensor)</text>
+
+  <rect x="420" y="192" width="336" height="56" rx="8" fill="#1b1e25"/>
+  <text x="436" y="215" class="t" font-size="14" fill="#8a92a0">Running now</text>
+  <text x="436" y="236" class="t" font-size="18" fill="#e8ebf0">Gas heat &#8212; 62 %</text>
+
+  <rect x="420" y="256" width="336" height="56" rx="8" fill="#1b1e25"/>
+  <text x="436" y="279" class="t" font-size="14" fill="#8a92a0">Compressor protection</text>
+  <text x="436" y="300" class="t" font-size="18" fill="#e8ebf0">Heat pump ready in 4:32</text>
+
+  <!-- ===== Link icons (11) ===== -->
+  <g>
+    <rect x="420" y="322" width="64" height="26" rx="6" fill="#1f3a25"/>
+    <text x="452" y="340" text-anchor="middle" class="t" font-size="13" fill="#6fdc8c">Wi-Fi</text>
+    <rect x="492" y="322" width="64" height="26" rx="6" fill="#1f3a25"/>
+    <text x="524" y="340" text-anchor="middle" class="t" font-size="13" fill="#6fdc8c">App</text>
+    <rect x="564" y="322" width="80" height="26" rx="6" fill="#1f3a25"/>
+    <text x="604" y="340" text-anchor="middle" class="t" font-size="13" fill="#6fdc8c">Furnace</text>
+  </g>
+
+  <!-- ===== Mode row (5) ===== -->
+  <g>
+    <rect x="84" y="368" width="124" height="40" rx="7" fill="#1b1e25"/>
+    <text x="146" y="394" text-anchor="middle" class="t" font-size="15" fill="#8a92a0">OFF</text>
+    <rect x="216" y="368" width="124" height="40" rx="7" fill="#a8501e"/>
+    <text x="278" y="394" text-anchor="middle" class="t" font-size="15" fill="#ffffff" font-weight="bold">HEAT</text>
+    <rect x="348" y="368" width="124" height="40" rx="7" fill="#1b1e25"/>
+    <text x="410" y="394" text-anchor="middle" class="t" font-size="15" fill="#8a92a0">COOL</text>
+    <rect x="480" y="368" width="124" height="40" rx="7" fill="#1b1e25"/>
+    <text x="542" y="394" text-anchor="middle" class="t" font-size="15" fill="#8a92a0">AUTO</text>
+    <rect x="612" y="368" width="144" height="40" rx="7" fill="#1b1e25"/>
+    <text x="684" y="394" text-anchor="middle" class="t" font-size="15" fill="#8a92a0">EM HEAT</text>
+  </g>
+
+  <!-- ===== Preset row (6) ===== -->
+  <g>
+    <rect x="84" y="416" width="216" height="36" rx="7" fill="#26303f"/>
+    <text x="192" y="440" text-anchor="middle" class="t" font-size="14" fill="#ffffff" font-weight="bold">Home</text>
+    <rect x="312" y="416" width="216" height="36" rx="7" fill="#1b1e25"/>
+    <text x="420" y="440" text-anchor="middle" class="t" font-size="14" fill="#8a92a0">Away</text>
+    <rect x="540" y="416" width="216" height="36" rx="7" fill="#1b1e25"/>
+    <text x="648" y="440" text-anchor="middle" class="t" font-size="14" fill="#8a92a0">Sleep</text>
+  </g>
+
+  <!-- ===== Numbered callouts ===== -->
+  <g>
+    <circle cx="240" cy="120" r="11" fill="#0a66c2"/><text x="240" y="125" text-anchor="middle" class="num">1</text>
+    <circle cx="148" cy="160" r="11" fill="#0a66c2"/><text x="148" y="165" text-anchor="middle" class="num">2</text>
+    <circle cx="318" cy="266" r="11" fill="#0a66c2"/><text x="318" y="271" text-anchor="middle" class="num">3</text>
+    <circle cx="318" cy="293" r="11" fill="#0a66c2"/><text x="318" y="298" text-anchor="middle" class="num">4</text>
+    <circle cx="40" cy="388" r="11" fill="#0a66c2"/><text x="40" y="393" text-anchor="middle" class="num">5</text>
+    <circle cx="40" cy="434" r="11" fill="#0a66c2"/><text x="40" y="439" text-anchor="middle" class="num">6</text>
+    <circle cx="800" cy="156" r="11" fill="#0a66c2"/><text x="800" y="161" text-anchor="middle" class="num">7</text>
+    <circle cx="800" cy="220" r="11" fill="#0a66c2"/><text x="800" y="225" text-anchor="middle" class="num">8</text>
+    <circle cx="800" cy="284" r="11" fill="#0a66c2"/><text x="800" y="289" text-anchor="middle" class="num">9</text>
+    <circle cx="40" cy="95" r="11" fill="#0a66c2"/><text x="40" y="100" text-anchor="middle" class="num">10</text>
+    <circle cx="800" cy="335" r="11" fill="#0a66c2"/><text x="800" y="340" text-anchor="middle" class="num">11</text>
+    <circle cx="40" cy="55" r="11" fill="#0a66c2"/><text x="40" y="60" text-anchor="middle" class="num">12</text>
+  </g>
+
+  <!-- caption -->
+  <text x="420" y="506" text-anchor="middle" class="t" font-size="14" fill="#444444">DT-1 home screen (illustration; colours and exact layout may differ slightly)</text>
+</svg>

@@ -1,0 +1,318 @@
+/* dettson.css — print-first professional theme for the Dettson manuals.
+ *
+ * Used by manual/build.py for:
+ *   manual/build/user.html / install.html       (standalone HTML)
+ *   docs/manuals/USER_MANUAL.pdf / INSTALLATION_MANUAL.pdf
+ *     (Playwright Chromium print of the same HTML)
+ *
+ * Palette: deep blue #1e3a8a headings, amber #b45309 warning accents,
+ * slate body text on a light background. System fonts only so the PDF
+ * never depends on a web font fetch.
+ */
+
+:root {
+  --heading: #1e3a8a;        /* deep blue */
+  --body: #1e293b;           /* slate-800 */
+  --muted: #475569;          /* slate-600 */
+  --faint: #94a3b8;          /* slate-400 */
+  --rule: #cbd5e1;           /* slate-300 thin table rules */
+  --band: #1e3a8a;           /* table header band */
+  --band-fg: #ffffff;
+  --warn: #b45309;           /* amber-700 */
+  --warn-bg: #fffbeb;
+  --danger: #b91c1c;         /* red-700 */
+  --danger-bg: #fef2f2;
+  --info: #1e40af;           /* blue-800 */
+  --info-bg: #eff6ff;
+  --code-bg: #f1f5f9;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 11.5pt;
+  line-height: 1.5;
+  background: #ffffff;
+  color: var(--body);
+}
+
+body {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+/* ── Typography ─────────────────────────────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--heading);
+  line-height: 1.25;
+  margin: 1.6em 0 0.6em;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+h1 {
+  font-size: 1.9rem;
+  border-bottom: 2px solid var(--heading);
+  padding-bottom: 0.25em;
+  break-before: page;            /* each section starts a new page */
+  page-break-before: always;
+}
+
+h2 { font-size: 1.4rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.2em; }
+h3 { font-size: 1.15rem; }
+h4 { font-size: 1rem; }
+h5, h6 {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+p { margin: 0.8em 0; }
+
+a { color: var(--info); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+a:hover { border-bottom-style: solid; }
+
+strong { color: #0f172a; }
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5em 0; }
+
+/* ── Code ───────────────────────────────────────────────────────── */
+
+code, pre, kbd, samp {
+  font-family: 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', Menlo, monospace;
+  font-size: 0.9em;
+}
+
+code {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  color: #0f172a;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--heading);
+  border-radius: 4px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  line-height: 1.45;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+pre code { background: transparent; border: 0; padding: 0; }
+
+kbd {
+  background: #ffffff;
+  border: 1px solid var(--faint);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 0.05em 0.4em;
+  font-size: 0.85em;
+}
+
+/* ── Lists ──────────────────────────────────────────────────────── */
+
+ul, ol { padding-left: 1.6em; margin: 0.8em 0; }
+li { margin: 0.3em 0; }
+li > p { margin: 0.3em 0; }
+
+/* ── Tables — thin rules, header band ───────────────────────────── */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.2em 0;
+  font-size: 0.92em;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+th, td {
+  border: 1px solid var(--rule);
+  padding: 0.45em 0.75em;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--band);
+  color: var(--band-fg);
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+tbody tr:nth-child(even) td { background: #f8fafc; }
+
+/* ── Figures + diagrams ─────────────────────────────────────────── */
+
+img, svg { max-width: 100%; height: auto; }
+
+figure {
+  margin: 1.5em auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+figure img, p > img { display: block; margin: 0 auto; }
+
+figcaption {
+  font-size: 0.85em;
+  color: var(--muted);
+  text-align: center;
+  font-style: italic;
+  margin-top: 0.4em;
+}
+
+/* ── Callouts (classified by build.py) ──────────────────────────── */
+
+blockquote {
+  margin: 1.2em 0;
+  padding: 0.6em 1em;
+  border-left: 4px solid var(--faint);
+  background: #f8fafc;
+  color: var(--body);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child { margin-bottom: 0; }
+
+blockquote.callout-warning {
+  border-left-color: var(--warn);
+  border-top: 1px solid var(--warn);
+  border-right: 1px solid var(--warn);
+  border-bottom: 1px solid var(--warn);
+  background: var(--warn-bg);
+}
+blockquote.callout-warning > p:first-child > strong:first-child { color: var(--warn); }
+
+blockquote.callout-danger {
+  border-left-color: var(--danger);
+  border-left-width: 6px;
+  border-top: 1px solid var(--danger);
+  border-right: 1px solid var(--danger);
+  border-bottom: 1px solid var(--danger);
+  background: var(--danger-bg);
+}
+blockquote.callout-danger > p:first-child > strong:first-child { color: var(--danger); }
+
+blockquote.callout-info {
+  border-left-color: var(--info);
+  background: var(--info-bg);
+}
+blockquote.callout-info > p:first-child > strong:first-child { color: var(--info); }
+
+blockquote.callout-tbd {
+  border: 2px dashed var(--info);
+  border-left-width: 4px;
+  background: var(--info-bg);
+}
+blockquote.callout-tbd > p:first-child > strong:first-child { color: var(--info); }
+
+/* ── Table of contents ──────────────────────────────────────────── */
+
+nav#TOC {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1em 1.5em;
+  margin: 1.5em 0 2.5em;
+  break-after: page;             /* contents get their own page(s) */
+  page-break-after: always;
+}
+
+nav#TOC::before {
+  content: 'Contents';
+  display: block;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--heading);
+  margin-bottom: 0.5em;
+}
+
+nav#TOC ul { list-style: none; padding-left: 0; margin: 0.2em 0; }
+nav#TOC ul ul { padding-left: 1.4em; font-size: 0.95em; }
+nav#TOC li { margin: 0.25em 0; }
+nav#TOC a { border-bottom: 0; color: var(--body); }
+nav#TOC > ul > li > a { font-weight: 600; color: var(--heading); }
+
+/* ── Title page (markup contract in manual/README.md) ───────────── */
+
+.title-page {
+  text-align: center;
+  break-after: page;
+  page-break-after: always;
+  padding-top: 2.5in;
+}
+
+.title-page h1 {
+  break-before: avoid;           /* no page break before the title */
+  page-break-before: avoid;
+  border-bottom: 0;
+  font-size: 2.3rem;
+  margin: 0 0 0.3em;
+}
+
+.title-page .doc-title {
+  display: block;
+  font-size: 1.6rem;
+  color: var(--body);
+  margin: 0.4em 0;
+}
+
+.title-page .model {
+  display: block;
+  font-size: 1.1rem;
+  color: var(--muted);
+  margin: 0.3em 0;
+}
+
+.title-page .manufacturer {
+  display: block;
+  font-size: 1rem;
+  color: var(--muted);
+  margin: 0.3em 0 1.5em;
+}
+
+.title-page .draft-banner {
+  display: inline-block;
+  border: 3px solid var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.5em 1.2em;
+  margin: 1em 0 2em;
+}
+
+.title-page table {
+  width: auto;
+  min-width: 60%;
+  margin: 2em auto 0;
+  font-size: 0.88em;
+  text-align: left;
+}
+
+/* ── Print refinements ──────────────────────────────────────────── */
+
+@media print {
+  body { max-width: 100%; padding: 0; }
+  a { color: inherit; border-bottom: 0; }
+  nav#TOC { border: 0; padding: 0; }
+  .title-page { padding-top: 2in; }
+}
+
+@page {
+  size: letter;
+}

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="330" viewBox="0 0 840 330">
+  <!-- Hand-authored "modes at a glance" graphic. Self-contained, inline styles. -->
+  <style>
+    .h  { font-family: Helvetica, Arial, sans-serif; font-weight: bold; font-size: 17px; }
+    .b  { font-family: Helvetica, Arial, sans-serif; font-size: 12.5px; fill: #333333; }
+    .n  { font-family: Helvetica, Arial, sans-serif; font-size: 13px; fill: #333333; }
+  </style>
+  <rect x="0" y="0" width="840" height="330" fill="#ffffff"/>
+
+  <!-- OFF -->
+  <rect x="12" y="14" width="152" height="218" rx="10" fill="#f2f3f5" stroke="#9aa1ad" stroke-width="2"/>
+  <text x="88" y="44" text-anchor="middle" class="h" fill="#5a626e">OFF</text>
+  <circle cx="88" cy="78" r="20" fill="none" stroke="#5a626e" stroke-width="3"/>
+  <line x1="88" y1="62" x2="88" y2="80" stroke="#5a626e" stroke-width="3"/>
+  <text x="88" y="124" text-anchor="middle" class="b">No heating or</text>
+  <text x="88" y="141" text-anchor="middle" class="b">cooling.</text>
+  <text x="88" y="166" text-anchor="middle" class="b">Display and alerts</text>
+  <text x="88" y="183" text-anchor="middle" class="b">stay on.</text>
+
+  <!-- HEAT -->
+  <rect x="178" y="14" width="152" height="218" rx="10" fill="#fdf1e7" stroke="#ff8a3d" stroke-width="2"/>
+  <text x="254" y="44" text-anchor="middle" class="h" fill="#c05c14">HEAT</text>
+  <path d="M 254 60 C 244 74 242 84 254 96 C 266 84 264 74 254 60 Z" fill="#ff8a3d"/>
+  <text x="254" y="124" text-anchor="middle" class="b">Holds the heat</text>
+  <text x="254" y="141" text-anchor="middle" class="b">setpoint.</text>
+  <text x="254" y="166" text-anchor="middle" class="b">Picks heat pump or</text>
+  <text x="254" y="183" text-anchor="middle" class="b">gas automatically by</text>
+  <text x="254" y="200" text-anchor="middle" class="b">outdoor temperature.</text>
+
+  <!-- COOL -->
+  <rect x="344" y="14" width="152" height="218" rx="10" fill="#e9f2fd" stroke="#4da3ff" stroke-width="2"/>
+  <text x="420" y="44" text-anchor="middle" class="h" fill="#1f6ec2">COOL</text>
+  <g stroke="#4da3ff" stroke-width="3">
+    <line x1="420" y1="58" x2="420" y2="98"/>
+    <line x1="400" y1="68" x2="440" y2="88"/>
+    <line x1="440" y1="68" x2="400" y2="88"/>
+  </g>
+  <text x="420" y="124" text-anchor="middle" class="b">Holds the cool</text>
+  <text x="420" y="141" text-anchor="middle" class="b">setpoint using the</text>
+  <text x="420" y="158" text-anchor="middle" class="b">heat pump as an</text>
+  <text x="420" y="175" text-anchor="middle" class="b">air conditioner.</text>
+
+  <!-- AUTO -->
+  <rect x="510" y="14" width="152" height="218" rx="10" fill="#eef9ef" stroke="#3aa65a" stroke-width="2"/>
+  <text x="586" y="44" text-anchor="middle" class="h" fill="#27753f">AUTO</text>
+  <path d="M 560 78 A 26 26 0 1 1 586 104" fill="none" stroke="#3aa65a" stroke-width="3"/>
+  <path d="M 586 96 L 586 112 L 572 104 Z" fill="#3aa65a"/>
+  <text x="586" y="124" text-anchor="middle" class="b">Uses both setpoints.</text>
+  <text x="586" y="141" text-anchor="middle" class="b">Heats below the low</text>
+  <text x="586" y="158" text-anchor="middle" class="b">one, cools above the</text>
+  <text x="586" y="175" text-anchor="middle" class="b">high one. Waits</text>
+  <text x="586" y="192" text-anchor="middle" class="b">before switching</text>
+  <text x="586" y="209" text-anchor="middle" class="b">direction.</text>
+
+  <!-- EM HEAT -->
+  <rect x="676" y="14" width="152" height="218" rx="10" fill="#fdeaea" stroke="#d9534f" stroke-width="2"/>
+  <text x="752" y="44" text-anchor="middle" class="h" fill="#a93431">EM HEAT</text>
+  <path d="M 752 58 L 762 80 L 754 80 L 764 100 L 740 78 L 749 78 Z" fill="#d9534f"/>
+  <text x="752" y="124" text-anchor="middle" class="b">Gas furnace only.</text>
+  <text x="752" y="141" text-anchor="middle" class="b">Heat pump is not</text>
+  <text x="752" y="158" text-anchor="middle" class="b">used at all.</text>
+  <text x="752" y="183" text-anchor="middle" class="b">Use if the heat pump</text>
+  <text x="752" y="200" text-anchor="middle" class="b">is faulty or awaiting</text>
+  <text x="752" y="217" text-anchor="middle" class="b">service.</text>
+
+  <!-- footnote strip -->
+  <rect x="12" y="248" width="816" height="62" rx="8" fill="#f7f7f9" stroke="#d4d7dd" stroke-width="1"/>
+  <text x="28" y="272" class="n">In every mode the thermostat enforces compressor protection (minimum rest times) and never runs gas heat and</text>
+  <text x="28" y="291" class="n">heat pump heat together. "Waiting" messages on screen are these protections working &#8212; not a fault.</text>
+</svg>

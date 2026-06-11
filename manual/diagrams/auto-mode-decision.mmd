@@ -1,0 +1,11 @@
+%% Simplified, user-level view of how AUTO mode decides what to run.
+%% Defaults shown (balance point, waits) are adjustable by your installer.
+flowchart TD
+    B{Where is the room<br/>temperature?} -- "Below the<br/>heat setpoint" --> C{How cold is it<br/>outside?}
+    B -- "Between the<br/>two setpoints" --> E[Nothing runs —<br/>you are in the comfort zone]
+    B -- "Above the<br/>cool setpoint" --> D[Cool with the heat pump]
+    C -- "Milder than the balance point<br/>(default −8 °C)" --> F[Heat with the heat pump]
+    C -- "Colder than the<br/>balance point" --> G[Heat with the gas furnace<br/>at 40–100 % of capacity,<br/>only as much as needed]
+    F -. "Heat pump falls behind<br/>for 30 minutes" .-> G
+    D --> H[Built-in waits apply:<br/>the compressor rests ~5 minutes between runs, and<br/>switching between heating and cooling has its own<br/>delay so brief swings don't flip the system]
+    F --> H

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="556" viewBox="0 0 940 556">
+  <rect x="0" y="0" width="940" height="556" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333333"/>
+    </marker>
+    <marker id="arrowred" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#bb4422"/>
+    </marker>
+  </defs>
+  <text x="470" y="30" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#111111">Safety chain — how a dead or wedged controller reaches no-demand</text>
+
+  <!-- Firmware safety task -->
+  <rect x="40" y="70" width="250" height="100" fill="#f4f8ff" stroke="#2255aa" stroke-width="2" rx="6"/>
+  <text x="165" y="96" font-family="sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#2255aa">Firmware safety task</text>
+  <text x="165" y="116" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">pets the watchdog ONLY when its</text>
+  <text x="165" y="132" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">own invariants hold — a wedged UI</text>
+  <text x="165" y="148" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">cannot keep the watchdog fed</text>
+
+  <!-- Watchdog -->
+  <rect x="370" y="70" width="240" height="100" fill="#fff4f0" stroke="#bb4422" stroke-width="2.5" rx="6"/>
+  <text x="490" y="98" font-family="sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#bb4422">External hardware watchdog</text>
+  <text x="490" y="118" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#bb4422">independent supervisor IC</text>
+  <text x="490" y="134" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#bb4422">works with the processor dead</text>
+  <text x="490" y="150" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#bb4422">always armed — even during updates</text>
+
+  <line x1="290" y1="120" x2="370" y2="120" stroke="#333333" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="330" y="110" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#333333">pet</text>
+
+  <!-- timeout fan-out -->
+  <line x1="490" y1="170" x2="490" y2="210" stroke="#bb4422" stroke-width="2.5"/>
+  <text x="505" y="196" font-family="sans-serif" font-size="12" font-weight="bold" fill="#bb4422">TIMEOUT →</text>
+  <line x1="490" y1="210" x2="250" y2="250" stroke="#bb4422" stroke-width="2.5" marker-end="url(#arrowred)"/>
+  <line x1="490" y1="210" x2="730" y2="250" stroke="#bb4422" stroke-width="2.5" marker-end="url(#arrowred)"/>
+
+  <!-- DE cut path -->
+  <rect x="80" y="250" width="340" height="92" fill="#eefbee" stroke="#226622" stroke-width="2" rx="6"/>
+  <text x="250" y="276" font-family="sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#226622">1 — Force transceiver DE off</text>
+  <text x="250" y="296" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">controller can no longer drive the CT-485 bus</text>
+  <text x="250" y="312" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">(DE is also resistor-pulled to idle, so boot/reset</text>
+  <text x="250" y="328" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">is silent even before firmware runs)</text>
+
+  <!-- relay cut path -->
+  <rect x="560" y="250" width="340" height="92" fill="#fffbe8" stroke="#996600" stroke-width="2" rx="6"/>
+  <text x="730" y="276" font-family="sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#996600">2 — Cut common relay-coil feed (Case B)</text>
+  <text x="730" y="296" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">all output relays (Y1/Y2/O-B/G) open regardless</text>
+  <text x="730" y="312" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">of GPIO state — a closed contact has no refresh</text>
+  <text x="730" y="328" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">timer, so "silence = safe" does NOT cover relays</text>
+
+  <!-- outcomes -->
+  <line x1="250" y1="342" x2="250" y2="385" stroke="#226622" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="730" y1="342" x2="730" y2="385" stroke="#996600" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="80" y="385" width="340" height="78" fill="#ffffff" stroke="#226622" stroke-width="1.5" rx="6"/>
+  <text x="250" y="409" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#226622">Bus goes silent → demands age out</text>
+  <text x="250" y="427" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">equipment drops the call via its own logic</text>
+  <text x="250" y="445" font-family="sans-serif" font-size="11" font-weight="bold" text-anchor="middle" fill="#aa3333">⚠ proven per channel at commissioning</text>
+
+  <rect x="560" y="385" width="340" height="78" fill="#ffffff" stroke="#996600" stroke-width="1.5" rx="6"/>
+  <text x="730" y="409" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#996600">24 V calls open → compressor/blower stop</text>
+  <text x="730" y="427" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">recovery re-enters through compressor</text>
+  <text x="730" y="445" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">minimum-off / starts-per-hour timers</text>
+
+  <!-- independent float switch -->
+  <rect x="40" y="487" width="860" height="56" fill="#f0f6ff" stroke="#2255aa" stroke-width="1.5" rx="6"/>
+  <text x="470" y="509" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#2255aa">Independent of all of the above: the condensate FLOAT SWITCH is hardwired in series with the cooling call —</text>
+  <text x="470" y="527" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#2255aa">it breaks cooling with every processor, watchdog, and relay healthy or dead.</text>
+</svg>

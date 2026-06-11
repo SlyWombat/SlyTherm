@@ -1,0 +1,74 @@
+# Schedules and presets
+
+## How scheduling works — an honest explanation
+
+The wall thermostat itself **does not store a weekly schedule**. Scheduling
+lives in **Home Assistant**, the home-automation system the thermostat
+connects to. Home Assistant changes the thermostat's preset (or setpoints)
+at the times you choose, and the thermostat carries them out.
+
+This split is deliberate:
+
+- Home Assistant's scheduler is far more capable than anything that would
+  fit on a wall screen — different weekday/weekend programs, presence-based
+  rules ("switch to Away when both phones leave"), calendar integration, and
+  easy editing from your phone or computer.
+- The thermostat stays simple and dependable: it always knows its current
+  setpoints and keeps controlling temperature even if Home Assistant goes
+  quiet.
+
+**What this means for you:** to set up or change a schedule, you use the
+Home Assistant app or web page — not the wall screen. If you never set up
+Home Assistant, the thermostat simply holds whatever setpoints and mode you
+set by hand, like a classic non-programmable thermostat.
+
+## Presets: Home, Away, Sleep
+
+A preset is a named pair of setpoints. The three presets are:
+
+| Preset | Typical use | Example setpoints (heat / cool) |
+| --- | --- | --- |
+| **Home** | Normal occupied comfort | 21 / 24 °C |
+| **Away** | Nobody in for hours — save energy | 16 / 28 °C |
+| **Sleep** | Overnight | 18 / 26 °C |
+
+The example values are only suggestions — the actual setpoints behind each
+preset are configured in Home Assistant to suit your household.
+
+You can switch presets three ways:
+
+1. **Automatically by schedule** — the usual way: e.g. Sleep at 22:30, Home
+   at 06:30, Away on weekday work hours.
+2. **By tapping the preset row** on the wall screen — handy when the
+   schedule guessed wrong ("we're home early").
+3. **From the phone app** — the preset selector on the thermostat card.
+
+A manual preset or setpoint change simply stays in effect until the next
+scheduled change comes along.
+
+Presets can also influence which room sensors are used — for example, Sleep
+can be configured to follow the bedroom sensors only. See *Remote sensors*.
+
+## A starter schedule
+
+If you are setting up Home Assistant scheduling for the first time, this
+pattern serves most households well:
+
+| Time | Weekdays | Weekends |
+| --- | --- | --- |
+| 06:30 | Home | Home (or 07:30) |
+| 08:30 | Away (if the house empties) | — |
+| 17:00 | Home | — |
+| 22:30 | Sleep | Sleep |
+
+Set it up in Home Assistant with a Scheduler card/automation targeting the
+thermostat's preset. Your installer may have already created one for you.
+
+## If Home Assistant goes down
+
+Nothing dramatic happens. The thermostat keeps its last setpoints and mode
+and continues controlling. If it hears nothing from Home Assistant for more
+than 30 minutes, it falls back to a conservative safety net — heat to
+18 °C, cool above 27 °C, in your last chosen mode — so the home can neither
+freeze nor swelter while the network is out. When Home Assistant returns,
+schedules resume on their own.

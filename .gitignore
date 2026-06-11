@@ -29,3 +29,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# Manual build output (manual/build.py)
+manual/build/

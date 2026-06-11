@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="600" viewBox="0 0 940 600">
+  <rect x="0" y="0" width="940" height="600" fill="#ffffff"/>
+  <text x="470" y="30" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#111111">Case A — Communicating installation (Alizé ODU + K03085 interface board)</text>
+
+  <!-- Wall unit -->
+  <rect x="20" y="60" width="305" height="430" fill="#f4f8ff" stroke="#2255aa" stroke-width="2" rx="8"/>
+  <text x="172" y="84" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#2255aa">DT-1 wall unit (single enclosure)</text>
+
+  <rect x="40" y="100" width="265" height="58" fill="#ffffff" stroke="#444444" stroke-width="1.5" rx="5"/>
+  <text x="172" y="124" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#111111">ESP32-S3 touchscreen controller</text>
+  <text x="172" y="142" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">CT-485 stack · dual-fuel logic · Wi-Fi/MQTT</text>
+
+  <rect x="40" y="172" width="265" height="48" fill="#ffffff" stroke="#444444" stroke-width="1.5" rx="5"/>
+  <text x="172" y="192" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#111111">Isolated AC/DC 24 VAC → 5 V</text>
+  <text x="172" y="208" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">inline fuse 250–500 mA + MOV (R–C)</text>
+
+  <rect x="40" y="234" width="265" height="48" fill="#ffffff" stroke="#444444" stroke-width="1.5" rx="5"/>
+  <text x="172" y="254" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#111111">3.3 V RS-485 transceiver (DE/RE)</text>
+  <text x="172" y="270" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">TVS + series R · DE pulled to idle</text>
+
+  <rect x="40" y="296" width="265" height="48" fill="#fff4f0" stroke="#bb4422" stroke-width="1.5" rx="5"/>
+  <text x="172" y="316" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#bb4422">External hardware watchdog</text>
+  <text x="172" y="332" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#bb4422">timeout → DE forced off (no-demand)</text>
+
+  <rect x="40" y="358" width="265" height="40" fill="#ffffff" stroke="#444444" stroke-width="1.5" rx="5"/>
+  <text x="172" y="383" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#111111">DS18B20 fallback sensor (1-Wire)</text>
+
+  <text x="172" y="430" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">No relay stage in Case A —</text>
+  <text x="172" y="446" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">all demands travel over the CT-485 bus.</text>
+  <text x="172" y="472" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">Wi-Fi → Home Assistant / MQTT (local only)</text>
+
+  <!-- Wall plate -->
+  <line x1="395" y1="60" x2="395" y2="490" stroke="#888888" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="395" y="520" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#555555">wall plate (OEM thermostat location)</text>
+
+  <!-- Terminals -->
+  <circle cx="395" cy="190" r="7" fill="#ffffff" stroke="#222222" stroke-width="1.5"/>
+  <text x="395" y="174" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#111111">R</text>
+  <circle cx="395" cy="230" r="7" fill="#ffffff" stroke="#222222" stroke-width="1.5"/>
+  <text x="395" y="254" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#111111">C</text>
+  <circle cx="395" cy="300" r="7" fill="#ffffff" stroke="#222222" stroke-width="1.5"/>
+  <text x="395" y="284" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#111111">1 (A+)</text>
+  <circle cx="395" cy="340" r="7" fill="#ffffff" stroke="#222222" stroke-width="1.5"/>
+  <text x="395" y="364" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#111111">2 (B−)</text>
+
+  <!-- Wall unit to terminals -->
+  <line x1="305" y1="196" x2="388" y2="190" stroke="#cc7700" stroke-width="2"/>
+  <line x1="305" y1="208" x2="388" y2="230" stroke="#cc7700" stroke-width="2"/>
+  <line x1="305" y1="252" x2="388" y2="300" stroke="#226622" stroke-width="2"/>
+  <line x1="305" y1="264" x2="388" y2="340" stroke="#226622" stroke-width="2"/>
+
+  <!-- Terminals to furnace -->
+  <line x1="402" y1="190" x2="540" y2="190" stroke="#cc7700" stroke-width="2"/>
+  <line x1="402" y1="230" x2="540" y2="230" stroke="#cc7700" stroke-width="2"/>
+  <line x1="402" y1="300" x2="540" y2="300" stroke="#226622" stroke-width="2"/>
+  <line x1="402" y1="340" x2="540" y2="340" stroke="#226622" stroke-width="2"/>
+  <text x="470" y="160" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#cc7700">24 VAC power</text>
+  <text x="470" y="384" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#226622">CT-485 bus, 9600 8N1</text>
+  <text x="470" y="400" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#226622">(existing thermostat cable)</text>
+
+  <!-- Furnace -->
+  <rect x="540" y="70" width="380" height="320" fill="#f7f7f0" stroke="#444444" stroke-width="2" rx="8"/>
+  <text x="730" y="94" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#111111">Dettson Chinook furnace</text>
+
+  <rect x="560" y="110" width="160" height="56" fill="#ffffff" stroke="#cc7700" stroke-width="1.5" rx="5"/>
+  <text x="640" y="133" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#111111">24 VAC transformer</text>
+  <text x="640" y="150" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">(R / C, ~40 VA)</text>
+
+  <rect x="740" y="110" width="160" height="80" fill="#eefbee" stroke="#226622" stroke-width="1.5" rx="5"/>
+  <text x="820" y="132" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#226622">Certified IFC</text>
+  <text x="820" y="150" font-family="sans-serif" font-size="10.5" text-anchor="middle" fill="#226622">gas valve + ALL combustion</text>
+  <text x="820" y="164" font-family="sans-serif" font-size="10.5" text-anchor="middle" fill="#226622">safeties (flame, limit, rollout,</text>
+  <text x="820" y="178" font-family="sans-serif" font-size="10.5" text-anchor="middle" fill="#226622">pressure) — not on the bus</text>
+
+  <rect x="560" y="250" width="340" height="70" fill="#ffffff" stroke="#2255aa" stroke-width="1.5" rx="5"/>
+  <text x="730" y="274" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2255aa">K03085 interface board (CT-485 node)</text>
+  <text x="730" y="292" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">RJ-11 (A00443) to IFC · receives HP / cool demands</text>
+  <text x="730" y="308" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">from the bus</text>
+
+  <!-- bus inside furnace -->
+  <line x1="540" y1="300" x2="560" y2="285" stroke="#226622" stroke-width="2"/>
+  <line x1="540" y1="340" x2="560" y2="300" stroke="#226622" stroke-width="2"/>
+  <line x1="820" y1="190" x2="820" y2="250" stroke="#226622" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="838" y="225" font-family="sans-serif" font-size="10.5" fill="#226622">bus</text>
+
+  <!-- ODU -->
+  <rect x="560" y="430" width="340" height="80" fill="#f0f6ff" stroke="#444444" stroke-width="2" rx="8"/>
+  <text x="730" y="456" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#111111">Dettson Alizé heat pump (outdoor unit)</text>
+  <text x="730" y="476" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">refrigerant-circuit protections internal (equipment-level)</text>
+  <text x="730" y="492" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#555555">commanded only via the interface board</text>
+
+  <line x1="730" y1="320" x2="730" y2="430" stroke="#884499" stroke-width="2"/>
+  <text x="742" y="370" font-family="sans-serif" font-size="11" fill="#884499">COND-1/2/3 + proprietary link</text>
+  <text x="742" y="386" font-family="sans-serif" font-size="11" font-weight="bold" fill="#884499">do not open or modify</text>
+
+  <text x="470" y="570" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#555555">All four conductors (R, C, 1, 2) already exist at the wall plate. No new output hardware is required in Case A.</text>
+</svg>
