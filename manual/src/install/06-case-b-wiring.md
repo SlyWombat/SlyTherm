@@ -43,6 +43,30 @@ Rules (all mandatory):
 > O/B output changes state **only with the compressor proven idle** — never
 > under load.
 
+**Firmware relay sequencing.** The firmware drives these four outputs
+through a dedicated sequencer whose rules the commissioning interlock tests
+(Section 10) verify at the terminals:
+
+1. **O/B changes only with the compressor proven idle** — its own Y output
+   off *and* the compressor minimum-off timer (Section 8.1) served. A
+   demand that needs the opposite valve position drops Y first and waits;
+   when idle, the valve is pre-positioned from the system mode so it flips
+   unloaded ahead of the next call, not in front of one.
+2. **G is forced on with any Y** — the blower runs whenever the compressor
+   is called, regardless of the fan demand. (Blower-*proven* remains a
+   sense-side interlock on the G feedback input, 6.4: no Y without proof.)
+3. **Y2 is only ever energized together with Y1.**
+4. **Successive output transitions are spaced at least 500 ms apart**
+   (`kRelayMinTransitionMs`, Section 8) so contacts never chatter; a
+   deferred change waits at most one spacing window.
+5. **All outputs are off at boot and on any failsafe drop.** The failsafe
+   all-off is immediate — never deferred by the transition spacing — and
+   the watchdog coil-cut path (Section 7) backstops it.
+
+The defrost D-wire sense input is observation only: the outdoor unit owns
+its defrost cycle, and these outputs are not altered by it (defrost
+*tempering* reaches the furnace over the bus, never through these relays).
+
 ## 6.2 Conductor allocation at the wall plate
 
 A single-wall-unit Case B installation must carry, in the existing thermostat

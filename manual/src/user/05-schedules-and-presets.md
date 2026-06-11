@@ -60,6 +60,21 @@ scheduled change comes along — unless you place a timed or indefinite
 Presets can also influence which room sensors are used — for example, Sleep
 can be configured to follow the bedroom sensors only. See *Remote sensors*.
 
+## Smart recovery (pre-heat / pre-cool)
+
+A schedule normally *starts* heating or cooling at the programmed time —
+which means the house only *reaches* the new temperature some time later.
+Smart recovery fixes that: the thermostat quietly learns how fast your
+home warms up and cools down with your equipment, and starts the system
+early so the home is **at** the scheduled temperature **at** the scheduled
+time. Set Home for 06:30, and 06:30 is when it's warm — not when the
+furnace lights.
+
+Smart recovery is **off out of the box**: it needs a connected Home
+Assistant schedule and a little tuning, so your installer enables it once
+the system has been commissioned and has had time to learn. All of the
+usual equipment protections apply to an early start, just like any other.
+
 ## A starter schedule
 
 You don't have to build any of this from scratch: the thermostat ships with
@@ -70,7 +85,10 @@ to Away for exactly that span), a **filter-change reminder** keyed to real
 blower running hours, low/high **temperature and humidity alerts**, and
 **presence-based Away** (everyone's phone leaves → Away; first one home →
 back on schedule). See the *Mobile app* chapter and the Installation
-Manual, Section 9.
+Manual, Section 9. The package also includes optional ready-made
+blueprints that coordinate a standalone humidifier, dehumidifier, or
+HRV/ventilator with the thermostat — ask your installer if you have one
+of these.
 
 If you would rather build your own schedule, this pattern serves most
 households well:

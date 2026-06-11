@@ -40,6 +40,15 @@ flowchart TD
 
 ## 10.3 Bench / boot-state checks
 
+> **Note — bench mode:** the thermostat firmware's **default build is
+> demands-disabled**: it runs the full control loop over MQTT only, with
+> the actuator stubbed to a logger — demands are printed, never
+> transmitted, no bus TX and no relay GPIO is enabled. This lets you
+> exercise sensors, Home Assistant discovery, and the whole control
+> pipeline on the bench with nothing connected. Live demand output
+> requires the deliberate build-time gates described in the firmware
+> source (`src/main_thermostat.cpp`).
+
 **C1 — Boot silence (scope check).**
 1. Connect the scope across the bus A–B at the controller tap.
 2. Power-cycle and hard-reset the controller several times.

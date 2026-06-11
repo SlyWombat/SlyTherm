@@ -34,6 +34,8 @@ constexpr const char* kCmdFanMode        = "dettson/cmd/fan_mode";
 constexpr const char* kCmdPreset         = "dettson/cmd/preset";
 constexpr const char* kCmdHold           = "dettson/cmd/hold";  // hold type or "clear"
 constexpr const char* kCmdEmHeat         = "dettson/cmd/em_heat";  // switch "ON"/"OFF" (G15)
+constexpr const char* kCmdLockClear      = "dettson/cmd/lock_clear";  // forgotten-PIN recovery (issue #45)
+constexpr const char* kCmdNextTarget     = "dettson/cmd/next_target";  // smart recovery (issue #50)
 
 // HA -> ESP32 (remote-sensor contract; see sensorStateTopic() for per-id state)
 constexpr const char* kConfigSensors     = "dettson/config/sensors";  // retained roster
@@ -59,6 +61,7 @@ constexpr const char* kStateCompressorMinOffRemaining =
 constexpr const char* kStateCompressorLockedOut = "dettson/state/compressor_locked_out";
 constexpr const char* kStateEmHeat              = "dettson/state/em_heat";  // "ON"/"OFF"
 constexpr const char* kStateChangeoverReason    = "dettson/state/changeover_reason";
+constexpr const char* kStateLock                = "dettson/state/lock";  // JSON, see lockStateJson()
 constexpr const char* kStateFault               = "dettson/state/fault";
 constexpr const char* kAvailability             = "dettson/availability";  // LWT = offline
 
@@ -102,11 +105,13 @@ constexpr float kClimateTempStepC = 0.5f;
 // ---------- Inbound command enums (exact lowercase wire strings) ----------
 enum class Mode : uint8_t { kOff, kHeat, kCool, kHeatCool };
 enum class FanMode : uint8_t { kAuto, kOn, kCirculate };
-enum class Preset : uint8_t { kHome, kAway, kSleep };
+// NOTE: there is deliberately no fixed Preset enum here. Presets are
+// roster-defined strings (dettson/config/presets); dettson/cmd/preset payloads
+// are passed through to ModeStateMachine::applyPreset(), which validates the
+// name against the configured roster.
 
 const char* toString(Mode m);
 const char* toString(FanMode f);
-const char* toString(Preset p);
 // HoldType wire strings: none / until_next_preset / two_hours / four_hours /
 // indefinite ("none" is state-only — commands clear via "clear").
 const char* toString(HoldType t);
@@ -129,7 +134,6 @@ Parsed<float> parseSetpoint(const char* payloadStr,
 Parsed<float> parseSensorOffset(const char* payloadStr);
 Parsed<Mode> parseMode(const char* payloadStr);
 Parsed<FanMode> parseFanMode(const char* payloadStr);
-Parsed<Preset> parsePreset(const char* payloadStr);
 
 // dettson/cmd/hold: a hold-type wire string starts a hold, "clear" ends one.
 struct HoldCommand {
@@ -145,6 +149,28 @@ Parsed<HoldCommand> parseHoldCommand(const char* payloadStr);
 // disengage it). true = engage -> ModeStateMachine::setEmergencyHeat(true);
 // while engaged the mode state topic keeps reporting "heat".
 Parsed<bool> parseEmHeatCommand(const char* payloadStr);
+
+// ---------- Screen lock (issue #45; docs/06 "Screen lock") ----------
+// Wire mirror of ui::LockState / ui::LockLevel — HaMqtt must not depend on
+// the UiModel lib (same isolation rule as UiModel's deadband duplicate);
+// the src/ glue maps between the two enums.
+enum class LockState : uint8_t { kUnlocked, kUserLocked, kInstallerLocked };
+enum class LockLevel : uint8_t { kSettingsOnly, kSettingsAndSetpoints };
+const char* toString(LockState s);  // unlocked / user_locked / installer_locked
+const char* toString(LockLevel l);  // settings / settings_setpoints
+
+// dettson/cmd/lock_clear: clears the user screen PIN — the documented
+// forgotten-PIN recovery. No PIN is required: anyone who can publish here
+// already has full climate control over MQTT, so HA/broker access = admin
+// (rationale in docs/06). Retained-safe by construction:
+//   - the payload must be EXACTLY kLockClearPayload (never "ON"/"1"), so no
+//     generic retained switch payload can clear the PIN;
+//   - an empty payload is rejected — after handling, the glue publishes a
+//     retained empty message to the topic, which both deletes any retained
+//     copy from the broker and is itself a no-op if replayed;
+//   - the installer code is deliberately NOT clearable over MQTT.
+constexpr const char* kLockClearPayload = "clear_user_pin";
+Parsed<bool> parseLockClearCommand(const char* payloadStr);  // ok => clear
 
 // ---------- Remote-sensor JSON contract (docs/06 "Remote sensors") ----------
 // {"temp": C, "occ": bool|null, "bat": 0-100|null, "hum": %|null}
@@ -169,6 +195,30 @@ struct SensorReading {
 // occ/bat/hum: missing, null, or malformed/out-of-range -> field marked absent.
 // Range gating of temp itself (5-40 C etc.) belongs to SensorFusion.
 bool parseSensorJson(const char* json, SensorReading& out);
+
+// ---------- Smart recovery next-target (docs/06 "Smart recovery") ----------
+// dettson/cmd/next_target: HA publishes the next scheduled preset/setpoint
+// change as JSON {"temp": C, "mode": "heat"|"cool", "in_s": seconds}.
+// Advisory input to RecoveryEstimator only (same isolation rule as UiModel:
+// HaMqtt does not depend on the RecoveryEstimator lib — the src/ glue maps
+// this struct across). A rejected payload, or none at all, simply means no
+// pre-start recommendation; it can never raise demand on its own.
+struct NextTarget {
+  float tempC = 0.0f;
+  Mode mode = Mode::kHeat;  // only kHeat / kCool are valid on this topic
+  uint32_t inS = 0;
+};
+
+// Sanity gate on "in_s": a scheduled change more than a week out is junk.
+constexpr uint32_t kNextTargetMaxInS = 7 * 86400;
+
+// Same tolerance philosophy and scanner limits as parseSensorJson, but all
+// three keys are REQUIRED: temp must be a finite number within the climate
+// limits, mode exactly "heat" or "cool" (heat_cool schedules publish the
+// side they expect to serve), in_s a number in [0, kNextTargetMaxInS]
+// (fraction truncated). Unknown extra keys ignored. Rejection leaves out
+// zeroed — never a half-applied target.
+bool parseNextTargetJson(const char* json, NextTarget& out);
 
 // ---------- Preset roster config (docs/06 "Schedules and presets") ----------
 // Retained JSON at dettson/config/presets:
@@ -216,6 +266,11 @@ std::string climateDiscoveryJson(
 // dettson/state/hold payload: {"type":"two_hours","remaining":7032}
 std::string holdStateJson(HoldType t, uint32_t remainingS);
 
+// dettson/state/lock payload:
+//   {"state":"user_locked","level":"settings","pin_set":true}
+// pin_set = a user PIN exists (tells HA whether lock_clear has anything to do).
+std::string lockStateJson(LockState s, LockLevel l, bool userPinSet);
+
 // Discovery payloads for the diagnostic entities (docs/06 "Entities" table).
 std::string activeEquipmentDiscoveryJson();      // sensor
 std::string modulationDiscoveryJson();           // sensor, %
@@ -227,6 +282,13 @@ std::string compressorMinOffRemainingDiscoveryJson();  // sensor, s, diagnostic
 std::string compressorLockedOutDiscoveryJson();        // binary_sensor, diagnostic
 std::string holdDiscoveryJson();                       // sensor, diagnostic (type + attrs)
 std::string emHeatDiscoveryJson();                     // switch component (G15)
+std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
+std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
+std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wired/ha/none
+// dettson/state/fusion JSON (docs/06 topic map): state = value_json.temp,
+// full payload exposed as attributes (tier, participants, occupied).
+std::string fusionDiscoveryJson();               // sensor, °C, diagnostic, JSON attrs
+std::string changeoverReasonDiscoveryJson();     // sensor, diagnostic
 std::string sensorAgeDiscoveryJson(const std::string& sensorId);            // diagnostic
 std::string sensorParticipatingDiscoveryJson(const std::string& sensorId);  // diagnostic
 // number entity, entity_category config, ±kSensorOffsetMaxC, 0.1 step (G6);

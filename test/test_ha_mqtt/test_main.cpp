@@ -263,21 +263,12 @@ static void test_parse_fan_mode() {
   TEST_ASSERT_FALSE(parseFanMode(nullptr).ok);
 }
 
-static void test_parse_preset() {
-  Parsed<Preset> r = parsePreset("sleep");
-  TEST_ASSERT_TRUE(r.ok);
-  TEST_ASSERT_TRUE(r.value == Preset::kSleep);
-  TEST_ASSERT_TRUE(parsePreset("home").ok);
-  TEST_ASSERT_TRUE(parsePreset("away").ok);
-  TEST_ASSERT_FALSE(parsePreset("vacation").ok);
-  TEST_ASSERT_FALSE(parsePreset("Home").ok);
-  TEST_ASSERT_FALSE(parsePreset(nullptr).ok);
-}
+// Presets have no fixed enum/parser: dettson/cmd/preset strings are validated
+// against the configured roster by ModeStateMachine::applyPreset (see HaMqtt.h).
 
 static void test_enum_round_trip() {
   TEST_ASSERT_TRUE(parseMode(toString(Mode::kHeatCool)).value == Mode::kHeatCool);
   TEST_ASSERT_TRUE(parseFanMode(toString(FanMode::kCirculate)).value == FanMode::kCirculate);
-  TEST_ASSERT_TRUE(parsePreset(toString(Preset::kAway)).value == Preset::kAway);
 }
 
 // ---------- hold command parsing (G4) ----------
@@ -609,6 +600,172 @@ static void test_sensor_json_bad_optional_fields_dropped_not_fatal() {
   TEST_ASSERT_FALSE(r.hasHum);
 }
 
+// ---------- smart recovery next_target (issue #50) ----------
+
+static void test_next_target_topic() {
+  TEST_ASSERT_EQUAL_STRING("dettson/cmd/next_target", topic::kCmdNextTarget);
+}
+
+static void test_parse_next_target_valid_and_tolerant() {
+  NextTarget t;
+  TEST_ASSERT_TRUE(parseNextTargetJson(
+      "{\"temp\":21.0,\"mode\":\"heat\",\"in_s\":5400}", t));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, t.tempC);
+  TEST_ASSERT_TRUE(t.mode == Mode::kHeat);
+  TEST_ASSERT_EQUAL_UINT32(5400, t.inS);
+
+  // Key order, whitespace, unknown extra keys, fractional in_s truncated.
+  TEST_ASSERT_TRUE(parseNextTargetJson(
+      " {\n \"in_s\" : 90.7 , \"src\" : \"scheduler\" ,"
+      " \"mode\" : \"cool\" , \"temp\" : 24.5\n} ", t));
+  TEST_ASSERT_TRUE(t.mode == Mode::kCool);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 24.5f, t.tempC);
+  TEST_ASSERT_EQUAL_UINT32(90, t.inS);
+
+  // Boundaries: climate limits and in_s 0 / one-week cap are inclusive.
+  TEST_ASSERT_TRUE(parseNextTargetJson(
+      "{\"temp\":10,\"mode\":\"heat\",\"in_s\":0}", t));
+  TEST_ASSERT_EQUAL_UINT32(0, t.inS);
+  TEST_ASSERT_TRUE(parseNextTargetJson(
+      "{\"temp\":30,\"mode\":\"cool\",\"in_s\":604800}", t));
+}
+
+static void test_parse_next_target_rejects_junk() {
+  NextTarget t;
+  TEST_ASSERT_FALSE(parseNextTargetJson(nullptr, t));
+  TEST_ASSERT_FALSE(parseNextTargetJson("", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson("not json", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson("{}", t));
+  // All three keys required.
+  TEST_ASSERT_FALSE(parseNextTargetJson("{\"mode\":\"heat\",\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson("{\"temp\":21,\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson("{\"temp\":21,\"mode\":\"heat\"}", t));
+  // Out-of-range / wrong-typed values.
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":9.9,\"mode\":\"heat\",\"in_s\":60}", t));   // below climate min
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":30.1,\"mode\":\"cool\",\"in_s\":60}", t));  // above climate max
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":\"21\",\"mode\":\"heat\",\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":\"heat_cool\",\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":\"HEAT\",\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":null,\"in_s\":60}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":\"heat\",\"in_s\":-1}", t));
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":\"heat\",\"in_s\":604801}", t));  // > 7 days
+  TEST_ASSERT_FALSE(parseNextTargetJson(
+      "{\"temp\":21,\"mode\":\"heat\",\"in_s\":null}", t));
+  // Rejection leaves the output zeroed — never a half-applied target.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, t.tempC);
+  TEST_ASSERT_TRUE(t.mode == Mode::kHeat);
+  TEST_ASSERT_EQUAL_UINT32(0, t.inS);
+}
+
+// ---------- outdoor/fusion/changeover discovery (issue #50 cleanup) ----------
+
+static void test_outdoor_fusion_changeover_discovery_builders() {
+  std::string j = outdoorTempDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_outdoor_temp\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/outdoor_temp\""));
+  TEST_ASSERT_TRUE(has(j, "\"unit_of_measurement\":\"°C\""));
+  TEST_ASSERT_TRUE(has(j, "\"device_class\":\"temperature\""));
+  // Automation input (accessory blueprints), not a diagnostic.
+  TEST_ASSERT_FALSE(has(j, "\"entity_category\""));
+
+  j = outdoorSourceDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_outdoor_source\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/outdoor_source\""));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
+
+  j = fusionDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"value_template\":\"{{ value_json.temp }}\""));
+  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"dettson/state/fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"unit_of_measurement\":\"°C\""));
+  TEST_ASSERT_TRUE(has(j, "\"device_class\":\"temperature\""));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
+
+  j = changeoverReasonDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_changeover_reason\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/changeover_reason\""));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
+
+  // Shared envelope: availability + device block on all four.
+  for (const std::string& d :
+       {outdoorTempDiscoveryJson(), outdoorSourceDiscoveryJson(),
+        fusionDiscoveryJson(), changeoverReasonDiscoveryJson()}) {
+    TEST_ASSERT_TRUE(has(d, "\"availability_topic\":\"dettson/availability\""));
+    TEST_ASSERT_TRUE(has(d, "\"device\":{"));
+  }
+}
+
+// ---------- screen lock (issue #45) ----------
+
+static void test_lock_clear_command_retained_safe() {
+  // Exact magic payload only — the forgotten-PIN recovery must not be
+  // triggerable by generic switch payloads or by the retained-delete
+  // tombstone (empty payload) replayed from the broker.
+  Parsed<bool> r = parseLockClearCommand(kLockClearPayload);
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.value);
+  TEST_ASSERT_EQUAL_STRING("clear_user_pin", kLockClearPayload);
+
+  TEST_ASSERT_FALSE(parseLockClearCommand(nullptr).ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("").ok);        // retained tombstone
+  TEST_ASSERT_FALSE(parseLockClearCommand("ON").ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("1").ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("clear").ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("CLEAR_USER_PIN").ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("clear_user_pin ").ok);
+  TEST_ASSERT_FALSE(parseLockClearCommand("clear_installer_pin").ok);
+}
+
+static void test_lock_state_json_and_strings() {
+  TEST_ASSERT_EQUAL_STRING("unlocked", toString(LockState::kUnlocked));
+  TEST_ASSERT_EQUAL_STRING("user_locked", toString(LockState::kUserLocked));
+  TEST_ASSERT_EQUAL_STRING("installer_locked", toString(LockState::kInstallerLocked));
+  TEST_ASSERT_EQUAL_STRING("settings", toString(LockLevel::kSettingsOnly));
+  TEST_ASSERT_EQUAL_STRING("settings_setpoints",
+                           toString(LockLevel::kSettingsAndSetpoints));
+
+  std::string j =
+      lockStateJson(LockState::kUserLocked, LockLevel::kSettingsOnly, true);
+  assertCoherentJson(j);
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"state\":\"user_locked\",\"level\":\"settings\",\"pin_set\":true}",
+      j.c_str());
+  j = lockStateJson(LockState::kUnlocked, LockLevel::kSettingsAndSetpoints, false);
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"state\":\"unlocked\""));
+  TEST_ASSERT_TRUE(has(j, "\"level\":\"settings_setpoints\""));
+  TEST_ASSERT_TRUE(has(j, "\"pin_set\":false"));
+}
+
+static void test_lock_topics_and_discovery() {
+  TEST_ASSERT_EQUAL_STRING("dettson/cmd/lock_clear", topic::kCmdLockClear);
+  TEST_ASSERT_EQUAL_STRING("dettson/state/lock", topic::kStateLock);
+
+  std::string d = lockDiscoveryJson();
+  assertCoherentJson(d);
+  TEST_ASSERT_TRUE(has(d, "\"state_topic\":\"dettson/state/lock\""));
+  TEST_ASSERT_TRUE(has(d, "{{ value_json.state }}"));
+  TEST_ASSERT_TRUE(has(d, "\"json_attributes_topic\":\"dettson/state/lock\""));
+  TEST_ASSERT_TRUE(has(d, "\"entity_category\":\"diagnostic\""));
+  TEST_ASSERT_TRUE(has(d, "\"unique_id\":\"dettson_lock\""));
+  // Display entity only — clearing goes through the dedicated cmd topic,
+  // never a discovery command_topic (no accidental retained switch).
+  TEST_ASSERT_FALSE(has(d, "command_topic"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_topic_map_matches_docs);
@@ -620,7 +777,6 @@ int main() {
   RUN_TEST(test_parse_setpoint_rejects_invalid);
   RUN_TEST(test_parse_mode);
   RUN_TEST(test_parse_fan_mode);
-  RUN_TEST(test_parse_preset);
   RUN_TEST(test_enum_round_trip);
   RUN_TEST(test_parse_hold_command_accepts_types_and_clear);
   RUN_TEST(test_parse_hold_command_rejects_junk);
@@ -640,5 +796,12 @@ int main() {
   RUN_TEST(test_sensor_json_missing_and_null_fields_tolerated);
   RUN_TEST(test_sensor_json_invalid_temp_rejected);
   RUN_TEST(test_sensor_json_bad_optional_fields_dropped_not_fatal);
+  RUN_TEST(test_next_target_topic);
+  RUN_TEST(test_parse_next_target_valid_and_tolerant);
+  RUN_TEST(test_parse_next_target_rejects_junk);
+  RUN_TEST(test_outdoor_fusion_changeover_discovery_builders);
+  RUN_TEST(test_lock_clear_command_retained_safe);
+  RUN_TEST(test_lock_state_json_and_strings);
+  RUN_TEST(test_lock_topics_and_discovery);
   return UNITY_END();
 }

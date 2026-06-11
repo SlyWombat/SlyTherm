@@ -1,6 +1,6 @@
 # ElectricRV Dual-Fuel Smart Thermostat — Technical Installation Manual
 
-> **DRAFT v0.2 — PRE-RELEASE, NOT FOR FIELD USE**
+> **DRAFT v0.3 — PRE-RELEASE, NOT FOR FIELD USE**
 >
 > This manual describes a design that has not yet completed bench validation or
 > field commissioning. Several behaviors of the installed equipment are still
@@ -13,7 +13,7 @@
 | **Model** | DT-1 (Dettson/Gree edition) |
 | **Manufacturer** | ElectricRV |
 | **Document** | Technical Installation and Integration Manual |
-| **Revision** | 0.2 (see Revision History, final section) |
+| **Revision** | 0.3 (see Revision History, final section) |
 | **Date** | 2026-06-11 |
 
 *Product, model, and manufacturer names are provisional branding and may

@@ -1,0 +1,195 @@
+# Coordinated standalone HRV/ERV/ventilator for the Dettson DT-1 (gap G1
+# step 1, docs/07 §G1). Mirrors Ecobee's ventilator semantics: minimum
+# minutes-per-hour duty, separate occupied/unoccupied rates, and an outdoor
+# lockout (free-cooling-style outdoor temp/RH limits) — driven from a
+# USER-SUPPLIED smart switch or the HRV's own dry-contact/smart control.
+# Automation-level coordination, NOT certified equipment control: the HRV
+# must be safe to be switched off at any moment and keeps its own defrost and
+# core protections.
+#
+# Telemetry consumed (docs/06 entity contract):
+#   sensor.dettson_outdoor_temp   fused outdoor °C (lockout)
+#
+# Behavior: at the top of every hour the duty block runs first (occupied or
+# unoccupied minutes, by the optional presence entity), then the switch goes
+# off for the rest of the hour. Lockout is checked at the start of the run
+# AND aborts a run already in progress (template trigger + the else branch
+# turning the switch off). A presence change mid-hour takes effect at the
+# next hour. After an HA restart mid-run the switch stays on until the next
+# hourly evaluation — size the duty assuming that worst case.
+blueprint:
+  name: "Dettson: HRV / ventilator minutes-per-hour duty"
+  description: >-
+    Runs a user-supplied smart-switched HRV/ERV for a set number of minutes
+    at the top of each hour, with a lower rate when unoccupied (optional
+    presence entity) and a free-cooling-style outdoor lockout: no ventilation
+    when the outdoor temperature is outside the configured band or the
+    optional outdoor RH exceeds its limit. Automation-level coordination,
+    not certified equipment control.
+  domain: automation
+  author: ElectricRV
+  input:
+    hrv_switch:
+      name: HRV switch
+      description: >-
+        The smart switch/plug (or input_boolean bridged to the HRV's control
+        input) that runs the ventilator.
+      selector:
+        entity:
+          domain:
+            - switch
+            - fan
+            - input_boolean
+    occupied_minutes:
+      name: Occupied minutes per hour
+      description: >-
+        Ventilation duty while occupied (Ecobee's default minimum runtime is
+        20 min/h). 0 disables occupied ventilation.
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 5
+          unit_of_measurement: min
+    unoccupied_minutes:
+      name: Unoccupied minutes per hour
+      description: Reduced duty while the presence entity reports nobody home.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 5
+          unit_of_measurement: min
+    presence_entity:
+      name: Presence entity (optional)
+      description: >-
+        Entity whose state "home" or "on" means occupied — zone.home works
+        once person entities have phone trackers (state is the count, but any
+        non-zero zone count shows numerically; prefer a binary_sensor or
+        group of persons), as does any occupancy binary_sensor or
+        input_boolean. Leave empty to always use the occupied rate.
+      default: ""
+      selector:
+        entity: {}
+    outdoor_temp_entity:
+      name: Outdoor temperature sensor
+      default: sensor.dettson_outdoor_temp
+      selector:
+        entity:
+          domain: sensor
+    lockout_low_c:
+      name: Outdoor lockout — low (°C)
+      description: >-
+        No ventilation below this outdoor temperature (HRV-core frost stress,
+        heating penalty). If the outdoor sensor is unavailable, ventilation
+        continues — comfort feature, fail toward fresh air.
+      default: -25
+      selector:
+        number:
+          min: -40
+          max: 10
+          step: 1
+          unit_of_measurement: "°C"
+    lockout_high_c:
+      name: Outdoor lockout — high (°C)
+      description: >-
+        No ventilation above this outdoor temperature (cooling penalty —
+        the inverse of free cooling: do not pull in hot air).
+      default: 30
+      selector:
+        number:
+          min: 15
+          max: 45
+          step: 1
+          unit_of_measurement: "°C"
+    outdoor_rh_entity:
+      name: Outdoor humidity sensor (optional)
+      description: >-
+        Outdoor %RH sensor for the humid-air lockout. The thermostat
+        publishes none — supply your own (or a weather integration sensor).
+        Leave empty to skip the RH lockout.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    outdoor_rh_max:
+      name: Outdoor RH lockout (%)
+      description: >-
+        No ventilation while outdoor RH exceeds this (only enforced when an
+        outdoor humidity sensor is set).
+      default: 85
+      selector:
+        number:
+          min: 50
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+# trigger_variables: !input is unavailable directly inside trigger templates.
+trigger_variables:
+  outdoor_entity_t: !input outdoor_temp_entity
+  lockout_low_t: !input lockout_low_c
+  lockout_high_t: !input lockout_high_c
+  rh_entity_t: !input outdoor_rh_entity
+  rh_max_t: !input outdoor_rh_max
+
+variables:
+  hrv: !input hrv_switch
+  occupied_minutes: !input occupied_minutes
+  unoccupied_minutes: !input unoccupied_minutes
+  presence_entity: !input presence_entity
+  outdoor_entity: !input outdoor_temp_entity
+  lockout_low: !input lockout_low_c
+  lockout_high: !input lockout_high_c
+  rh_entity: !input outdoor_rh_entity
+  rh_max: !input outdoor_rh_max
+
+trigger:
+  # Hourly duty evaluation.
+  - platform: time_pattern
+    minutes: 0
+  # Lockout engaging mid-run: restart-mode re-evaluation lands in the else
+  # branch and turns the ventilator off.
+  - platform: template
+    value_template: >-
+      {% set t = states(outdoor_entity_t) | float(none) %}
+      {{ (t is not none and (t < lockout_low_t or t > lockout_high_t))
+         or (rh_entity_t != ''
+             and states(rh_entity_t) | float(0) > rh_max_t) }}
+
+action:
+  - variables:
+      occupied: >-
+        {{ presence_entity == ''
+           or states(presence_entity) in ['home', 'on'] }}
+      duty_minutes: >-
+        {{ (occupied_minutes if occupied else unoccupied_minutes) | int(0) }}
+      locked_out: >-
+        {% set t = states(outdoor_entity) | float(none) %}
+        {{ (t is not none and (t < lockout_low or t > lockout_high))
+           or (rh_entity != ''
+               and states(rh_entity) | float(0) > rh_max) }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ duty_minutes > 0 and not locked_out }}"
+        sequence:
+          - service: homeassistant.turn_on
+            target:
+              entity_id: !input hrv_switch
+          - delay: "{{ duty_minutes * 60 }}"
+          - service: homeassistant.turn_off
+            target:
+              entity_id: !input hrv_switch
+    # Zero duty or lockout (including a lockout-trigger restart mid-run):
+    # make sure the ventilator is off.
+    default:
+      - service: homeassistant.turn_off
+        target:
+          entity_id: !input hrv_switch
+
+# restart: each hourly trigger restarts the duty block; the lockout trigger
+# interrupts a running delay and falls through to the default-off branch.
+mode: restart

@@ -36,6 +36,7 @@ HA auto-creates one device with the following entities:
 | `binary_sensor.dettson_health` | binary_sensor (problem) | Controller health (Wi-Fi/MQTT/sensor/watchdog) |
 | `sensor.dettson_last_error` | sensor (diagnostic) | Last error string |
 | `sensor.dettson_hold` | sensor (diagnostic) | Active hold type (`none` / `until_next_preset` / `two_hours` / `four_hours` / `indefinite`); remaining seconds as an attribute |
+| `sensor.dettson_lock` | sensor (diagnostic) | Wall-screen lock state (`unlocked` / `user_locked` / `installer_locked`); lock level and whether a PIN is set as attributes (Section 9.8) |
 | `switch.dettson_em_heat` | switch | EM HEAT (gas-only emergency heat): `ON` engages, `OFF` restores the prior mode. Deliberately a switch — not an HVAC mode and not a preset, so a scheduled preset write can never silently disengage it |
 | Per-remote-sensor diagnostics | sensor / binary_sensor | Per-sensor age and fusion participation (diagnostic category) |
 | `number.dettson_sensor_<id>_offset` | number (config) | Per-sensor calibration offset, ±5 °C in 0.1 °C steps — includes the built-in fallback sensor (id `local`) |
@@ -55,6 +56,9 @@ Commands (HA → controller), all under `dettson/cmd/`:
 | `dettson/cmd/hold` | `until_next_preset` / `two_hours` / `four_hours` / `indefinite` / `clear` |
 | `dettson/cmd/em_heat` | `ON` / `OFF` |
 | `dettson/cmd/sensor/<id>/offset` | float °C within ±5 (per-sensor calibration; `local` = built-in fallback sensor) |
+| `dettson/cmd/outdoor_temp` | float °C — HA-weather bridge feeding the outdoor-temperature ladder's third rung (`ha` source); plausibility-gated −50…55 °C; republish at least every 30 min or the rung goes stale (Section 8.8 fail-cold policy applies) |
+| `dettson/cmd/next_target` | JSON `{"temp": 21.0, "mode": "heat", "in_s": 5400}` — the next scheduled setpoint change, for smart recovery (Section 9.7); all three keys required, invalid payloads ignored |
+| `dettson/cmd/lock_clear` | exactly `clear_user_pin` — forgotten-PIN recovery (Section 9.8); any other payload, including empty, is ignored |
 
 State (controller → HA), all under `dettson/state/` and echoing the
 **post-validation** values: `current_temp`, `setpoint`, `target_temp_low`,
@@ -64,7 +68,7 @@ remaining seconds), `em_heat`, `action`
 `modulation`, `outdoor_temp`, `outdoor_source`, `fusion`,
 `compressor_min_off_remaining`, `compressor_locked_out`,
 `sensor/<id>/offset`, `changeover_reason`, `fault`, `blower`, `health`,
-`last_error`.
+`last_error`, `lock` (JSON: state, level, whether a PIN is set).
 
 **Important contract points:**
 
@@ -138,3 +142,44 @@ their 915 MHz protocol is proprietary and unreceivable by this hardware.
   (and on the touchscreen and status indication).
 - As a diagnostic fallback, the controller serves a local web page usable
   when HA or the broker is down. It is a fallback, not a primary UI.
+
+## 9.7 Smart recovery — the `next_target` contract
+
+Smart recovery (pre-heat/pre-cool, Section 8.11) needs to know the *next*
+scheduled setpoint before it arrives. Because HA owns the schedule
+(Section 9.5), HA supplies that look-ahead:
+
+- **Publish the next scheduled target** to `dettson/cmd/next_target` as
+  JSON `{"temp": 21.0, "mode": "heat", "in_s": 5400}` — the upcoming
+  setpoint, which side it serves (`heat` / `cool`), and the seconds until
+  it takes effect. Republish whenever the schedule or the remaining time
+  changes (piggyback on the sensor-bridge heartbeat, Section 9.4).
+- **The parse is tolerant:** all three keys are required (`in_s` capped at
+  7 days); an invalid payload is ignored, and publishing nothing simply
+  means no pre-start. HA stays optional, as always.
+- **Advisory only:** the recovery estimator recommends an early start; the
+  control logic decides, and the compressor timers, dual-fuel arbitration,
+  and every other protection still gate the resulting demand. A bogus
+  `next_target` can at worst start a normal, fully protected call early —
+  it can never bypass a lockout or timer.
+
+## 9.8 Screen lock and forgotten-PIN recovery
+
+The wall screen's PIN lock (user-facing description in the User Manual;
+parameters in Section 8.10) surfaces in HA two ways:
+
+- **Visibility:** `dettson/state/lock` → `sensor.dettson_lock`
+  (diagnostic) carries the lock state, lock level, and whether a PIN is
+  set, so a locked-out (or installer-locked) thermostat is diagnosable
+  remotely.
+- **Forgotten-PIN recovery:** publish exactly `clear_user_pin` to
+  `dettson/cmd/lock_clear`. The user PIN is cleared and a user lock
+  released — **no PIN required**. Rationale: anyone who can publish to the
+  broker already has full climate control (every setpoint, mode, and EM
+  HEAT), so **HA/broker access is admin by definition** — a PIN gate on
+  this topic would add no security, only a second thing to forget. The
+  lock is tamper resistance, never a safety layer.
+- **The installer code is *not* clearable over MQTT.** Recovery from a
+  lost installer code is physical (USB reflash / NVS wipe at the wall). An
+  NVS wipe fails *open* — lock disabled, no PINs — so a wipe can never
+  brick the wall UI.

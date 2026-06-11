@@ -89,6 +89,35 @@ Timed and indefinite holds are chosen from the hold control on the wall
 screen or in Home Assistant, and the remaining time is shown while a timed
 hold is counting down.
 
+## Locking the thermostat
+
+If curious fingers (children, guests, short-term renters) keep changing
+your settings, you can lock the wall screen with a **4-digit PIN**. Set the
+PIN from the settings screen, then choose how much to lock:
+
+- **Settings only** (the standard level) — modes, settings, and alert
+  acknowledgement are locked, but anyone can still nudge the temperature
+  up or down.
+- **Settings and temperatures** — setpoint and preset changes are locked
+  too. The screen becomes look-but-don't-touch.
+
+**You never lose sight of anything.** Locking only blocks *changes*: the
+current temperature, what the system is doing, and **every alert stay
+visible at all times, at every lock level** — an alarm is never hidden
+behind the lock.
+
+Unlock by entering your PIN. After about **2 minutes** without a touch,
+the screen locks itself again, so you don't have to remember to re-lock.
+If the wrong PIN is entered too many times in a row, the screen refuses
+new attempts for a minute before you can try again.
+
+**Forgot the PIN?** No buttons to hold, nothing to take off the wall:
+the PIN is cleared **from Home Assistant** (anyone with access to your
+Home Assistant already has full control of the thermostat, so it can
+safely act as the spare key). Ask whoever manages your Home Assistant —
+or your installer, who can also set a separate installer code that
+always unlocks the screen.
+
 ## Why the thermostat sometimes waits
 
 You will occasionally change a setting and hear… nothing. A short wait is

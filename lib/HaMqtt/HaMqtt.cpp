@@ -59,13 +59,21 @@ const char* toString(FanMode f) {
   return "auto";
 }
 
-const char* toString(Preset p) {
-  switch (p) {
-    case Preset::kHome: return "home";
-    case Preset::kAway: return "away";
-    case Preset::kSleep: return "sleep";
+const char* toString(LockState s) {
+  switch (s) {
+    case LockState::kUnlocked: return "unlocked";
+    case LockState::kUserLocked: return "user_locked";
+    case LockState::kInstallerLocked: return "installer_locked";
   }
-  return "home";
+  return "unlocked";
+}
+
+const char* toString(LockLevel l) {
+  switch (l) {
+    case LockLevel::kSettingsOnly: return "settings";
+    case LockLevel::kSettingsAndSetpoints: return "settings_setpoints";
+  }
+  return "settings";
 }
 
 const char* toString(HoldType t) {
@@ -119,15 +127,6 @@ Parsed<FanMode> parseFanMode(const char* payloadStr) {
   return r;
 }
 
-Parsed<Preset> parsePreset(const char* payloadStr) {
-  Parsed<Preset> r;
-  if (payloadStr == nullptr) return r;
-  if (std::strcmp(payloadStr, "home") == 0) { r.ok = true; r.value = Preset::kHome; }
-  else if (std::strcmp(payloadStr, "away") == 0) { r.ok = true; r.value = Preset::kAway; }
-  else if (std::strcmp(payloadStr, "sleep") == 0) { r.ok = true; r.value = Preset::kSleep; }
-  return r;
-}
-
 Parsed<HoldCommand> parseHoldCommand(const char* payloadStr) {
   Parsed<HoldCommand> r;
   if (payloadStr == nullptr) return r;
@@ -156,6 +155,18 @@ Parsed<bool> parseEmHeatCommand(const char* payloadStr) {
   if (payloadStr == nullptr) return r;
   if (std::strcmp(payloadStr, payload::kOn) == 0) { r.ok = true; r.value = true; }
   else if (std::strcmp(payloadStr, payload::kOff) == 0) { r.ok = true; r.value = false; }
+  return r;
+}
+
+Parsed<bool> parseLockClearCommand(const char* payloadStr) {
+  // Exact-match only (see header: retained-safe contract). Empty payload is
+  // the glue's own retained-delete tombstone — must parse as "not a command".
+  Parsed<bool> r;
+  if (payloadStr == nullptr) return r;
+  if (std::strcmp(payloadStr, kLockClearPayload) == 0) {
+    r.ok = true;
+    r.value = true;
+  }
   return r;
 }
 
@@ -272,6 +283,38 @@ bool parseSensorJson(const char* json, SensorReading& out) {
     out.humidityPct = v;
   }
   return out.hasTemp;  // a reading without a valid temp is unusable
+}
+
+bool parseNextTargetJson(const char* json, NextTarget& out) {
+  out = NextTarget{};
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+
+  float temp = 0.0f;
+  const char* t = findValue(json, "temp");
+  if (t == nullptr || !numberToken(t, temp) || temp < kClimateMinTempC ||
+      temp > kClimateMaxTempC) {
+    return false;
+  }
+  const char* m = findValue(json, "mode");
+  std::string modeStr;
+  if (m == nullptr || !stringToken(m, modeStr)) return false;
+  Mode mode;
+  if (modeStr == "heat") mode = Mode::kHeat;
+  else if (modeStr == "cool") mode = Mode::kCool;
+  else return false;
+
+  float inS = 0.0f;
+  const char* i = findValue(json, "in_s");
+  if (i == nullptr || !numberToken(i, inS) || inS < 0.0f ||
+      inS > static_cast<float>(kNextTargetMaxInS)) {
+    return false;
+  }
+
+  out.tempC = temp;  // assign only after every gate passed
+  out.mode = mode;
+  out.inS = static_cast<uint32_t>(inS);
+  return true;
 }
 
 bool parsePresetRosterJson(const char* json, std::vector<PresetEntry>& out) {
@@ -641,6 +684,67 @@ std::string emHeatDiscoveryJson() {
 
 std::string holdStateJson(HoldType t, uint32_t remainingS) {
   return Obj().str("type", toString(t)).num("remaining", remainingS).close();
+}
+
+std::string lockStateJson(LockState s, LockLevel l, bool userPinSet) {
+  return Obj()
+      .str("state", toString(s))
+      .str("level", toString(l))
+      .raw("pin_set", userPinSet ? "true" : "false")
+      .close();
+}
+
+std::string lockDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Screen Lock";
+  e.uniqueId = "dettson_lock";
+  e.stateTopic = topic::kStateLock;
+  e.valueTemplate = "{{ value_json.state }}";
+  e.jsonAttributesTopic = topic::kStateLock;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string outdoorTempDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Outdoor Temperature";
+  e.uniqueId = "dettson_outdoor_temp";
+  e.stateTopic = topic::kStateOutdoorTemp;
+  e.unit = "°C";
+  e.deviceClass = "temperature";
+  // Not diagnostic: the accessory blueprints automate on it (docs/06).
+  return entityDiscoveryJson(e);
+}
+
+std::string outdoorSourceDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Outdoor Source";
+  e.uniqueId = "dettson_outdoor_source";
+  e.stateTopic = topic::kStateOutdoorSource;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string fusionDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Fusion";
+  e.uniqueId = "dettson_fusion";
+  e.stateTopic = topic::kStateFusion;
+  e.unit = "°C";
+  e.deviceClass = "temperature";
+  e.valueTemplate = "{{ value_json.temp }}";
+  e.jsonAttributesTopic = topic::kStateFusion;
+  e.diagnostic = true;  // the climate entity already carries current_temp
+  return entityDiscoveryJson(e);
+}
+
+std::string changeoverReasonDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Changeover Reason";
+  e.uniqueId = "dettson_changeover_reason";
+  e.stateTopic = topic::kStateChangeoverReason;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
 }
 
 std::string sensorAgeDiscoveryJson(const std::string& sensorId) {

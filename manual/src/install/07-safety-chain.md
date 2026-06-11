@@ -88,7 +88,51 @@ minimum-off timer like any other start.
 - **Bus discipline:** transmit only when polled, checksum everything, go
   passive if clean communications cannot be maintained.
 
-## 7.4 The external hardware watchdog
+## 7.4 The firmware safety supervisor
+
+The enforcement points in 7.3 are coordinated by a dedicated **safety
+supervisor** in the firmware: every control cycle it is fed a set of health
+facts (sensor validity, control-loop liveness, demand-state sanity, bus and
+MQTT liveness, setpoint freshness) and decides three things — whether the
+external watchdog gets petted, whether demands are permitted at all, and
+which alarms are raised.
+
+**Watchdog petting is invariant-gated, and the invariants are not all
+equal:**
+
+- **Mandatory invariants** — a valid indoor temperature, a ticking control
+  loop, and a sane demand state (emitted demands match commanded, no
+  conflicting calls). If **any** of these is false, the supervisor **stops
+  petting** the external watchdog, which then forces no-demand in hardware
+  (Section 7.5).
+- **Advisory invariants** — MQTT/Home Assistant connectivity and setpoint
+  freshness. Loss raises an **alarm only**; petting continues. This is
+  deliberate and binding: **loss of HA or the broker must never cause a
+  no-heat event** (stale setpoints fall back to the bounded local profile,
+  Section 8.9) — HA is a comfort layer, never a safety layer.
+- **Bus silence (comms-loss deadman)** is the special case: if the CT-485
+  bus goes continuously silent past the deadman window (default 30 s,
+  Section 5), the supervisor **drops all demands and raises a critical
+  alarm but keeps petting**. Resetting the chip would not revive the bus —
+  and the controller's own silence already drops the calls equipment-side
+  (7.2); a watchdog starvation here would only reset-loop the processor.
+
+**Boot gate.** Every boot starts with demands hard-blocked: the supervisor
+holds a **boot gate** closed until the indoor sensor validates, setpoints
+are present, and the configuration CRC checks out. While the gate is closed
+the sensor-invalid rule above is suspended (otherwise the chip could never
+survive its own sensor bring-up); once the gate opens — once, latched — a
+later sensor loss stops the petting per the table above. If the gate is
+still closed after the boot grace period (default 120 s), a boot-grace
+alarm is raised. This implements the 7.3 boot-validation rule.
+
+The supervisor also owns the **reset-loop accounting** (7.3) and the alarm
+registry behind the health entity and last-error diagnostics in Section 9.
+Recovery from *any* supervisor-driven demand drop still passes through the
+compressor minimum-off timer — nothing in the supervisor bypasses the
+compressor protections.
+
+## 7.5 The external hardware watchdog
 
 An independent supervisor (TPL5010 / MAX6369 class) that the controller's
 safety task must pet periodically. The safety task pets it **only when its
@@ -112,7 +156,7 @@ convenience layer, not the safety layer. The layered set is: internal task
 watchdog (hung task) → external hardware watchdog (dead chip) → equipment
 comms-loss timeout (catch-all).
 
-## 7.5 UI failure is a comfort outage, not a safety event
+## 7.6 UI failure is a comfort outage, not a safety event
 
 The touchscreen UI runs isolated from the protocol/safety tasks. A UI crash
 leaves the safety task, the demand-refresh discipline, and the watchdog

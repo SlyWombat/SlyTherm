@@ -22,6 +22,12 @@ constexpr uint32_t kInterFrameGapUs    = 3500;    // >3.5 ms idle = frame bounda
 constexpr uint32_t kInterPacketDelayUs = 100000;  // 100 ms idle required before TX
 constexpr uint32_t kDePrePostUs        = 300;     // DE pre/post-drive hold (200-500 allowed)
 
+// ---------- Network timing (docs/02 §6, Net485-derived) ----------
+constexpr uint32_t kAnetSlotLoMs      = 6000;   // AutoNet Node-Discovery reply slot window:
+constexpr uint32_t kAnetSlotHiMs      = 30000;  //  random 6-30 s (ANET_SLOTLO/ANET_SLOTHI)
+constexpr uint32_t kResponseTimeoutMs = 3000;   // per-exchange RESPONSE_TIMEOUT
+constexpr uint8_t  kMsgResendAttempts = 3;      // MSG_RESEND_ATTEMPTS (total transmissions)
+
 // ---------- Frame geometry (docs/02 §2) ----------
 constexpr size_t kHeaderLen   = 10;
 constexpr size_t kMaxPayload  = 240;

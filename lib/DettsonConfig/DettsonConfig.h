@@ -22,6 +22,16 @@ constexpr uint32_t kBootCompressorHoldoffS  = 300;   // + 0-60 s jitter; if pers
 constexpr uint8_t  kResetLoopLockoutCount   = 3;     // >=3 watchdog/brownout resets...
 constexpr uint32_t kResetLoopWindowS        = 1800;  // ...in 30 min -> latched NO-DEMAND, manual clear
 
+// ---------- Safety supervision (SafetySupervisor) ----------
+constexpr uint32_t kBusDeadmanS             = 30;    // range 10-120; continuous CT-485 silence -> demand-drop
+                                                     //  request + critical alarm (docs/04 §3 comms-loss deadman);
+                                                     //  petting continues — a reboot cannot revive a dead bus,
+                                                     //  and our silence already drops calls equipment-side
+constexpr uint32_t kBootValidationGraceS    = 120;   // range 60-600; boot gate (sensor OK + setpoint present +
+                                                     //  config CRC ok, docs/04 §3) still closed after this ->
+                                                     //  alarm (loss of heat is itself a hazard, docs/04 §4);
+                                                     //  the gate stays closed — the alarm is for visibility
+
 // ---------- Setpoints, deadband, changeover (ModeStateMachine) ----------
 constexpr float    kCallHysteresisC         = 0.55f; // ~1 degF; Ecobee's 0.5 degF default short-cycles
 constexpr float    kMinSetpointDeltaC       = 2.8f;  // auto-mode heat/cool deadband default (5 degF)
@@ -71,6 +81,25 @@ constexpr float    kHpSlewPctPerMin         = 10.0f;
 constexpr float    kHpStepPct               = 5.0f;
 constexpr float    kHpFloorPct              = 30.0f;  // verify against installed model
 
+// ---------- Relay sequencing (RelaySequencer; Case B, docs/03 §7) ----------
+constexpr uint32_t kRelayMinTransitionMs    = 500;   // min spacing between relay output transitions
+                                                     //  (contact-chatter guard; goSilent/watchdog never spaced)
+// Gree reversing-valve convention: B = ENERGIZED IN HEATING — opposite the
+// common O=cool default; a wrong guess inverts heat/cool. Verify polarity on
+// the installed equipment before field use (docs/04 §6 checklist).
+constexpr bool     kObEnergizedIsHeat       = true;
+
+// ---------- CT-485 demand TX (Ct485Thermostat) ----------
+// Refresh-timer byte written into every demand frame: high nibble = minutes,
+// low nibble = 3.75 s units (docs/02 §5a). 0x10 = 60 s. The equipment reverts
+// the channel to off if the demand is not re-sent inside this window — the
+// protocol's own per-channel deadman (docs/04 §3 refresh discipline).
+constexpr uint8_t  kDemandRefreshTimerByte  = 0x10;
+// Re-emit each active demand within this fraction of its refresh window
+// (range 0.1-0.9). A full window elapsing with no successful re-send (token
+// starved) raises the starvation alarm AND goes silent — never a retry storm.
+constexpr float    kDemandRefreshFraction   = 0.5f;
+
 // ---------- Sensor fusion (SensorFusion) ----------
 constexpr uint32_t kSensorMaxAgeS           = 300;    // per-sensor staleness, configurable 180-900
 constexpr uint32_t kSensorHeartbeatS        = 60;     // HA bridge republish heartbeat
@@ -92,6 +121,32 @@ constexpr uint32_t kOatStaleS               = 1800;   // 30 min -> next rung (bu
 constexpr float    kOatRungDisagreeAlarmC   = 5.0f;
 // All rungs stale -> fail cold: gas allowed, compressor locked out;
 // cooling locked out per the indoor-18 C policy.
+
+// ---------- UI screen lock (UiModel; issue #45) ----------
+// The lock blocks change intents only — it NEVER hides alarms, current temp,
+// or status (docs/04 §1c: UI is a comfort layer; visibility is part of the
+// alarming requirement in docs/04 §3).
+constexpr uint32_t kUiAutoRelockS           = 120;   // range 30-600; inactivity -> relock (also expires installer access)
+constexpr uint8_t  kUiPinMaxAttempts        = 5;     // range 3-10; failed PIN entries before backoff
+constexpr uint32_t kUiPinBackoffS           = 60;    // range 30-600; PIN entry blocked after attempts exhausted
+
+// ---------- Smart recovery (RecoveryEstimator; issue #50) ----------
+// ADVISORY ONLY: the estimator recommends an early start for a scheduled
+// setpoint change; ModeStateMachine/main glue decides whether to act, and
+// CompressorGuard/DualFuelArbiter still gate every demand. Disabled by
+// default until field-tuned (docs/06 "Smart recovery").
+constexpr bool     kRecoveryEnabledDefault    = false;
+constexpr float    kRecoverySeedHeatCPerH     = 1.0f;  // ramp-rate seeds used per {mode, equipment}
+constexpr float    kRecoverySeedCoolCPerH     = 0.8f;  //  channel until that channel has learned
+constexpr uint32_t kRecoveryMaxLookaheadS     = 7200;  // hard cap on any early-start recommendation
+constexpr uint32_t kRecoveryMinSegmentS       = 900;   // learning gates: run segments shorter than
+constexpr float    kRecoveryMinSegmentDeltaC  = 0.2f;  //  15 min or moving < 0.2 C are ignored
+constexpr float    kRecoveryEmaAlpha          = 0.3f;  // per-segment-rate EMA weight
+constexpr float    kRecoveryRateMinCPerH      = 0.1f;  // absolute plausibility band on a segment
+constexpr float    kRecoveryRateMaxCPerH      = 10.0f; //  rate; outside -> segment rejected
+constexpr float    kRecoveryOutlierRatio      = 3.0f;  // after kRecoveryOutlierMinSamples accepted
+constexpr uint8_t  kRecoveryOutlierMinSamples = 3;     //  segments, reject rates > ratio off the
+                                                       //  estimate (robust EMA, docs/05 table)
 
 // ---------- Fallback / degraded modes ----------
 constexpr float    kFallbackHeatSetpointC   = 18.0f;  // MQTT stale >30 min: dual-bounded, last user mode,

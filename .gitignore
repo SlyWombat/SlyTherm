@@ -1,5 +1,6 @@
 # Secrets — NEVER COMMIT
 .env
+src/thermostat_secrets.h
 
 # PlatformIO
 .pio/

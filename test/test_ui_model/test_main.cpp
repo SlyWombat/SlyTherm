@@ -268,6 +268,320 @@ static void test_runtime_min_delta_floor_clamped() {
                            m.state().coolSetpointC - m.state().heatSetpointC);
 }
 
+// ---------- screen lock (issue #45) ----------
+
+static const uint8_t kUserPin[kPinLen] = {1, 2, 3, 4};
+static const uint8_t kInstPin[kPinLen] = {9, 8, 7, 6};
+static const uint8_t kWrongPin[kPinLen] = {0, 0, 0, 0};
+
+static UiModel lockedModel(LockLevel level = LockLevel::kSettingsOnly) {
+  UiModel m;
+  m.setUserPin(kUserPin, 0xAABBCCDDu);
+  m.setInstallerPin(kInstPin, 0x11223344u);
+  m.setLockLevel(level);
+  m.lockNow(1000);
+  m.clearDirty();
+  return m;
+}
+
+static PinResult enterPin(UiModel& m, const uint8_t* pin, uint32_t nowS,
+                          PinContext ctx = PinContext::kUnlock) {
+  m.beginPinEntry(ctx, nowS);
+  PinResult r = PinResult::kIdle;
+  for (size_t i = 0; i < kPinLen; ++i) r = m.enterPinDigit(pin[i], nowS);
+  return r;
+}
+
+static void drain(UiModel& m) {
+  UiIntent d;
+  while (m.popIntent(d)) {}
+}
+
+static void test_lock_disabled_without_pin() {
+  UiModel m;
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_FALSE(m.lockNow(100));                  // no user PIN -> no lock
+  TEST_ASSERT_FALSE(m.setInstallerLockout(true, 100));  // no installer code
+  m.tick(100 + kUiAutoRelockS + 1);                   // relock with no PIN: no-op
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+}
+
+static void test_settings_only_lock_blocks_settings_not_setpoints() {
+  UiModel m = lockedModel(LockLevel::kSettingsOnly);
+  drain(m);
+
+  m.setMode(UserMode::kHeat);  // settings class: blocked
+  TEST_ASSERT_EQUAL(static_cast<int>(UserMode::kOff),
+                    static_cast<int>(m.state().mode));  // no local echo either
+  m.ackAlarms();               // ack class: blocked (visibility stays exempt)
+  TEST_ASSERT_EQUAL_UINT32(2, m.lockBlockedCommandCount());
+  TEST_ASSERT_TRUE((m.dirty() & kDirtyLock) != 0);
+  UiIntent intent;
+  TEST_ASSERT_FALSE(m.popIntent(intent));
+
+  m.adjustSetpoint(SetpointSide::kHeat, +0.5f);  // setpoint class: allowed
+  m.setPreset(Preset::kAway);                    // preset = setpoint class
+  TEST_ASSERT_TRUE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kSetSetpoints),
+                    static_cast<int>(intent.type));
+  TEST_ASSERT_TRUE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kSetPreset),
+                    static_cast<int>(intent.type));
+}
+
+static void test_settings_and_setpoints_lock_blocks_all_change_intents() {
+  UiModel m = lockedModel(LockLevel::kSettingsAndSetpoints);
+  drain(m);
+  m.adjustSetpoint(SetpointSide::kHeat, +0.5f);
+  m.setPreset(Preset::kAway);
+  m.setMode(UserMode::kCool);
+  m.ackAlarms();
+  TEST_ASSERT_EQUAL_UINT32(4, m.lockBlockedCommandCount());
+  UiIntent intent;
+  TEST_ASSERT_FALSE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL_FLOAT(kFallbackHeatSetpointC, m.state().heatSetpointC);
+}
+
+static void test_lock_never_hides_alarms_temp_or_status() {
+  // SAFETY RULE (docs/04 §1c + issue #45): even the strongest lock only
+  // blocks change intents — render-side state keeps flowing and dirtying.
+  UiModel m = lockedModel(LockLevel::kSettingsAndSetpoints);
+  m.setInstallerLockout(true, 1000);
+  m.clearDirty();
+
+  m.pushAlarm("HP fault E1", 0xE1);
+  m.setFusedTemp(21.2f, true);
+  m.setHvacAction(HvacAction::kHeating);
+  TEST_ASSERT_EQUAL_UINT8(1, m.state().alarmCount);
+  TEST_ASSERT_EQUAL_STRING("HP fault E1", m.state().alarms[0].text);
+  TEST_ASSERT_EQUAL_FLOAT(21.2f, m.state().fusedTempC);
+  TEST_ASSERT_EQUAL(static_cast<int>(HvacAction::kHeating),
+                    static_cast<int>(m.state().action));
+  TEST_ASSERT_TRUE((m.dirty() & kDirtyAlarms) != 0);
+  TEST_ASSERT_TRUE((m.dirty() & kDirtyTemp) != 0);
+  TEST_ASSERT_TRUE((m.dirty() & kDirtyAction) != 0);
+
+  drain(m);
+  m.ackAlarms();  // ...but acknowledgement stays locked
+  UiIntent intent;
+  TEST_ASSERT_FALSE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL_UINT8(1, m.state().alarmCount);
+}
+
+static void test_ack_alarms_enqueues_intent_when_unlocked() {
+  UiModel m = freshModel();
+  m.pushAlarm("x", 1);
+  m.ackAlarms();
+  UiIntent intent;
+  TEST_ASSERT_TRUE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kAckAlarms),
+                    static_cast<int>(intent.type));
+}
+
+static void test_pin_unlock_roundtrip() {
+  UiModel m = lockedModel();
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(m, kUserPin, 2000)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_EQUAL_UINT8(0, m.pinDigitsEntered());  // digits wiped
+  drain(m);
+  m.setMode(UserMode::kHeat);  // settings work again
+  UiIntent intent;
+  TEST_ASSERT_TRUE(m.popIntent(intent));
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kSetMode),
+                    static_cast<int>(intent.type));
+}
+
+static void test_wrong_pin_attempts_then_backoff() {
+  UiModel m = lockedModel();
+  const uint32_t t = 5000;
+  for (uint8_t i = 0; i < kUiPinMaxAttempts - 1; ++i) {
+    TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kRejected),
+                      static_cast<int>(enterPin(m, kWrongPin, t)));
+  }
+  TEST_ASSERT_EQUAL_UINT8(1, m.attemptsRemaining());
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kBackoff),
+                    static_cast<int>(enterPin(m, kWrongPin, t)));
+  TEST_ASSERT_EQUAL_UINT32(kUiPinBackoffS, m.backoffRemainS(t));
+
+  // Even the CORRECT PIN is refused during backoff.
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kBackoff),
+                    static_cast<int>(enterPin(m, kUserPin, t + 1)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUserLocked),
+                    static_cast<int>(m.lockState()));
+
+  m.tick(t + kUiPinBackoffS);  // backoff expires -> attempts reset
+  TEST_ASSERT_EQUAL_UINT32(0, m.backoffRemainS(t + kUiPinBackoffS));
+  TEST_ASSERT_EQUAL_UINT8(kUiPinMaxAttempts, m.attemptsRemaining());
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(m, kUserPin, t + kUiPinBackoffS)));
+}
+
+static void test_auto_relock_after_inactivity() {
+  UiModel m = lockedModel();
+  enterPin(m, kUserPin, 2000);
+  m.clearDirty();
+
+  m.tick(2000 + kUiAutoRelockS - 1);  // not yet
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+
+  m.touchActivity(2000 + kUiAutoRelockS - 1);  // interaction defers relock
+  m.tick(2000 + kUiAutoRelockS);
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+
+  m.tick(2000 + kUiAutoRelockS - 1 + kUiAutoRelockS);
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUserLocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_TRUE((m.dirty() & kDirtyLock) != 0);
+}
+
+static void test_installer_lockout_only_installer_code_unlocks() {
+  UiModel m = lockedModel();
+  TEST_ASSERT_TRUE(m.setInstallerLockout(true, 1000));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kInstallerLocked),
+                    static_cast<int>(m.lockState()));
+
+  // The user PIN is NOT accepted while installer-locked.
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kRejected),
+                    static_cast<int>(enterPin(m, kUserPin, 2000)));
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(m, kInstPin, 2001)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+
+  // Lockout persists: auto-relock returns to INSTALLER lock, not user lock.
+  m.tick(2001 + kUiAutoRelockS);
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kInstallerLocked),
+                    static_cast<int>(m.lockState()));
+
+  TEST_ASSERT_TRUE(m.setInstallerLockout(false, 3000));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  m.tick(3000 + kUiAutoRelockS);  // back to the ordinary user lock
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUserLocked),
+                    static_cast<int>(m.lockState()));
+}
+
+static void test_installer_settings_gate_and_code_independence() {
+  UiModel m;
+  m.setUserPin(kUserPin, 1);
+  m.setInstallerPin(kInstPin, 2);
+  TEST_ASSERT_FALSE(m.installerAccess());
+
+  // The user PIN never opens installer pages.
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kRejected),
+                    static_cast<int>(enterPin(m, kUserPin, 100,
+                                              PinContext::kInstallerSettings)));
+  TEST_ASSERT_FALSE(m.installerAccess());
+
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(m, kInstPin, 200,
+                                              PinContext::kInstallerSettings)));
+  TEST_ASSERT_TRUE(m.installerAccess());
+
+  m.tick(200 + kUiAutoRelockS);  // access expires with the relock clock
+  TEST_ASSERT_FALSE(m.installerAccess());
+}
+
+static void test_installer_code_is_master_key_for_user_lock() {
+  UiModel m = lockedModel();
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(m, kInstPin, 2000)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_FALSE(m.installerAccess());  // unlock != installer pages access
+}
+
+static void test_clear_user_pin_recovery_path() {
+  // The HA lock_clear path: no PIN required (HA access = admin, docs/06).
+  UiModel m = lockedModel();
+  m.clearUserPin();
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_FALSE(m.userPinSet());
+  TEST_ASSERT_FALSE(m.lockNow(100));            // lock disabled until a new PIN
+  m.tick(100 + kUiAutoRelockS + 1);             // and no auto-relock either
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(m.lockState()));
+  TEST_ASSERT_TRUE(m.installerPinSet());        // installer code untouched
+
+  // Clearing the user PIN must NOT release an installer lockout.
+  UiModel m2 = lockedModel();
+  m2.setInstallerLockout(true, 1000);
+  m2.clearUserPin();
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kInstallerLocked),
+                    static_cast<int>(m2.lockState()));
+}
+
+static void test_lock_blob_roundtrip_hashes_survive() {
+  UiModel a;
+  a.setUserPin(kUserPin, 0xDEADBEEFu);
+  a.setInstallerPin(kInstPin, 0x600DCAFEu);
+  a.setLockLevel(LockLevel::kSettingsAndSetpoints);
+  UiModel::LockPersistBlob blob;
+  a.saveLock(&blob);
+
+  UiModel b;
+  TEST_ASSERT_TRUE(b.restoreLock(&blob, 5000));
+  // Boot = locked (a reboot is not a lock bypass).
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUserLocked),
+                    static_cast<int>(b.lockState()));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockLevel::kSettingsAndSetpoints),
+                    static_cast<int>(b.lockLevel()));
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kRejected),
+                    static_cast<int>(enterPin(b, kWrongPin, 5001)));
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(b, kUserPin, 5002)));
+
+  // Installer lockout persists through the blob too.
+  a.setInstallerLockout(true, 6000);
+  a.saveLock(&blob);
+  UiModel c;
+  TEST_ASSERT_TRUE(c.restoreLock(&blob, 7000));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kInstallerLocked),
+                    static_cast<int>(c.lockState()));
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kAccepted),
+                    static_cast<int>(enterPin(c, kInstPin, 7001)));
+}
+
+static void test_lock_blob_corrupt_or_missing_fails_open() {
+  UiModel a = lockedModel();
+  UiModel::LockPersistBlob blob;
+  a.saveLock(&blob);
+  blob.userHash ^= 1;  // corrupt -> CRC mismatch
+
+  UiModel b;
+  TEST_ASSERT_FALSE(b.restoreLock(&blob, 100));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(b.lockState()));
+  TEST_ASSERT_FALSE(b.userPinSet());
+  TEST_ASSERT_FALSE(b.restoreLock(nullptr, 100));
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUnlocked),
+                    static_cast<int>(b.lockState()));
+}
+
+static void test_pin_entry_cancel_and_nondigit_ignored() {
+  UiModel m = lockedModel();
+  m.beginPinEntry(PinContext::kUnlock, 2000);
+  m.enterPinDigit(1, 2000);
+  m.enterPinDigit(2, 2000);
+  TEST_ASSERT_EQUAL_UINT8(2, m.pinDigitsEntered());
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kPending),
+                    static_cast<int>(m.enterPinDigit(12, 2000)));  // not 0-9
+  TEST_ASSERT_EQUAL_UINT8(2, m.pinDigitsEntered());
+  m.cancelPinEntry();
+  TEST_ASSERT_EQUAL_UINT8(0, m.pinDigitsEntered());
+  TEST_ASSERT_EQUAL(static_cast<int>(PinResult::kIdle),
+                    static_cast<int>(m.enterPinDigit(3, 2000)));  // no context
+  TEST_ASSERT_EQUAL(static_cast<int>(LockState::kUserLocked),
+                    static_cast<int>(m.lockState()));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_is_safe_and_fully_dirty);
@@ -287,5 +601,20 @@ int main() {
   RUN_TEST(test_alarm_list_bounded_drops_oldest_and_flags);
   RUN_TEST(test_alarm_text_truncated_not_overflowed);
   RUN_TEST(test_runtime_min_delta_floor_clamped);
+  RUN_TEST(test_lock_disabled_without_pin);
+  RUN_TEST(test_settings_only_lock_blocks_settings_not_setpoints);
+  RUN_TEST(test_settings_and_setpoints_lock_blocks_all_change_intents);
+  RUN_TEST(test_lock_never_hides_alarms_temp_or_status);
+  RUN_TEST(test_ack_alarms_enqueues_intent_when_unlocked);
+  RUN_TEST(test_pin_unlock_roundtrip);
+  RUN_TEST(test_wrong_pin_attempts_then_backoff);
+  RUN_TEST(test_auto_relock_after_inactivity);
+  RUN_TEST(test_installer_lockout_only_installer_code_unlocks);
+  RUN_TEST(test_installer_settings_gate_and_code_independence);
+  RUN_TEST(test_installer_code_is_master_key_for_user_lock);
+  RUN_TEST(test_clear_user_pin_recovery_path);
+  RUN_TEST(test_lock_blob_roundtrip_hashes_survive);
+  RUN_TEST(test_lock_blob_corrupt_or_missing_fails_open);
+  RUN_TEST(test_pin_entry_cancel_and_nondigit_ignored);
   return UNITY_END();
 }

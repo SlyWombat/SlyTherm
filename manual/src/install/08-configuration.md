@@ -130,7 +130,37 @@ below). The compressor is never run on an unknown outdoor temperature.
 | Degraded-mode heat floor | `kDegradedHeatFloorC` / `kDegradedHeatCeilC` | **16–18 °C** | Local-fallback-sensor-only mode: bounded heat, **cooling disabled** (or ≥ 29 °C ceiling), demand capped, persistent alarm |
 | Indoor cooling lockout | `kCoolingIndoorLockoutC` | **18 °C** | Never cool when indoor temperature is below this |
 
-## 8.10 Installer notes
+## 8.10 Wall-screen lock
+
+| Parameter | Constant | Default | Range / notes |
+| --- | --- | --- | --- |
+| Auto-relock after inactivity | `kUiAutoRelockS` | **120 s** | 30–600 s. No touch for this long → the screen relocks (and any installer-settings session expires) |
+| PIN attempts before backoff | `kUiPinMaxAttempts` | **5** | 3–10 failed entries… |
+| PIN entry backoff | `kUiPinBackoffS` | **60 s** | …then entry is refused for this long (30–600 s) before attempts reset |
+
+The lock gates **change intents only** — alarms, current temperature, and
+equipment status are never hidden at any lock level, and the lock is
+tamper resistance, not a safety layer (forgotten-PIN recovery: Section 9.8).
+
+## 8.11 Smart recovery (pre-heat / pre-cool)
+
+Disabled by default (`kRecoveryEnabledDefault` = false) until field-tuned;
+requires the Home Assistant `next_target` feed (Section 9.7). Advisory
+only — an early start is a normal call and passes every protection in 8.1.
+
+| Parameter | Constant | Default | Range / notes |
+| --- | --- | --- | --- |
+| Ramp-rate seed, heating | `kRecoverySeedHeatCPerH` | **1.0 °C/h** | Starting estimate per {mode, equipment} channel, used until that channel has learned from real run segments |
+| Ramp-rate seed, cooling | `kRecoverySeedCoolCPerH` | **0.8 °C/h** | — |
+| Maximum early-start lookahead | `kRecoveryMaxLookaheadS` | **7200 s** (2 h) | Hard cap on any early-start recommendation, whatever the learned rate suggests |
+
+## 8.12 Relay output sequencing (Case B)
+
+| Parameter | Constant | Default | Range / notes |
+| --- | --- | --- | --- |
+| Minimum relay transition spacing | `kRelayMinTransitionMs` | **500 ms** | Minimum spacing between successive output transitions (Section 6.1). Never delays the failsafe all-off |
+
+## 8.13 Installer notes
 
 - After any configuration change to lockouts or balance point, confirm the
   controller accepted it (the echoed state in Home Assistant shows the

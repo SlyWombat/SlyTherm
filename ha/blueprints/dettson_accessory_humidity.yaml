@@ -1,0 +1,280 @@
+# Coordinated standalone humidifier/dehumidifier for the Dettson DT-1
+# (gap G1 step 1, docs/07 §G1). The thermostat has no accessory output and no
+# humidity logic — this blueprint coordinates a USER-SUPPLIED smart
+# switch/plug-controlled (de)humidifier with DT-1 telemetry. It is
+# automation-level coordination, NOT certified equipment control: the
+# accessory must be safe to be switched off at any moment and must carry its
+# own protections (tank-full float, compressor delays, etc.).
+#
+# Telemetry consumed (docs/06 entity contract):
+#   sensor.dettson_active_equipment   idle / hp_heat / gas_heat / cool / defrost
+#   sensor.dettson_outdoor_temp       fused outdoor °C (frost control)
+#
+# Blower interlock — exact `active_equipment` wire states that prove moving
+# air (lib/HaMqtt): gas_heat, hp_heat, cool. `idle` is no blower; `defrost`
+# is excluded (short, equipment-owned blower behavior — same exclusion as the
+# starter package's filter-runtime counter).
+#
+# Frost control (humidify mode only) mirrors Ecobee's Frost Control +
+# Window Efficiency behavior: cap the RH target from outdoor temperature so
+# windows don't condense. Ecobee's exact constants are unpublished; this uses
+# the standard cold-climate condensation guideline as a piecewise-linear
+# curve (window efficiency 4 = baseline):
+#
+#   outdoor °C   max indoor %RH        segment
+#   ---------    --------------        -------
+#     >= +5         45                 flat
+#      0..+5        40 + T             1.0 %RH per °C
+#    -30..0         40 + T * (25/30)   ~0.83 %RH per °C
+#                                      (table points: 0→40, -6→35, -12→30,
+#                                       -18→25, -24→20, -30→15)
+#     < -30         15                 flat
+#
+# Window efficiency 1–7 (1 = drafty single pane, 7 = high-efficiency
+# triple pane) shifts the whole curve by (efficiency − 4) × 2.5 %RH, then the
+# ceiling is clamped to 10–50 %RH. Effective target = min(setpoint, ceiling).
+blueprint:
+  name: "Dettson: standalone humidifier / dehumidifier coordination"
+  description: >-
+    Drives a user-supplied smart-switched humidifier or dehumidifier from an
+    indoor RH sensor and an RH setpoint, coordinated with DT-1 telemetry:
+    optional blower interlock (humidify only while active_equipment shows
+    moving air), optional Ecobee-style frost-control ceiling computed from
+    the outdoor temperature, hysteresis deadband, and minimum on/off cycle
+    times. Fails toward OFF when the RH sensor is unavailable. This is
+    automation-level coordination, not certified equipment control.
+  domain: automation
+  author: ElectricRV
+  input:
+    accessory_switch:
+      name: Accessory switch
+      description: >-
+        The smart switch/plug (or fan/humidifier entity) powering the
+        humidifier or dehumidifier. Must be safe to switch off at any moment.
+      selector:
+        entity:
+          domain:
+            - switch
+            - fan
+            - humidifier
+            - input_boolean
+    rh_sensor:
+      name: Indoor humidity sensor
+      description: >-
+        Any %RH sensor near the conditioned space (e.g. SONOFF SNZB-02D per
+        docs/06 "Remote sensors"). Unavailable/non-numeric reading turns the
+        accessory off.
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+    rh_setpoint:
+      name: RH setpoint entity
+      description: >-
+        Number entity holding the target %RH (e.g. an input_number slider —
+        the starter package's alert thresholds are separate from this).
+      selector:
+        entity:
+          domain:
+            - input_number
+            - number
+    control_mode:
+      name: Mode
+      description: >-
+        humidify: ON below setpoint (raises RH). dehumidify: ON above
+        setpoint (lowers RH).
+      default: humidify
+      selector:
+        select:
+          options:
+            - humidify
+            - dehumidify
+    deadband_pct:
+      name: Hysteresis deadband (%RH)
+      description: >-
+        Width of the on/off hysteresis band below (humidify) or above
+        (dehumidify) the effective target, so the accessory does not chatter
+        around the setpoint.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 0.5
+          unit_of_measurement: "%"
+    require_blower:
+      name: Blower interlock
+      description: >-
+        Run only while sensor.dettson_active_equipment proves moving air
+        (gas_heat / hp_heat / cool). Keep ON for duct-mounted accessories —
+        a duct humidifier wetting a dead duct is how you grow mold. Safe to
+        disable for standalone room units with their own fans (typical
+        portable dehumidifier).
+      default: true
+      selector:
+        boolean:
+    equipment_entity:
+      name: Active equipment sensor
+      default: sensor.dettson_active_equipment
+      selector:
+        entity:
+          domain: sensor
+    frost_control:
+      name: Frost control (humidify mode only)
+      description: >-
+        Cap the humidify target from outdoor temperature so windows do not
+        condense (curve in the blueprint header comments). Ignored in
+        dehumidify mode. If the outdoor sensor is unavailable the cap is
+        skipped and the plain setpoint applies.
+      default: false
+      selector:
+        boolean:
+    outdoor_temp_entity:
+      name: Outdoor temperature sensor
+      default: sensor.dettson_outdoor_temp
+      selector:
+        entity:
+          domain: sensor
+    window_efficiency:
+      name: Window efficiency (1–7)
+      description: >-
+        Mirrors Ecobee's Window Efficiency input: 1 = drafty single pane
+        (lower allowed RH), 4 = typical double pane (baseline curve), 7 =
+        high-efficiency triple pane (higher allowed RH). Each step shifts the
+        frost-control ceiling by 2.5 %RH.
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 7
+          step: 1
+          mode: slider
+    min_on_minutes:
+      name: Minimum ON time (minutes)
+      description: >-
+        Once started, run at least this long before an RH-satisfied stop
+        (loss of blower interlock or RH sensor still stops immediately).
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: min
+    min_off_minutes:
+      name: Minimum OFF time (minutes)
+      description: >-
+        Once stopped, stay off at least this long before restarting
+        (protects dehumidifier compressors from short cycling).
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: min
+
+variables:
+  accessory: !input accessory_switch
+  rh_sensor: !input rh_sensor
+  setpoint_entity: !input rh_setpoint
+  control_mode: !input control_mode
+  deadband: !input deadband_pct
+  require_blower: !input require_blower
+  equipment_entity: !input equipment_entity
+  frost_control: !input frost_control
+  outdoor_entity: !input outdoor_temp_entity
+  window_efficiency: !input window_efficiency
+  min_on_minutes: !input min_on_minutes
+  min_off_minutes: !input min_off_minutes
+  # Exact lib/HaMqtt active_equipment wire strings that prove moving air.
+  blower_states:
+    - gas_heat
+    - hp_heat
+    - cool
+
+trigger:
+  - platform: state
+    entity_id: !input rh_sensor
+  - platform: state
+    entity_id: !input rh_setpoint
+  - platform: state
+    entity_id: !input equipment_entity
+  - platform: state
+    entity_id: !input outdoor_temp_entity
+  # Re-evaluation heartbeat: retries transitions deferred by the min-cycle
+  # timers, and acts as a watchdog after restarts/missed state events.
+  - platform: time_pattern
+    minutes: "/5"
+
+action:
+  - variables:
+      rh: "{{ states(rh_sensor) | float(none) }}"
+      setpoint: "{{ states(setpoint_entity) | float(none) }}"
+      blower_ok: >-
+        {{ (not require_blower)
+           or states(equipment_entity) in blower_states }}
+      # Frost-control ceiling per the header curve; none = no cap applies.
+      frost_ceiling: >-
+        {% set t = states(outdoor_entity) | float(none) %}
+        {% if control_mode != 'humidify' or not frost_control or t is none %}
+          {{ none }}
+        {% else %}
+          {% if t >= 5 %}{% set base = 45 %}
+          {% elif t > 0 %}{% set base = 40 + t %}
+          {% elif t > -30 %}{% set base = 40 + t * (25 / 30) %}
+          {% else %}{% set base = 15 %}{% endif %}
+          {{ [10, [50, base + (window_efficiency - 4) * 2.5] | min] | max }}
+        {% endif %}
+      target: >-
+        {% if setpoint is none %}
+          {{ none }}
+        {% elif frost_ceiling is not none %}
+          {{ [setpoint, frost_ceiling] | min }}
+        {% else %}
+          {{ setpoint }}
+        {% endif %}
+      is_on: "{{ is_state(accessory, 'on') }}"
+      # Fail toward OFF: unusable sensor/setpoint, or interlock lost — these
+      # also bypass the minimum-ON timer.
+      force_off: "{{ rh is none or target is none or not blower_ok }}"
+      # Capitalized True/False so HA's native rendering yields real booleans.
+      want_on: >-
+        {% if force_off %}
+          False
+        {% elif control_mode == 'humidify' %}
+          {% if rh <= target - deadband %}True
+          {% elif rh >= target %}False
+          {% else %}{{ is_on }}{% endif %}
+        {% else %}
+          {% if rh >= target + deadband %}True
+          {% elif rh <= target %}False
+          {% else %}{{ is_on }}{% endif %}
+        {% endif %}
+      in_state_s: >-
+        {{ (now() - states[accessory].last_changed).total_seconds()
+           if states[accessory] is not none else 0 }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ want_on and not is_on
+                 and in_state_s >= min_off_minutes * 60 }}
+        sequence:
+          - service: homeassistant.turn_on
+            target:
+              entity_id: !input accessory_switch
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ not want_on and is_on
+                 and (force_off or in_state_s >= min_on_minutes * 60) }}
+        sequence:
+          - service: homeassistant.turn_off
+            target:
+              entity_id: !input accessory_switch
+
+# single: evaluations are instantaneous (no delays); overlapping triggers
+# carry no state worth queueing — the 5 min heartbeat re-evaluates anyway.
+mode: single
+max_exceeded: silent
