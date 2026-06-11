@@ -1,3 +1,9 @@
+# LEGACY — Original Project Plan (superseded)
+
+> ⚠️ **This is the original, pre-review plan, kept for historical reference only. Do not build from it.**
+> It is heat-only, names discontinued hardware (R02P030, MAX485, 24 VAC buck), says "command the gas valve" (we send a *demand*), and predates the 2026-06 design review that re-scoped the project to a **dual-fuel heat pump + AC system with Ecobee-class features** (touchscreen wall unit, remote sensors, mobile app via Home Assistant).
+> Current design: [`../README.md`](../README.md) and `docs/01`–`06`. Known corrections to this plan are catalogued in [`03-hardware-wiring.md`](03-hardware-wiring.md) §0 and the design-review changes throughout the docs.
+
 # Project Plan: Custom ClimateTalk Thermostat Interface (Dettson Modulating Furnace)
 ## 1. Project Context & Objective
 The goal of this project is to build a custom, local-only smart thermostat controller for a Dettson Chinook Modulating Gas Furnace (paired with a Gree FLEXX heat pump). 

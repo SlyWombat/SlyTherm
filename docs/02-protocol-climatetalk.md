@@ -2,9 +2,9 @@
 
 Reconstructed from three independent open-source implementations whose constants cross-validate each other — [`kpishere/Net485`](https://github.com/kpishere/Net485) (C++, authoritative for physical layer + checksum + token state machine), [`kdschlosser/ClimateTalk`](https://github.com/kdschlosser/ClimateTalk) (Python, most complete message/command model), and [`esphome-econet`](https://github.com/esphome-econet/esphome-econet) (Rheem EcoNet, a *variant* — useful plumbing reference, **different framing/CRC**) — plus the NEMA CT-485 standard descriptions.
 
-**Confidence:** values agreed by two code bases are high-confidence. The **exact message + byte that drives 0–100 % modulation on this specific furnace is the one thing that must be confirmed empirically by sniffing** (§8).
+**Confidence:** values agreed by two code bases are high-confidence. Two things **must be confirmed empirically by sniffing** (§8): the **exact message + byte that drives modulation on this specific furnace** (Chinook range is **40–100 %**, low fire = 40 % — not 0–100 %), and the **demand payload byte offsets**, which are single-sourced and internally inconsistent in the prior art (§5a).
 
-> **EcoNet warning:** Rheem EcoNet runs **38400 baud + CRC-16/ARC + a 14-byte header**. Your Dettson/Gree system is **native CT-485: 9600 8N1 + Fletcher-16 + 10-byte header.** Do not copy EcoNet's framing or checksum. Confirm baud by sniffing first.
+> **EcoNet warning:** Rheem EcoNet runs **38400 baud + CRC-16/ARC + a 14-byte header**. The Dettson bus (furnace IFC + thermostat, and — if present — the Alizé K03085 interface board) is **native CT-485: 9600 8N1 + Fletcher-16 + 10-byte header.** Do not copy EcoNet's framing or checksum. Confirm baud by sniffing first.
 
 ---
 
@@ -129,7 +129,10 @@ Cross-confirmed kdschlosser `message_types.py` + Net485 `Net485API.hpp`. **Respo
 
 ### 5a. Commanding heat demand / modulation
 
-Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Parameter (offset 4)** and is echoed at payload offset 10–11 as a 16-bit `command_code`, followed by a **2-byte refresh timer** then the **demand value**.
+Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Parameter (offset 4)** and is echoed in the payload as a **16-bit `command_code` at [10..11] (little-endian)**, followed by a **single-byte refresh timer** and the **demand value**.
+
+> ⚠️ **OFFSET WARNING — single-sourced AND internally inconsistent. Sniff-confirmation is a hard gate before any TX.**
+> The demand-payload layouts below come **only from kdschlosser** — Net485 defines the command *codes* but no payload layouts, so there is no second source. Worse, kdschlosser disagrees with itself: its **write path** places the refresh timer at `[13]` and the demand at `[14]`, while its **read-side property** (and the table below) expects the timer at `[12]` and demand at `[13]`. The authoritative offsets **must be diffed out of real `0x03` frames captured from the OEM thermostat** (§8) before a single demand byte is transmitted. Treat every `[12]`/`[13]`/`[14]` below as provisional.
 
 | Code | Command | Payload encoding (after 2-byte cmd code) |
 | --- | --- | --- |
@@ -144,10 +147,18 @@ Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Paramet
 | `0x70` | SET_MOTOR_TORQUE_PERCENT | pct × 65535 / 100, LE — a true 0–100 % channel |
 | `0x05` | SYSTEM_SWITCH_MODIFY | `0x00`off `0x01`cool `0x02`auto `0x03`heat `0x04`backup-heat |
 | `0x01`/`0x02` | HEAT/COOL_SET_POINT_MODIFY | 1-byte temp at `[13]` |
+| `0x07` | FAN_KEY_SELECTION | fan mode select (auto/on) |
+| `0x47` | SET_POINT_TEMP_AND_TEMPORARY_HOLD | setpoint + hold-time combo |
+| `0x5D`/`0x5E` | DEHUMIDIFICATION/HUMIDIFICATION_SET_POINT_MODIFY | setpoint % |
+| `0x62`/`0x63` | DEHUMIDIFICATION/HUMIDIFICATION_DEMAND | demand % |
 
-**Refresh-timer byte:** high nibble = minutes (0–15), low nibble = seconds in 3.75 s units. The demand **must be re-sent before the timer expires** or the subordinate reverts to off — a deliberate safety watchdog the firmware must honour (re-issue well within it).
+**Refresh-timer byte:** high nibble = minutes (0–15), low nibble = seconds in 3.75 s units. The demand **must be re-sent before the timer expires** or the subordinate reverts to off — a deliberate safety watchdog the firmware must honour (re-issue well within it). The timer is **per demand channel** (HEAT, COOL, FAN, BACKUP, DEFROST, AUX each refresh independently).
 
-> **For the Dettson Chinook gas valve specifically:** modulation is almost certainly **`HEAT_DEMAND` (0x64), demand = pct × 2**, with the furnace's gas-stepper node (`0x3C–0x45`) carrying valve-position telemetry. **Confirm by sniffing** — capture the OEM thermostat walking the furnace through its modulation range and correlate the demand byte ÷ 2 to observed fire rate.
+**Persistent-state commands:** `SYSTEM_SWITCH_MODIFY (0x05)` and the setpoint modifies (`0x01`/`0x02`/`0x47`) are **persistent state with no refresh timer** — they do not revert on silence. Whether the equipment persists switch state across its own power cycles is **undocumented** (open question; test at commissioning).
+
+**No bus-level interlock:** nothing in the protocol prevents HEAT_DEMAND and COOL_DEMAND from being simultaneously nonzero. Heat/cool mutual exclusion is entirely **our controller's responsibility** — see `04-safety.md` (demand-conflict invariant).
+
+> **For the Dettson Chinook gas valve specifically:** modulation is almost certainly **`HEAT_DEMAND` (0x64), demand = pct × 2**, with the furnace's gas-stepper node (`0x3C–0x45`) carrying valve-position telemetry. The Chinook's usable range is **40–100 %** (low fire = 40 %); whether the OEM stat ever sends demand values below 40 % (and what the IFC does with them) is itself worth capturing. **Confirm by sniffing** — capture the OEM thermostat walking the furnace through its 40–100 % modulation range and correlate the demand byte ÷ 2 to observed fire rate.
 
 ### 5b. Reading live modulation %, blower speed, faults
 
@@ -155,8 +166,9 @@ Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Paramet
 - **DMA Read (`0x1D`→`0x9D`):** request MDI table (`0x01`config/`0x02`status/`0x03`sensor/`0x0E`ident) + start-byte + count. Walk the furnace's tables to find live modulation %, gas rate, blower RPM. Motor variant (`0x9D`/`0x1E`) puts data at offset 13.
 - **Get Diagnostics (`0x06`→`0x86`):** response is **null-separated fault strings**.
 - **Get Sensor Data (`0x07`→`0x87`):** TLV `(db_id, db_len, data)`.
+- **Outdoor temperature:** in the communicating (Alizé + interface-board) path, OAT is published as **sensor MDI id 0** on the HP/AC/crossover node — read via **Get Sensor Data (`0x07`→`0x87`)** or **DMA Read (`0x1D`) table `0x03`** (sensor table). Whether it appears on *this* install is an open question — add to the §8 capture list. Do **not** look for outdoor temp in the LWP `0x1E–0x27` range (see below).
 
-**LWP node-type codes** (telemetry origin): blower motors `0x0A–0x13`, inducer `0x14–0x1D`, outdoor `0x1E–0x27`, **gas-stepper `0x3C–0x45`**.
+**LWP node-type codes** (telemetry origin): blower motors `0x0A–0x13`, inducer `0x14–0x1D`, outdoor **fan motors** `0x1E–0x27` (motor codes — **not** outdoor temperature sensors), **gas-stepper `0x3C–0x45`**.
 
 ---
 
@@ -195,11 +207,11 @@ EcoNet is useful only as an **ESPHome RS-485 plumbing pattern** (UART/DE handlin
 **Must discover empirically:**
 
 1. Confirm **baud (9600 vs 38400) and 8N1**.
-2. Actual **node IDs** of the Dettson furnace and Gree HP, and which device is **coordinator**.
+2. Actual **node IDs** of the Dettson furnace and any HP-side node (see item 6 — the HP itself is likely *not* on the bus), and which device is **coordinator**.
 3. Exact **Get-Status (`0x82`) payload layout** — offset of live modulation %, blower RPM, run mode.
 4. Whether modulation is `HEAT_DEMAND (0x64)` pct×2, `SET_MOTOR_TORQUE_PERCENT (0x70)`, or a mfg-generic (`0x1F`/`0x20`) command.
 5. Gas-stepper node (`0x3C–0x45`) telemetry — which DMA/status bytes report valve position.
-6. The **Gree FLEXX's** role — separate node type `0x05`, and does it issue its own demand / coordinate via a crossover?
+6. **What represents the HP side on the bus, if anything.** A true Gree FLEXX is **not a CT-485 node** — it is commanded by conventional 24 V signals (Y1/Y2, B, G, plus the D defrost output), and its H1/H2 RS-485 link to the coil board is **Gree-proprietary**, not CT-485. What *may* appear on the bus is the Dettson **K03085 interface board** (Alizé communicating configuration). Open questions: does the interface board enumerate as node type `0x05` (heat pump) or `0x09` (crossover/OBBI)? Does it originate its own bus traffic we must arbitrate with (e.g. commanding furnace heat for defrost tempering)? Is its HP/cool demand modulating (`0x65` pct × 2) or staged? **If the install is conventional (R02P033 thermostat, no interface board), expect little or no HP-related traffic — possibly a near-silent bus** (Phase 0 inventory resolves which architecture exists before sniffing is even attempted).
 7. **Manufacturer IDs** of Dettson and Gree (top of MAC).
 8. Whether the furnace **accepts external Set-Control-Commands** or only its paired/owning thermostat (pairing commands exist; rejection returns `NAK2 0x1B`).
 
@@ -212,6 +224,15 @@ EcoNet is useful only as an **ESPHome RS-485 plumbing pattern** (UART/DE handlin
 5. **Stimulus-response:** at the OEM thermostat, walk the heat call low→high fire (and run the HP). **Diff successive `0x03`/`0x82` payloads** to localize the modulation byte; cross-check demand÷2 against displayed % and measured fire rate.
 6. **Map faults:** trigger a known fault per OEM service procedure; capture `0x86`/`0x05`.
 7. **Build a field dictionary** (msgType, command, offset → meaning) *before writing a single byte*.
+8. **Capture campaigns** (label per the `captures/README.md` naming convention; cooling/defrost captures are season-dependent):
+   - **Node Discovery enumeration:** power-cycle / let AutoNet re-run; capture the full `0x78`/`0x79`/`0xF9`/`0x7A` sequence — every node type, address, and MAC on the bus. Answers whether an interface board exists and what it enumerates as.
+   - **OEM cooling call:** does the thermostat send `COOL_DEMAND 0x65` / `FAN_DEMAND 0x66` *to the furnace* (node type `0x02`) for blower CFM, or is the blower driven by hardwired Y/G? Also: **confirm the demand payload offsets** from these real `0x03` frames (§5a hard gate).
+   - **Mode change:** capture `SYSTEM_SWITCH_MODIFY (0x05)` traffic on OFF/HEAT/COOL/AUTO changes; power-cycle equipment afterward to probe switch-state persistence.
+   - **Forced defrost:** force a defrost cycle from the OEM service menu ("FO 3 Force Cycle"); capture the defrost signature and who commands furnace tempering heat (thermostat vs interface board acting autonomously).
+   - **Outdoor temp:** capture `Get Sensor Data 0x07/0x87` exchanges; confirm OAT at sensor MDI id 0 or rule it out.
+   - **24 V terminal correlation:** simultaneously log the 24 V terminal states (Y, O/B, W, G, D) against bus frames (paired `*.terminals.csv`) — this is what determines which demands travel by bus vs by wire.
+   - **Token-window timing:** measure the R2R/Token-Offer → response window (grant-to-TX deadline) from OEM-thermostat exchanges — this is the slot budget the Phase 3 single-unit jitter bench test (docs/05) is judged against.
+   - **Coordinator / silence propagation:** identify the coordinator node; then (at commissioning, per `04-safety.md` matrix) pull-bus tests *per demand channel* — does our silence drop COOL/HP/aux calls at the non-coordinator unit, or only furnace heat?
 
 Parser sanity-test frame (from the openHAB thread; `dst/src=0x30` is an ASCII-'0' adapter artifact):
 
@@ -228,7 +249,9 @@ Parser sanity-test frame (from the openHAB thread; `dst/src=0x30` is an ASCII-'0
 | **Bus contention / collisions** | High | Bus is coordinator-polled (R2R/token), not CSMA. Either **replace/impersonate** the OEM thermostat (remove it) or fully implement the coordinator/token state machine and TX only when granted the token. |
 | **Two masters** | High | OEM thermostat + your demand = conflicting commands, undefined/oscillating behaviour. **Decide up front: replace, not coexist.** |
 | **DE timing / driver fights** | Medium | Honour 300 µs pre/post-drive + 100 ms inter-packet gap; never assert DE during another node's transmission. |
-| **Demand watchdog timeout** | Medium (safety-positive) | Crashed ESP32 → furnace reverts to off (good). But a sluggish loop can drop fire mid-cycle — re-issue `HEAT_DEMAND` well within the refresh timer. |
+| **Demand watchdog timeout** | Medium (safety-positive) | Crashed ESP32 → equipment reverts to off (good). But a sluggish loop can drop fire mid-cycle — re-issue demands well within the refresh timer. **Reversion-on-silence is per channel and only inferred from prior art for HEAT — verify it for COOL/FAN/BACKUP/AUX (and for the non-coordinator unit) with pull-bus tests per channel before relying on "silence = safe".** |
+| **Unconfirmed demand offsets** | **Critical (TX gate)** | The `0x03` payload layout is single-sourced from kdschlosser and internally inconsistent ([12] vs [13]/[14] — §5a). A demand byte written at the wrong offset could land in the refresh-timer or another field. **No TX until offsets are confirmed from sniffed OEM frames.** |
+| **Cooling / compressor write path** | **Critical** | `COOL_DEMAND 0x65` drives a compressor: nothing on the bus enforces heat/cool mutual exclusion or compressor minimum on/off timers — both are our firmware's responsibility (CompressorGuard + demand-conflict invariant, `04-safety.md`). Whether `0x65` is even honoured (and by which node — interface board vs furnace blower path) is unknown until Phase 2 captures. Oscillating or premature cool demands risk compressor short-cycling and latched ODU faults. |
 | **Pairing / ownership rejection** | Medium | Furnace may honour only its paired controller; you may need to complete pairing or commands return `NAK2 0x1B`. |
 | **Safety lockouts** | **Critical** | Combustion safeties (flame, pressure/limit, ignition lockout) are enforced by the IFC **independently of the bus** — the modulation command is a *request*. You cannot command past a lockout, but aggressive/oscillating demand can cause short-cycling, condensate/HX stress, nuisance lockouts. Respect `SET_DEMAND_RAMP_RATE`; never touch limit/pressure switch wiring. |
 
@@ -252,4 +275,4 @@ Parser sanity-test frame (from the openHAB thread; `dst/src=0x30` is an ASCII-'0
 
 ### TL;DR for the C++ implementation
 
-Target **9600 8N1**; frame = **10-byte header + payload + 2-byte Fletcher (seed 0xAA, mod 0xFF)**; detect frame end by **3.5 ms idle**; hold bus idle **100 ms** before TX with **300 µs** DE pre/post. Parse **msgType (offset 7)**; for writes use **Set Control Command (`0x03`)** with command code in **offset 4** — **`HEAT_DEMAND=0x64`, demand byte = percent × 2** plus a refresh-timer nibble you must keep refreshing. Read live data via **Get Status (`0x82`)** and **DMA Read (`0x9D`)**; faults via **Get Diagnostics (`0x86`)**. The bus is **coordinator/token polled** — sniff-only is safe; writing requires replacing the OEM thermostat and respecting the token, the demand watchdog, and the furnace's independent combustion safeties. **Confirm baud, node IDs, and the modulation byte by sniffing before writing anything.**
+Target **9600 8N1**; frame = **10-byte header + payload + 2-byte Fletcher (seed 0xAA, mod 0xFF)**; detect frame end by **3.5 ms idle**; hold bus idle **100 ms** before TX with **300 µs** DE pre/post. Parse **msgType (offset 7)**; for writes use **Set Control Command (`0x03`)** with command code in **offset 4** — **`HEAT_DEMAND=0x64`, demand byte = percent × 2** (Chinook usable range 40–100 %) plus a per-channel refresh timer you must keep refreshing; **demand payload offsets are single-sourced and unconfirmed — sniffed frames are a hard TX gate** (§5a). Read live data via **Get Status (`0x82`)** and **DMA Read (`0x9D`)**; faults via **Get Diagnostics (`0x86`)**; OAT (if present) via **Get Sensor Data (`0x87`)**, sensor MDI id 0. The bus is **coordinator/token polled** — sniff-only is safe; writing requires replacing the OEM thermostat and respecting the token, the per-channel demand watchdog, the heat/cool mutual-exclusion interlock (ours, not the bus's), compressor timers, and the equipment's independent safeties. **Confirm baud, node IDs, demand offsets, and the modulation byte by sniffing before writing anything.**
