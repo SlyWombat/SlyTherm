@@ -351,6 +351,133 @@ static void test_non_participating_sensor_ignored() {
   TEST_ASSERT_EQUAL_UINT16(0, r.alarms);  // out-of-profile sensor raises nothing
 }
 
+// ---------- Calibration offsets (issue #49, gap G6) ----------
+
+static void test_offset_clamped_at_plus_minus_5() {
+  {
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    TEST_ASSERT_TRUE(f.setSensorOffsetC(kA, 7.0f));  // accepted, clamped to +5
+    f.update(kA, 20.0f, Occupancy::kUnknown, 0);
+    FusedTemp r = f.fusedTemp(0);
+    TEST_ASSERT_TRUE(r.valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, r.value);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, dettson::kSensorOffsetMaxC,
+                             f.status(kA, 0).offsetC);
+  }
+  {
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    TEST_ASSERT_TRUE(f.setSensorOffsetC(kA, -7.0f));  // clamped to -5
+    f.update(kA, 20.0f, Occupancy::kUnknown, 0);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 15.0f, f.fusedTemp(0).value);
+  }
+  {
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    TEST_ASSERT_FALSE(f.setSensorOffsetC(kA, std::nanf("")));  // non-finite
+    TEST_ASSERT_FALSE(f.setSensorOffsetC(99, 1.0f));           // unregistered
+  }
+}
+
+static void test_offset_correction_precedes_health_gates() {
+  {  // out-of-range raw, in-range corrected -> accepted
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    f.setSensorOffsetC(kA, -3.0f);
+    f.update(kA, 42.0f, Occupancy::kUnknown, 0);  // raw above kSensorRangeMaxC
+    FusedTemp r = f.fusedTemp(0);
+    TEST_ASSERT_TRUE(r.valid);
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmRange);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 39.0f, r.value);
+  }
+  {  // in-range raw, out-of-range corrected -> rejected
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    f.setSensorOffsetC(kA, 3.0f);
+    f.update(kA, 38.0f, Occupancy::kUnknown, 0);  // corrected 41 > 40
+    FusedTemp r = f.fusedTemp(0);
+    TEST_ASSERT_FALSE(r.valid);
+    TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmRange);
+  }
+  {  // outlier gate sees corrected values: raw outlier saved by its offset
+    SensorFusion f = makeFusion();
+    f.registerSensor(kA);
+    f.registerSensor(kB);
+    f.registerSensor(kC);
+    f.setSensorOffsetC(kC, -5.0f);
+    f.update(kA, 20.0f, Occupancy::kUnknown, 0);
+    f.update(kB, 20.5f, Occupancy::kUnknown, 0);
+    f.update(kC, 28.0f, Occupancy::kUnknown, 0);  // corrected 23: within 4 C of median
+    FusedTemp r = f.fusedTemp(0);
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmOutlier);
+    TEST_ASSERT_TRUE(f.status(kC, 0).live);
+  }
+}
+
+static void test_offset_change_routes_through_slew_no_step() {
+  SensorFusion f;
+  f.setStuckWindowS(600);  // real stuck logic: the edit must not trip it
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  int i = 0;
+  float prev = 0.0f;
+  for (uint32_t t = 0; t <= 600; t += 60) {
+    f.update(kA, jitter(20.0f, i), Occupancy::kUnknown, t);
+    f.update(kB, jitter(24.0f, i), Occupancy::kUnknown, t);
+    ++i;
+    prev = f.fusedTemp(t).value;
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 22.0f, prev);
+
+  TEST_ASSERT_TRUE(f.setSensorOffsetC(kA, 2.0f));  // fused target 22 -> 23
+  FusedTemp r{};
+  for (uint32_t t = 660; t <= 3600; t += 60) {
+    f.update(kA, jitter(20.0f, i), Occupancy::kUnknown, t);
+    f.update(kB, jitter(24.0f, i), Occupancy::kUnknown, t);
+    ++i;
+    r = f.fusedTemp(t);
+    TEST_ASSERT_TRUE(r.valid);
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);
+    TEST_ASSERT_TRUE_MESSAGE(
+        std::fabs(r.value - prev) <= dettson::kFusionSlewCPerMin + kSlewEps,
+        "offset change stepped the output past the slew limit");
+    prev = r.value;
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.15f, 23.0f, prev);
+}
+
+static void test_offset_edit_does_not_mask_stuck_detector() {
+  SensorFusion f;
+  f.setStuckWindowS(600);
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  int i = 0;
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 1200; t += 60) {
+    f.update(kA, jitter(20.0f, i++), Occupancy::kUnknown, t);
+    f.update(kB, 24.0f, Occupancy::kUnknown, t);  // frozen raw value
+    if (t == 300) f.setSensorOffsetC(kB, 1.0f);   // mid-window edit
+    r = f.fusedTemp(t);
+  }
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStuck);  // detected on schedule
+  TEST_ASSERT_FALSE(f.status(kB, 1200).live);
+  TEST_ASSERT_TRUE(f.status(kA, 1200).live);
+}
+
+static void test_fallback_local_sensor_offset_applied() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kL, /*isLocal=*/true);
+  TEST_ASSERT_TRUE(f.setSensorOffsetC(kL, -1.5f));
+  f.update(kL, 19.0f, Occupancy::kUnknown, 0);
+  FusedTemp r = f.fusedTemp(0);
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_TRUE(r.degraded);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kLocalDegraded),
+                    static_cast<int>(r.tier));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 17.5f, r.value);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_invalid_no_demand);
@@ -367,5 +494,10 @@ int main() {
   RUN_TEST(test_all_bad_invalid_then_recovery_reseeds);
   RUN_TEST(test_max_age_clamped_to_documented_range);
   RUN_TEST(test_non_participating_sensor_ignored);
+  RUN_TEST(test_offset_clamped_at_plus_minus_5);
+  RUN_TEST(test_offset_correction_precedes_health_gates);
+  RUN_TEST(test_offset_change_routes_through_slew_no_step);
+  RUN_TEST(test_offset_edit_does_not_mask_stuck_detector);
+  RUN_TEST(test_fallback_local_sensor_offset_applied);
   return UNITY_END();
 }

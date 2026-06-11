@@ -170,15 +170,18 @@ This table is the **single source of truth** for control/protection defaults (mi
 | Heat/cool differential (call hysteresis) | **0.55 °C (1 °F)** | Ecobee default is 0.5 °F but community-verified to short-cycle; 0.3 °C enter / 0.2 °C exit acceptable alternative |
 | Auto-mode heat/cool setpoint deadband (min delta) | **2.8 °C (5 °F)** | hard floor 1.1 °C (2 °F); firmware rejects/clamps HA writes violating it, pushes other setpoint Ecobee-style |
 | Auto-changeover dwell | **30 min since opposite call** + trigger sustained ≥10 min + comp min-off satisfied | tunable |
+| Manual-change hold (presets) | **until next preset change** | types: until-next-preset / 2 h (7200 s) / 4 h (14400 s) / indefinite; presets blocked while held; preset roster config-driven, ≤8 entries (retained `dettson/config/presets`) |
 | Balance point (economic changeover) | **−8 °C** | mirror R02P034 P124 range −30…15 °C; 2 °C hysteresis |
 | Compressor heating lockout (low OAT) | **−20 °C** | set from installed model's submittal sheet (FLEXX rated to −30 °C); range disabled…−30 °C |
 | Aux/gas lockout (high OAT) | **+10 °C** | mirror P125-style aux diff −1…−4 °C as staging trigger |
 | Config validation | reject lockouts leaving any OAT band with **no permitted heat source** | hard rule |
 | Comp-to-aux escalation | droop > **1.0 °C** below setpoint after ≥ **30 min** at ≥95% HP demand → gas; stage back after 60 min + OAT above balance + hysteresis | maps Ecobee Comp-to-Aux Delta/Runtime onto demand saturation |
 | Gas modulation floor (minFire) | **40%** | Chinook documented low fire; demand <40% snaps to 0/minFire with hysteresis — never dither below floor |
+| Gas min ON / min OFF time | **300 s / 300 s** | 60–900 s each (G14); min-on gates **comfort** stops only (burner held at minFire) — safety stops (sensor fault, invariant trip, max-runtime, watchdog) are always immediate; boot starts the off-timer fresh unless persisted state proves it served |
 | Defrost tempering heat demand | **35%** fixed (never PID) | hard cap 15 min; separate configurable fan % and heat % (generalizes, does not "mirror", the OEM single Defrost Fan % param) |
 | Sensor staleness timeout | **300 s/sensor** (configurable `max_age_s`, 180–900) | requires 60 s HA heartbeat republish; sensor temps **non-retained** |
 | Sensor range gate | 5–40 °C | + stuck-value (zero-variance) detection + outlier >4 °C from median → exclude + alarm |
+| Per-sensor calibration offset | **0 °C** | clamp ±5 °C (`kSensorOffsetMaxC`); applied before the health gates (range/stuck/outlier judge corrected values); edits ramp via the fusion slew limit; includes the local DS18B20 (id `local`) — gap G6 |
 | Occupancy window ("follow me") | **30 min** | weight ramps in/out with tau **10–30 min** (tunable; Ecobee constants unpublished) |
 | Occupied sensor weight | 2.0 (vs 1.0) | EMA smoothing tau 2–5 min; slew limit ~0.1 °C/min on participant-set changes |
 | OAT staleness | 30 min → next rung; all stale → **gas allowed, compressor locked out** (cooling: locked out per the indoor-18 °C policy) | rungs: bus → wired outdoor DS18B20 → HA weather; alarm on >5 °C rung disagreement |

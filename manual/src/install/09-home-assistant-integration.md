@@ -35,7 +35,10 @@ HA auto-creates one device with the following entities:
 | `sensor.dettson_fault` | sensor | Decoded equipment fault code/text |
 | `binary_sensor.dettson_health` | binary_sensor (problem) | Controller health (Wi-Fi/MQTT/sensor/watchdog) |
 | `sensor.dettson_last_error` | sensor (diagnostic) | Last error string |
+| `sensor.dettson_hold` | sensor (diagnostic) | Active hold type (`none` / `until_next_preset` / `two_hours` / `four_hours` / `indefinite`); remaining seconds as an attribute |
+| `switch.dettson_em_heat` | switch | EM HEAT (gas-only emergency heat): `ON` engages, `OFF` restores the prior mode. Deliberately a switch — not an HVAC mode and not a preset, so a scheduled preset write can never silently disengage it |
 | Per-remote-sensor diagnostics | sensor / binary_sensor | Per-sensor age and fusion participation (diagnostic category) |
+| `number.dettson_sensor_<id>_offset` | number (config) | Per-sensor calibration offset, ±5 °C in 0.1 °C steps — includes the built-in fallback sensor (id `local`) |
 | Configuration numbers | number | Every parameter in Section 8, range-clamped by firmware |
 
 ## 9.3 Topic map (integrator reference)
@@ -48,15 +51,20 @@ Commands (HA → controller), all under `dettson/cmd/`:
 | `dettson/cmd/target_temp_low` / `target_temp_high` | float °C (heat_cool mode dual setpoints) |
 | `dettson/cmd/mode` | `off` / `heat` / `cool` / `heat_cool` |
 | `dettson/cmd/fan_mode` | `auto` / `on` / `circulate` |
-| `dettson/cmd/preset` | `home` / `away` / `sleep` |
+| `dettson/cmd/preset` | a preset name from the configured roster (default `home` / `away` / `sleep`) |
+| `dettson/cmd/hold` | `until_next_preset` / `two_hours` / `four_hours` / `indefinite` / `clear` |
+| `dettson/cmd/em_heat` | `ON` / `OFF` |
+| `dettson/cmd/sensor/<id>/offset` | float °C within ±5 (per-sensor calibration; `local` = built-in fallback sensor) |
 
 State (controller → HA), all under `dettson/state/` and echoing the
 **post-validation** values: `current_temp`, `setpoint`, `target_temp_low`,
-`target_temp_high`, `mode`, `fan_mode`, `preset`, `action`
+`target_temp_high`, `mode`, `fan_mode`, `preset`, `hold` (JSON: type +
+remaining seconds), `em_heat`, `action`
 (`off`/`idle`/`heating`/`cooling`/`fan`/`defrosting`), `active_equipment`,
 `modulation`, `outdoor_temp`, `outdoor_source`, `fusion`,
 `compressor_min_off_remaining`, `compressor_locked_out`,
-`changeover_reason`, `fault`, `blower`, `health`, `last_error`.
+`sensor/<id>/offset`, `changeover_reason`, `fault`, `blower`, `health`,
+`last_error`.
 
 **Important contract points:**
 
@@ -99,6 +107,22 @@ their 915 MHz protocol is proprietary and unreceivable by this hardware.
 - **HA owns schedules.** The HA scheduler or automations drive the
   thermostat by writing presets and/or setpoints. The controller does not
   store a weekly schedule.
+- **The preset roster is configuration, not firmware.** Publish retained
+  JSON at `dettson/config/presets` —
+  `{"presets":[{"name":"home","heat":21.0,"cool":25.0}, …]}` — up to
+  **8 entries**, names ≤ 23 characters, setpoints within the climate limits;
+  invalid entries are skipped, and the climate entity's preset list is
+  rebuilt from the roster (default `home`/`away`/`sleep`).
+- **Holds:** a manual setpoint/mode change creates a hold of the configured
+  default type (factory: until next preset). While a hold is active,
+  scheduled preset writes are ignored; timed holds expire by clock and the
+  next scheduled preset write restores the schedule (expiry never reverts
+  setpoints on its own). See Section 8.2 for the timer values.
+- **Starter package:** a ready-made HA package (weekly schedule, vacation
+  calendar, runtime-based filter reminder, temperature/humidity alerts,
+  presence-based Away) ships in the project's `ha/` directory with its own
+  install instructions (`ha/README.md`). Load it at commissioning rather
+  than hand-building these automations.
 - **The controller owns the outage fallback.** If MQTT goes stale
   (> 30 min): heat-to 18 °C / cool-to 27 °C, mode = last user mode — never
   escalated to OFF, and never a single bare setpoint.

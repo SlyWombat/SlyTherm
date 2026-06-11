@@ -1,0 +1,98 @@
+# Presence-based Away for the Dettson DT-1 (gap G3, docs/07). Reusable
+# person-entity version of the zone.home automation in
+# ha/packages/dettson_starter.yaml — use this one when you want to pick
+# exactly which phones count (guests, a phone that stays home, etc.).
+blueprint:
+  name: "Dettson: presence-based Away preset"
+  description: >-
+    Sets the thermostat to the Away preset when every selected person has left
+    home (after a settling delay), and restores the Home preset when the first
+    person returns. Only undoes an Away it set itself: if the preset was
+    changed to something else while everyone was out, arrival leaves it alone.
+  domain: automation
+  author: ElectricRV
+  input:
+    persons:
+      name: People
+      description: Person entities whose presence drives the preset.
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    climate_entity:
+      name: Thermostat
+      default: climate.dettson_hvac
+      selector:
+        entity:
+          domain: climate
+    away_preset:
+      name: Away preset
+      default: away
+      selector:
+        text:
+    home_preset:
+      name: Home preset
+      description: >-
+        Preset restored on arrival. Tip: instead of a fixed preset you can
+        edit the produced automation to call
+        script.dettson_apply_scheduled_preset (from the starter package) so
+        a late arrival lands on "sleep" instead of "home".
+      default: home
+      selector:
+        text:
+    departure_delay:
+      name: Departure delay
+      description: >-
+        Everyone must be gone this long before Away is applied (absorbs brief
+        GPS dropouts and driveway loops).
+      default:
+        hours: 0
+        minutes: 10
+        seconds: 0
+      selector:
+        duration:
+
+variables:
+  persons: !input persons
+  climate_entity: !input climate_entity
+  away_preset: !input away_preset
+
+trigger:
+  - platform: state
+    entity_id: !input persons
+
+action:
+  - choose:
+      # Everyone out: wait the settling delay, re-check, then Away.
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ expand(persons) | selectattr('state', 'eq', 'home')
+                 | list | count == 0 }}
+        sequence:
+          - delay: !input departure_delay
+          - condition: template
+            value_template: >-
+              {{ expand(persons) | selectattr('state', 'eq', 'home')
+                 | list | count == 0 }}
+          - service: climate.set_preset_mode
+            target:
+              entity_id: !input climate_entity
+            data:
+              preset_mode: !input away_preset
+      # First arrival: restore Home only if we are still in our own Away.
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ expand(persons) | selectattr('state', 'eq', 'home')
+                 | list | count > 0
+                 and state_attr(climate_entity, 'preset_mode') == away_preset }}
+        sequence:
+          - service: climate.set_preset_mode
+            target:
+              entity_id: !input climate_entity
+            data:
+              preset_mode: !input home_preset
+
+# restart: a return during the departure delay cancels the pending Away.
+mode: restart

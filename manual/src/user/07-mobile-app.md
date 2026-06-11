@@ -17,6 +17,14 @@ From the app you can:
 - Edit schedules, view temperature history graphs, and receive alert
   notifications.
 
+You also don't have to build the smart parts yourself: the thermostat ships
+with a **ready-made Home Assistant starter package** that gives you a weekly
+schedule, a vacation calendar, a filter-change reminder based on real blower
+hours, temperature and humidity alerts, and automatic Away when everyone's
+phone leaves the house — all out of the box. Your installer normally loads
+it at commissioning; everything it creates is then visible and editable in
+the app (see *Schedules and presets*).
+
 ## Setting it up
 
 Your installer normally completes this at commissioning. If you're adding a

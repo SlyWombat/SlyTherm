@@ -1,16 +1,21 @@
 // ModeStateMachine unit tests: deadband push (Ecobee-style), call
 // hysteresis no-chatter, AUTO changeover sustain+dwell+compressor gates,
-// EMERGENCY_HEAT gas-only, invalid-input fail-to-no-demand (docs/04 §2).
+// EMERGENCY_HEAT gas-only, invalid-input fail-to-no-demand (docs/04 §2),
+// preset roster + hold lifecycles (docs/07 gap G4).
 #include <unity.h>
 
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 
 #include "DettsonConfig.h"
 #include "ModeStateMachine.h"
 
 using dettson::Call;
 using dettson::CallType;
+using dettson::HoldType;
 using dettson::ModeStateMachine;
+using dettson::PresetDef;
 using dettson::UserMode;
 
 void setUp() {}
@@ -268,6 +273,244 @@ static void test_mode_change_and_off_drop_call() {
   TEST_ASSERT_EQUAL(CallType::kNone, sm.update(18.0f, true, 30).type);
 }
 
+// ---------- preset roster (G4) ----------
+
+static PresetDef mkPreset(const char* name, float heatC, float coolC) {
+  PresetDef d{};
+  std::strncpy(d.name, name, sizeof d.name - 1);
+  d.heatC = heatC;
+  d.coolC = coolC;
+  return d;
+}
+
+static ModeStateMachine makeRosterSm() {
+  ModeStateMachine sm;
+  PresetDef defs[] = {
+      mkPreset("home", 21.0f, 25.0f),
+      mkPreset("away", 16.0f, 28.0f),
+      mkPreset("sleep", 19.0f, 24.0f),
+  };
+  TEST_ASSERT_EQUAL(3, sm.setPresetRoster(defs, 3));
+  return sm;
+}
+
+static void test_preset_apply_sets_pair_and_active_name() {
+  ModeStateMachine sm = makeRosterSm();
+  auto r = sm.applyPreset("home", 100);
+  TEST_ASSERT_TRUE(r.applied);
+  TEST_ASSERT_FALSE(r.blockedByHold);
+  TEST_ASSERT_TRUE(r.setpoints.accepted);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, sm.heatSetpoint());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, sm.coolSetpoint());
+  TEST_ASSERT_EQUAL_STRING("home", sm.activePreset());
+  // A preset application is not a manual change: no hold created.
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_preset_unknown_name_rejected() {
+  ModeStateMachine sm = makeRosterSm();
+  const float h = sm.heatSetpoint(), c = sm.coolSetpoint();
+  auto r = sm.applyPreset("vacation", 100);
+  TEST_ASSERT_FALSE(r.applied);
+  TEST_ASSERT_FALSE(r.blockedByHold);
+  TEST_ASSERT_FALSE(sm.applyPreset(nullptr, 100).applied);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, h, sm.heatSetpoint());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, c, sm.coolSetpoint());
+  TEST_ASSERT_EQUAL_STRING("", sm.activePreset());
+}
+
+static void test_preset_apply_honors_deadband_cool_wins() {
+  ModeStateMachine sm = makeRosterSm();
+  PresetDef defs[] = {mkPreset("tight", 24.0f, 25.0f)};  // violates 2.8 delta
+  sm.setPresetRoster(defs, 1);
+  auto r = sm.applyPreset("tight", 50);
+  TEST_ASSERT_TRUE(r.applied);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, sm.coolSetpoint());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f - dettson::kMinSetpointDeltaC,
+                           sm.heatSetpoint());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, sm.heatSetpoint(), r.setpoints.heatC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, sm.coolSetpoint(), r.setpoints.coolC);
+}
+
+static void test_roster_skips_invalid_and_duplicate_entries_and_caps() {
+  ModeStateMachine sm;
+  PresetDef defs[12];
+  defs[0] = mkPreset("", 20.0f, 25.0f);          // empty name
+  defs[1] = mkPreset("nanheat", NAN, 25.0f);     // NaN setpoint
+  defs[2] = mkPreset("hot", 20.0f, 50.0f);       // out of [5,40]
+  defs[3] = mkPreset("home", 21.0f, 25.0f);
+  defs[4] = mkPreset("home", 18.0f, 26.0f);      // duplicate name
+  for (int i = 5; i < 12; ++i) {
+    char name[8];
+    std::snprintf(name, sizeof name, "p%d", i);
+    defs[i] = mkPreset(name, 20.0f, 25.0f);
+  }
+  // Valid: home + p5..p11 = 8 -> exactly at the cap.
+  TEST_ASSERT_EQUAL(dettson::kMaxPresets, sm.setPresetRoster(defs, 12));
+  TEST_ASSERT_NOT_NULL(sm.presetByName("home"));
+  TEST_ASSERT_NULL(sm.presetByName(""));
+  TEST_ASSERT_NULL(sm.presetByName("hot"));
+  // Duplicate kept the first definition.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, sm.presetByName("home")->heatC);
+}
+
+static void test_roster_replace_clears_missing_active_preset() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.applyPreset("home", 10);
+  PresetDef defs[] = {mkPreset("eco", 17.0f, 28.0f)};
+  sm.setPresetRoster(defs, 1);
+  TEST_ASSERT_EQUAL_STRING("", sm.activePreset());     // name no longer exists
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, sm.heatSetpoint());  // setpoints kept
+}
+
+// ---------- EM HEAT toggle (docs/07 G15: the HA switch path) ----------
+
+static void test_em_heat_toggle_engages_and_restores_prior_mode() {
+  ModeStateMachine sm;
+  sm.setHeatSetpoint(20.0f);
+  sm.setMode(UserMode::kHeat, 0);
+  sm.setEmergencyHeat(true, 10);
+  TEST_ASSERT_TRUE(sm.emergencyHeat());
+  TEST_ASSERT_EQUAL(UserMode::kEmergencyHeat, sm.mode());
+  Call c = sm.update(18.0f, true, 20);
+  TEST_ASSERT_EQUAL(CallType::kHeat, c.type);
+  TEST_ASSERT_TRUE(c.gasOnly);
+  sm.setEmergencyHeat(false, 30);
+  TEST_ASSERT_FALSE(sm.emergencyHeat());
+  TEST_ASSERT_EQUAL(UserMode::kHeat, sm.mode());  // prior mode restored
+}
+
+static void test_em_heat_toggle_off_when_not_engaged_is_noop() {
+  ModeStateMachine sm;
+  sm.setMode(UserMode::kCool, 0);
+  sm.setEmergencyHeat(false, 10);
+  TEST_ASSERT_EQUAL(UserMode::kCool, sm.mode());
+}
+
+static void test_em_heat_direct_setmode_then_toggle_off_restores() {
+  ModeStateMachine sm;
+  sm.setMode(UserMode::kAuto, 0);
+  sm.setMode(UserMode::kEmergencyHeat, 10);  // wall-UI path
+  TEST_ASSERT_TRUE(sm.emergencyHeat());
+  sm.setEmergencyHeat(false, 20);            // HA switch OFF
+  TEST_ASSERT_EQUAL(UserMode::kAuto, sm.mode());
+}
+
+static void test_em_heat_coexists_with_comfort_presets() {
+  // Mutual exclusion is structural: EM HEAT pins the equipment choice while
+  // comfort presets keep managing setpoints — a preset never disengages it
+  // and engaging it never clears the active preset's setpoints.
+  ModeStateMachine sm = makeRosterSm();
+  sm.setMode(UserMode::kHeat, 0);
+  sm.setEmergencyHeat(true, 10);
+  auto r = sm.applyPreset("home", 20);  // ends the until-next-preset hold
+  TEST_ASSERT_TRUE(r.applied);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, sm.heatSetpoint());
+  TEST_ASSERT_TRUE(sm.emergencyHeat());  // mode untouched by the preset
+  TEST_ASSERT_EQUAL_STRING("home", sm.activePreset());
+  Call c = sm.update(18.0f, true, 30);
+  TEST_ASSERT_TRUE(c.gasOnly);
+}
+
+// ---------- holds (G4 Ecobee semantics) ----------
+
+static void test_manual_setpoint_creates_until_next_preset_hold() {
+  ModeStateMachine sm = makeRosterSm();  // default hold type: until next preset
+  sm.applyPreset("home", 100);
+  auto r = sm.setHeatSetpoint(19.0f, 200);  // manual overload
+  TEST_ASSERT_TRUE(r.accepted);
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  TEST_ASSERT_EQUAL_STRING("", sm.activePreset());  // manual change clears it
+  TEST_ASSERT_EQUAL(0, sm.holdRemainingS(200));     // untimed hold
+  // The next preset arrival ends the hold AND applies.
+  auto pr = sm.applyPreset("sleep", 300);
+  TEST_ASSERT_TRUE(pr.applied);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+  TEST_ASSERT_EQUAL_STRING("sleep", sm.activePreset());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 19.0f, sm.heatSetpoint());
+}
+
+static void test_unknown_preset_does_not_end_hold() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.setCoolSetpoint(26.0f, 100);
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  sm.applyPreset("bogus", 200);
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+}
+
+static void test_mode_change_creates_hold() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.applyPreset("home", 50);
+  sm.setMode(UserMode::kHeat, 100);
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  sm.setMode(UserMode::kHeat, 200);  // no-op: same mode keeps state
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+}
+
+static void test_two_hour_hold_blocks_presets_then_expires_mid_tick() {
+  ModeStateMachine::Config cfg;
+  cfg.defaultHoldType = HoldType::kTwoHours;
+  ModeStateMachine sm(cfg);
+  PresetDef defs[] = {mkPreset("home", 21.0f, 25.0f)};
+  sm.setPresetRoster(defs, 1);
+  sm.setHeatSetpoint(19.0f, 1000);
+  TEST_ASSERT_EQUAL(HoldType::kTwoHours, sm.activeHoldType());
+  TEST_ASSERT_EQUAL_UINT32(dettson::kHoldShortS, sm.holdRemainingS(1000));
+  TEST_ASSERT_EQUAL_UINT32(3600, sm.holdRemainingS(4600));
+  // Blocked while the clock runs; the blocked preset changes nothing.
+  auto r = sm.applyPreset("home", 5000);
+  TEST_ASSERT_FALSE(r.applied);
+  TEST_ASSERT_TRUE(r.blockedByHold);
+  TEST_ASSERT_EQUAL_STRING("", sm.activePreset());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 19.0f, sm.heatSetpoint());
+  // One second before the deadline (1000 + 7200): still blocked.
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 8199).blockedByHold);
+  // Expiry lands mid-tick: a plain update() past the deadline clears it.
+  sm.update(21.0f, true, 8205);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+  TEST_ASSERT_EQUAL_UINT32(0, sm.holdRemainingS(8205));
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 8210).applied);
+}
+
+static void test_four_hour_hold_expires_inside_apply_preset() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.startHold(HoldType::kFourHours, 1000);
+  TEST_ASSERT_EQUAL_UINT32(dettson::kHoldLongS, sm.holdRemainingS(1000));
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 15399).blockedByHold);  // 14399 s in
+  // applyPreset itself applies expiry — no update() needed in between.
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 15400).applied);
+}
+
+static void test_indefinite_hold_ends_only_on_clear() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.startHold(HoldType::kIndefinite, 0);
+  TEST_ASSERT_EQUAL_UINT32(0, sm.holdRemainingS(0));
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 1000000).blockedByHold);
+  sm.update(21.0f, true, 2000000);  // no clock expiry
+  TEST_ASSERT_EQUAL(HoldType::kIndefinite, sm.activeHoldType());
+  sm.clearHold();
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 2000010).applied);
+}
+
+static void test_start_hold_none_clears() {
+  ModeStateMachine sm = makeRosterSm();
+  sm.startHold(HoldType::kTwoHours, 0);
+  sm.startHold(HoldType::kNone, 10);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_default_hold_type_none_means_manual_changes_hold_nothing() {
+  ModeStateMachine::Config cfg;
+  cfg.defaultHoldType = HoldType::kNone;
+  ModeStateMachine sm(cfg);
+  PresetDef defs[] = {mkPreset("home", 21.0f, 25.0f)};
+  sm.setPresetRoster(defs, 1);
+  sm.setHeatSetpoint(19.0f, 100);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 110).applied);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_no_demand);
@@ -287,8 +530,25 @@ int main() {
   RUN_TEST(test_auto_changeover_blocked_by_compressor_guard);
   RUN_TEST(test_auto_changeover_cool_to_heat_gated_too);
   RUN_TEST(test_emergency_heat_is_gas_only);
+  RUN_TEST(test_em_heat_toggle_engages_and_restores_prior_mode);
+  RUN_TEST(test_em_heat_toggle_off_when_not_engaged_is_noop);
+  RUN_TEST(test_em_heat_direct_setmode_then_toggle_off_restores);
+  RUN_TEST(test_em_heat_coexists_with_comfort_presets);
   RUN_TEST(test_invalid_temp_drops_call_and_alarms);
   RUN_TEST(test_invalid_temp_resets_auto_sustain);
   RUN_TEST(test_mode_change_and_off_drop_call);
+  RUN_TEST(test_preset_apply_sets_pair_and_active_name);
+  RUN_TEST(test_preset_unknown_name_rejected);
+  RUN_TEST(test_preset_apply_honors_deadband_cool_wins);
+  RUN_TEST(test_roster_skips_invalid_and_duplicate_entries_and_caps);
+  RUN_TEST(test_roster_replace_clears_missing_active_preset);
+  RUN_TEST(test_manual_setpoint_creates_until_next_preset_hold);
+  RUN_TEST(test_unknown_preset_does_not_end_hold);
+  RUN_TEST(test_mode_change_creates_hold);
+  RUN_TEST(test_two_hour_hold_blocks_presets_then_expires_mid_tick);
+  RUN_TEST(test_four_hour_hold_expires_inside_apply_preset);
+  RUN_TEST(test_indefinite_hold_ends_only_on_clear);
+  RUN_TEST(test_start_hold_none_clears);
+  RUN_TEST(test_default_hold_type_none_means_manual_changes_hold_nothing);
   return UNITY_END();
 }

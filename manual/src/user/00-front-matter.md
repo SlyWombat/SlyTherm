@@ -4,7 +4,7 @@
 **Manufacturer:** ElectricRV
 **Document:** User Manual (for the homeowner)
 
-> **DRAFT v0.1 — PRE-RELEASE, NOT FOR FIELD USE**
+> **DRAFT v0.2 — PRE-RELEASE, NOT FOR FIELD USE**
 >
 > This manual describes a product that is still in development. Some behaviour
 > described here has not yet been verified on installed equipment. Sections
@@ -18,6 +18,7 @@
 | Revision | Date | Changes |
 | --- | --- | --- |
 | 0.1 | 2026-06-11 | Initial draft |
+| 0.2 | 2026-06-11 | Custom presets, timed holds, sensor calibration, gas cycle timers, HA starter package |
 
 ## About this manual
 

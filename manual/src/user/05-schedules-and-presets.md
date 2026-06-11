@@ -22,9 +22,9 @@ Home Assistant app or web page — not the wall screen. If you never set up
 Home Assistant, the thermostat simply holds whatever setpoints and mode you
 set by hand, like a classic non-programmable thermostat.
 
-## Presets: Home, Away, Sleep
+## Presets: Home, Away, Sleep — and your own
 
-A preset is a named pair of setpoints. The three presets are:
+A preset is a named pair of setpoints. The three standard presets are:
 
 | Preset | Typical use | Example setpoints (heat / cool) |
 | --- | --- | --- |
@@ -35,6 +35,15 @@ A preset is a named pair of setpoints. The three presets are:
 The example values are only suggestions — the actual setpoints behind each
 preset are configured in Home Assistant to suit your household.
 
+You are not limited to these three. The preset list itself is configured in
+Home Assistant: you (or your installer) can rename presets or add your own —
+**Workout**, **Guests**, **Movie night** — up to **eight** in total, each
+with its own heat/cool pair. Whatever list is configured appears on the
+wall screen's preset row and in the phone app. If a custom preset's two
+setpoints are set too close together, the thermostat repairs the pair
+automatically, keeping the cool value and lowering the heat value to
+restore the minimum gap (see *Everyday use*, "The minimum gap").
+
 You can switch presets three ways:
 
 1. **Automatically by schedule** — the usual way: e.g. Sleep at 22:30, Home
@@ -43,16 +52,28 @@ You can switch presets three ways:
    schedule guessed wrong ("we're home early").
 3. **From the phone app** — the preset selector on the thermostat card.
 
-A manual preset or setpoint change simply stays in effect until the next
-scheduled change comes along.
+A manual preset or setpoint change normally stays in effect until the next
+scheduled change comes along — unless you place a timed or indefinite
+**hold**, which protects your change from the schedule for longer (see
+*Everyday use*, "Holding a temperature").
 
 Presets can also influence which room sensors are used — for example, Sleep
 can be configured to follow the bedroom sensors only. See *Remote sensors*.
 
 ## A starter schedule
 
-If you are setting up Home Assistant scheduling for the first time, this
-pattern serves most households well:
+You don't have to build any of this from scratch: the thermostat ships with
+a **ready-made Home Assistant starter package** that your installer can load
+in a few minutes. It sets up a sensible weekly schedule (editable to taste),
+a **vacation calendar** (add an event named "vacation" and the house drops
+to Away for exactly that span), a **filter-change reminder** keyed to real
+blower running hours, low/high **temperature and humidity alerts**, and
+**presence-based Away** (everyone's phone leaves → Away; first one home →
+back on schedule). See the *Mobile app* chapter and the Installation
+Manual, Section 9.
+
+If you would rather build your own schedule, this pattern serves most
+households well:
 
 | Time | Weekdays | Weekends |
 | --- | --- | --- |

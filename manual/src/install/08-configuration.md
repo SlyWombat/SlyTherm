@@ -25,7 +25,7 @@ assumption that the outdoor unit protects itself (Section 7.1).
 | Reset-loop lockout count | `kResetLoopLockoutCount` | **3 resets** | ≥ 3 watchdog/brownout resets… |
 | Reset-loop window | `kResetLoopWindowS` | **1800 s** (30 min) | …within this window → latched NO-DEMAND, manual clear required |
 
-## 8.2 Setpoints, deadband, and changeover
+## 8.2 Setpoints, deadband, changeover, presets, and holds
 
 | Parameter | Constant | Default | Range / notes |
 | --- | --- | --- | --- |
@@ -34,6 +34,11 @@ assumption that the outdoor unit protects itself (Section 7.1).
 | Deadband hard floor | `kMinSetpointDeltaFloorC` | **1.1 °C** (2 °F) | Firmware rejects/clamps violating writes and pushes the other setpoint |
 | Auto-changeover dwell | `kChangeoverDwellS` | **1800 s** (30 min) | Minimum time since the opposite call; compressor min-off must also be satisfied |
 | Changeover trigger sustain | `kChangeoverSustainS` | **600 s** (10 min) | The changeover trigger must persist this long |
+| Manual-change hold type | `kDefaultHoldType` | **until next preset** | A manual setpoint/mode change creates a hold of this type; scheduled preset writes are ignored while a hold is active. Types: until-next-preset / 2 h / 4 h / indefinite |
+| Timed hold, short | `kHoldShortS` | **7200 s** (2 h) | Timed-hold expiry does **not** revert setpoints — the next scheduled preset write restores the schedule |
+| Timed hold, long | `kHoldLongS` | **14400 s** (4 h) | — |
+| Preset roster size | `kMaxPresets` | **8 entries** | Roster is config-driven from Home Assistant (retained config topic); invalid entries are skipped |
+| Preset name length | `kPresetNameMaxLen` | **23 characters** | A preset pair violating the deadband resolves with the cool value winning (heat pushed down) |
 
 ## 8.3 Dual fuel (balance point, lockouts, escalation)
 
@@ -59,6 +64,8 @@ itself treated as a fault.
 | --- | --- | --- | --- |
 | Modulation floor (low fire) | `kGasFloorPct` | **40 %** | Chinook documented low fire. Valid demand is 0 or 40–100 % — never in between; sub-floor demand snaps to 0/low-fire with hysteresis |
 | Gas maximum continuous runtime | `kGasMaxRuntimeS` | **14400 s** (4 h) | Without progress → drop + alarm. The heat pump has **no** runtime cap — alarm only, never auto-cycled |
+| Gas minimum ON time | `kGasMinOnS` | **300 s** | 60–900 s. Gates **comfort** stops only — the burner is held at low fire until the timer is served. Safety stops (sensor fault, invariant trip, maximum runtime, watchdog) extinguish the burner immediately |
+| Gas minimum OFF time | `kGasMinOffS` | **300 s** | 60–900 s. After a power cycle the OFF timer restarts fresh unless persisted state proves it was already served |
 
 ## 8.5 Defrost tempering
 
@@ -100,6 +107,7 @@ itself treated as a fault.
 | Fusion smoothing time constant | `kFusionSmoothingTauMinS` / `MaxS` | **120–300 s** | — |
 | Fusion slew limit | `kFusionSlewCPerMin` | **0.1 °C/min** | A sensor joining/leaving cannot step the control input |
 | Fallback-sensor disagreement alarm | `kDs18b20DisagreeAlarmC` | **5 °C** | Local sensor vs fused aggregate sanity check |
+| Per-sensor calibration offset | `kSensorOffsetMaxC` (clamp) | **0 °C** | Adjustable **±5 °C** per sensor (0.1 °C steps in Home Assistant), including the built-in fallback sensor. Applied **before** the health gates, so range/stuck/outlier checks judge corrected values; an offset change ramps through the fusion slew limit rather than stepping the control input |
 
 ## 8.8 Outdoor temperature
 

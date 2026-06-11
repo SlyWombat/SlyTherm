@@ -66,6 +66,18 @@ bool SensorFusion::setSensorMaxAgeS(uint8_t id, uint32_t maxAgeS) {
   return true;
 }
 
+bool SensorFusion::setSensorOffsetC(uint8_t id, float offsetC) {
+  Slot* s = find(id);
+  if (!s || !std::isfinite(offsetC)) return false;
+  if (offsetC > kSensorOffsetMaxC) offsetC = kSensorOffsetMaxC;
+  if (offsetC < -kSensorOffsetMaxC) offsetC = -kSensorOffsetMaxC;
+  // An offset edit shifts this sensor's corrected value instantly — treat it
+  // like a participant-set change so the output ramps instead of stepping.
+  if (offsetC != s->offsetC && hasOutput_) slewActive_ = true;
+  s->offsetC = offsetC;
+  return true;
+}
+
 bool SensorFusion::update(uint8_t id, float tempC, Occupancy occ, uint32_t nowS) {
   Slot* s = find(id);
   if (!s) return false;
@@ -104,9 +116,13 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
     if (!s.hasUpdate) continue;                    // boot quiet: not yet an alarm
     if (ageOf(nowS, s.lastUpdateS) > s.maxAgeS) {
       s.faults |= kAlarmStale;
-    } else if (!(s.tempC >= kSensorRangeMinC && s.tempC <= kSensorRangeMaxC)) {
+    } else if (!(s.correctedC() >= kSensorRangeMinC &&
+                 s.correctedC() <= kSensorRangeMaxC)) {
       s.faults |= kAlarmRange;  // NaN fails both comparisons -> rejected here
     } else if (ageOf(nowS, s.lastChangeS) > stuckWindowS_) {
+      // Stuck tracks raw repeats: a constant offset preserves equality, so
+      // this is the corrected-value check too — and an offset edit can
+      // neither trip nor mask the detector (docs/07 G6).
       s.faults |= kAlarmStuck;
     } else {
       s.live = true;
@@ -119,7 +135,7 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
   // are equidistant from it — no way to tell which is wrong, so never kill.
   if (nLive >= 3) {
     float sorted[kMaxSensors];
-    for (size_t k = 0; k < nLive; ++k) sorted[k] = slots_[liveIdx[k]].tempC;
+    for (size_t k = 0; k < nLive; ++k) sorted[k] = slots_[liveIdx[k]].correctedC();
     for (size_t a = 1; a < nLive; ++a) {  // insertion sort, N <= kMaxSensors
       float v = sorted[a];
       size_t b = a;
@@ -132,7 +148,7 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
     size_t kept = 0;
     for (size_t k = 0; k < nLive; ++k) {
       Slot& s = slots_[liveIdx[k]];
-      if (std::fabs(s.tempC - median) > outlierC_) {
+      if (std::fabs(s.correctedC() - median) > outlierC_) {
         s.faults |= kAlarmOutlier;
         s.live = false;
       } else {
@@ -167,16 +183,16 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
       const Slot& s = slots_[liveIdx[k]];
       mask |= static_cast<uint16_t>(1u << liveIdx[k]);
       wSum += s.weight;
-      wtSum += s.weight * s.tempC;
+      wtSum += s.weight * s.correctedC();
     }
     raw = wtSum / wSum;
     haveRaw = true;
     out.tier = (nLive >= 2) ? SourceTier::kFusedRemotes : SourceTier::kSingleRemote;
     // Local-vs-fusion sanity even while fusion is healthy (docs/04 §4).
-    if (liveLocal && std::fabs(liveLocal->tempC - raw) > localDisagreeC_)
+    if (liveLocal && std::fabs(liveLocal->correctedC() - raw) > localDisagreeC_)
       out.alarms |= kAlarmLocalDisagree;
   } else if (liveLocal) {
-    raw = liveLocal->tempC;
+    raw = liveLocal->correctedC();
     mask = static_cast<uint16_t>(1u << (liveLocal - slots_));
     haveRaw = true;
     out.tier = SourceTier::kLocalDegraded;
@@ -236,6 +252,7 @@ SensorStatus SensorFusion::status(uint8_t id, uint32_t nowS) const {
   st.registered = true;
   st.live = s->live;
   st.faults = s->faults;
+  st.offsetC = s->offsetC;
   st.ageS = s->hasUpdate ? ageOf(nowS, s->lastUpdateS) : UINT32_MAX;
   return st;
 }

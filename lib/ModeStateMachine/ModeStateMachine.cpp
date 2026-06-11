@@ -1,6 +1,7 @@
 #include "ModeStateMachine.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace dettson {
 
@@ -23,9 +24,16 @@ ModeStateMachine::ModeStateMachine(const Config& cfg) : cfg_(cfg) {
 
 void ModeStateMachine::setMode(UserMode mode, uint32_t nowS) {
   if (mode == mode_) return;
+  if (mode == UserMode::kEmergencyHeat) priorMode_ = mode_;  // toggle-off restore (G15)
   endActiveCall(nowS);
   resetTriggers();
   mode_ = mode;
+  startHold(cfg_.defaultHoldType, nowS);  // manual change (G4 hold semantics)
+}
+
+void ModeStateMachine::setEmergencyHeat(bool on, uint32_t nowS) {
+  if (on) setMode(UserMode::kEmergencyHeat, nowS);
+  else if (mode_ == UserMode::kEmergencyHeat) setMode(priorMode_, nowS);
 }
 
 ModeStateMachine::SetpointResult ModeStateMachine::setHeatSetpoint(float c) {
@@ -90,6 +98,102 @@ float ModeStateMachine::setMinSetpointDelta(float deltaC) {
     }
   }
   return d;
+}
+
+ModeStateMachine::SetpointResult ModeStateMachine::setHeatSetpoint(
+    float c, uint32_t nowS) {
+  SetpointResult r = setHeatSetpoint(c);
+  if (r.accepted && (r.heatChanged || r.coolChanged)) onManualChange(nowS);
+  return r;
+}
+
+ModeStateMachine::SetpointResult ModeStateMachine::setCoolSetpoint(
+    float c, uint32_t nowS) {
+  SetpointResult r = setCoolSetpoint(c);
+  if (r.accepted && (r.heatChanged || r.coolChanged)) onManualChange(nowS);
+  return r;
+}
+
+void ModeStateMachine::onManualChange(uint32_t nowS) {
+  activePreset_[0] = '\0';  // setpoints no longer match any preset
+  startHold(cfg_.defaultHoldType, nowS);
+}
+
+size_t ModeStateMachine::setPresetRoster(const PresetDef* defs, size_t count) {
+  rosterCount_ = 0;
+  if (defs != nullptr) {
+    for (size_t i = 0; i < count && rosterCount_ < kMaxPresets; ++i) {
+      PresetDef d = defs[i];
+      d.name[kPresetNameMaxLen] = '\0';  // defensive termination before strcmp
+      if (d.name[0] == '\0') continue;
+      if (std::isnan(d.heatC) || std::isnan(d.coolC)) continue;
+      if (d.heatC < cfg_.setpointMinC || d.heatC > cfg_.setpointMaxC) continue;
+      if (d.coolC < cfg_.setpointMinC || d.coolC > cfg_.setpointMaxC) continue;
+      bool dup = false;
+      for (size_t j = 0; j < rosterCount_; ++j) {
+        if (std::strcmp(roster_[j].name, d.name) == 0) { dup = true; break; }
+      }
+      if (dup) continue;
+      roster_[rosterCount_++] = d;
+    }
+  }
+  if (activePreset_[0] != '\0' && presetByName(activePreset_) == nullptr) {
+    activePreset_[0] = '\0';
+  }
+  return rosterCount_;
+}
+
+const PresetDef* ModeStateMachine::presetByName(const char* name) const {
+  if (name == nullptr) return nullptr;
+  for (size_t i = 0; i < rosterCount_; ++i) {
+    if (std::strcmp(roster_[i].name, name) == 0) return &roster_[i];
+  }
+  return nullptr;
+}
+
+ModeStateMachine::PresetResult ModeStateMachine::applyPreset(const char* name,
+                                                             uint32_t nowS) {
+  PresetResult r;
+  tickHold(nowS);
+  const PresetDef* p = presetByName(name);
+  if (p == nullptr) return r;  // unknown name never ends a hold
+  if (hold_ == HoldType::kTwoHours || hold_ == HoldType::kFourHours ||
+      hold_ == HoldType::kIndefinite) {
+    r.blockedByHold = true;
+    return r;
+  }
+  hold_ = HoldType::kNone;  // a preset arrival ends an until-next-preset hold
+  const float h0 = heatSpC_, c0 = coolSpC_;
+  setHeatSetpoint(p->heatC);  // heat first, then cool: a deadband-violating
+  setCoolSetpoint(p->coolC);  //  pair resolves with cool winning (heat pushed)
+  r.applied = true;
+  r.setpoints.accepted = true;
+  r.setpoints.heatChanged = (heatSpC_ != h0);
+  r.setpoints.coolChanged = (coolSpC_ != c0);
+  r.setpoints.heatC = heatSpC_;
+  r.setpoints.coolC = coolSpC_;
+  std::strncpy(activePreset_, p->name, sizeof activePreset_ - 1);
+  activePreset_[sizeof activePreset_ - 1] = '\0';
+  return r;
+}
+
+void ModeStateMachine::startHold(HoldType t, uint32_t nowS) {
+  hold_ = t;
+  holdEndS_ = (t == HoldType::kTwoHours)  ? nowS + cfg_.holdShortS
+            : (t == HoldType::kFourHours) ? nowS + cfg_.holdLongS
+                                          : 0;
+}
+
+uint32_t ModeStateMachine::holdRemainingS(uint32_t nowS) const {
+  if (hold_ != HoldType::kTwoHours && hold_ != HoldType::kFourHours) return 0;
+  return holdEndS_ > nowS ? holdEndS_ - nowS : 0;
+}
+
+void ModeStateMachine::tickHold(uint32_t nowS) {
+  if ((hold_ == HoldType::kTwoHours || hold_ == HoldType::kFourHours) &&
+      nowS >= holdEndS_) {
+    hold_ = HoldType::kNone;  // expiry does not revert setpoints (header note)
+  }
 }
 
 void ModeStateMachine::endActiveCall(uint32_t nowS) {
@@ -190,6 +294,7 @@ Call ModeStateMachine::evalAuto(float tempC, uint32_t nowS,
 
 Call ModeStateMachine::update(float tempC, bool tempValid, uint32_t nowS,
                               bool compressorSwapOk) {
+  tickHold(nowS);  // hold clock runs regardless of input validity
   if (!tempValid || std::isnan(tempC)) {
     // Fail to no-demand (docs/04 §2 sensor row). End time is recorded so the
     // AUTO dwell clock still runs; triggers reset so a recovery can't carry

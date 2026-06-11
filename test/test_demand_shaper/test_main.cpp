@@ -12,6 +12,15 @@ void tearDown() {}
 
 // ------------------------------------------------------------------ GasShaper
 
+// Floor-snap hysteresis tests run with the G14 min-on/min-off timers zeroed
+// so they exercise only the snap behavior; timer tests use the defaults.
+static GasShaper::Config gasNoTimers() {
+  GasShaper::Config c;
+  c.minOnS = 0;
+  c.minOffS = 0;
+  return c;
+}
+
 static void test_gas_boot_state_no_demand() {
   GasShaper g;
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, 0));
@@ -20,7 +29,7 @@ static void test_gas_boot_state_no_demand() {
 }
 
 static void test_gas_does_not_light_at_or_below_floor() {
-  GasShaper g;  // light threshold = 40 + 2 = 42
+  GasShaper g(gasNoTimers());  // light threshold = 40 + 2 = 42
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(39.0f, 0));
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(40.0f, 10));
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(41.9f, 20));
@@ -28,7 +37,7 @@ static void test_gas_does_not_light_at_or_below_floor() {
 }
 
 static void test_gas_lights_above_margin_and_tracks_request() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   TEST_ASSERT_EQUAL_FLOAT(45.0f, g.shape(45.0f, 0));
   TEST_ASSERT_TRUE(g.lit());
   TEST_ASSERT_EQUAL_FLOAT(80.0f, g.shape(80.0f, 10));
@@ -36,13 +45,13 @@ static void test_gas_lights_above_margin_and_tracks_request() {
 }
 
 static void test_gas_clamps_overrange_request_to_100() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   TEST_ASSERT_EQUAL_FLOAT(100.0f, g.shape(150.0f, 0));
   TEST_ASSERT_FALSE(g.alarm());
 }
 
 static void test_gas_falling_holds_floor_then_extinguishes() {
-  GasShaper g;  // extinguish threshold = 40 - 5 = 35
+  GasShaper g(gasNoTimers());  // extinguish threshold = 40 - 5 = 35
   g.shape(60.0f, 0);
   TEST_ASSERT_EQUAL_FLOAT(40.0f, g.shape(38.0f, 10));  // below floor: hold floor, stay lit
   TEST_ASSERT_EQUAL_FLOAT(40.0f, g.shape(36.0f, 20));
@@ -52,7 +61,7 @@ static void test_gas_falling_holds_floor_then_extinguishes() {
 }
 
 static void test_gas_no_dither_at_floor_either_direction() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   // Lit, request oscillating just around the floor: burner never flaps off —
   // sub-floor requests pin to the floor, in-band requests pass through.
   g.shape(60.0f, 0);
@@ -63,7 +72,7 @@ static void test_gas_no_dither_at_floor_either_direction() {
     TEST_ASSERT_TRUE(g.lit());
   }
   // Unlit, same oscillation: output pinned at 0 (never lights below 42).
-  GasShaper g2;
+  GasShaper g2(gasNoTimers());
   for (uint32_t t = 0; t <= 100; t += 10) {
     float req = (t / 10) % 2 ? 39.0f : 41.0f;
     TEST_ASSERT_EQUAL_FLOAT(0.0f, g2.shape(req, t));
@@ -72,7 +81,7 @@ static void test_gas_no_dither_at_floor_either_direction() {
 }
 
 static void test_gas_relight_requires_full_on_threshold() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   g.shape(60.0f, 0);
   g.shape(30.0f, 10);  // extinguished
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(41.0f, 20));  // 40..42: not enough to relight
@@ -80,19 +89,19 @@ static void test_gas_relight_requires_full_on_threshold() {
 }
 
 static void test_gas_invalid_input_drops_demand_and_alarms() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   g.shape(60.0f, 0);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(NAN, 10));
   TEST_ASSERT_TRUE(g.inputAlarm());
   TEST_ASSERT_FALSE(g.lit());
-  GasShaper g2;
+  GasShaper g2(gasNoTimers());
   g2.shape(60.0f, 0);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g2.shape(-5.0f, 10));
   TEST_ASSERT_TRUE(g2.inputAlarm());
 }
 
 static void test_gas_max_runtime_trips_and_recovers_only_after_call_ends() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS / 2));
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS));      // exactly at cap: still ok
@@ -109,13 +118,99 @@ static void test_gas_max_runtime_trips_and_recovers_only_after_call_ends() {
 }
 
 static void test_gas_extinguish_resets_runtime_clock() {
-  GasShaper g;
+  GasShaper g(gasNoTimers());
   g.shape(60.0f, 0);
   g.shape(0.0f, 1000);            // run ends after 1000 s
   g.shape(60.0f, 2000);           // new run
   // Old start must not count: 2000 + max is fine, trips only past new start + max.
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 2000 + kGasMaxRuntimeS));
   TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 2001 + kGasMaxRuntimeS));
+}
+
+// ------------------------------------------- GasShaper min-on/min-off (G14)
+
+static void test_gas_boot_starts_off_timer_fresh() {
+  GasShaper g;  // default timers; no bootRestore(): conservative
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 0));  // anchors the off-timer
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMinOffS - 1));
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_FALSE(g.alarm());  // a timer hold is not a fault
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMinOffS));
+  TEST_ASSERT_TRUE(g.lit());
+}
+
+static void test_gas_boot_restore_served_lights_immediately() {
+  GasShaper g;
+  g.bootRestore(0, /*minOffServed=*/true);  // persisted state proves off-time served
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));
+  TEST_ASSERT_TRUE(g.lit());
+}
+
+static void test_gas_boot_restore_unserved_holds_full_min_off() {
+  GasShaper g;
+  g.bootRestore(100, /*minOffServed=*/false);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 100 + kGasMinOffS - 1));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 100 + kGasMinOffS));
+}
+
+static void test_gas_min_on_blocks_comfort_stop_holds_min_fire() {
+  GasShaper g;
+  g.bootRestore(0, true);
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));
+  // Request drops out (comfort stop): held lit at minFire until min-on served.
+  TEST_ASSERT_EQUAL_FLOAT(kGasFloorPct, g.shape(0.0f, 10));
+  TEST_ASSERT_TRUE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(kGasFloorPct, g.shape(0.0f, kGasMinOnS - 1));
+  TEST_ASSERT_TRUE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, kGasMinOnS));  // served: out
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_FALSE(g.alarm());
+}
+
+static void test_gas_min_off_blocks_relight_after_comfort_stop() {
+  GasShaper g;
+  g.bootRestore(0, true);
+  g.shape(60.0f, 0);
+  g.shape(0.0f, kGasMinOnS);  // comfort stop lands exactly at min-on
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMinOnS + kGasMinOffS - 1));
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMinOnS + kGasMinOffS));
+  TEST_ASSERT_TRUE(g.lit());
+}
+
+static void test_gas_safety_stop_invalid_input_bypasses_min_on() {
+  GasShaper g;
+  g.bootRestore(0, true);
+  g.shape(60.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(NAN, 10));  // safety: immediate despite min-on
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_TRUE(g.inputAlarm());
+  // The safety stop started min-off: relight waits.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 10 + kGasMinOffS - 1));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 10 + kGasMinOffS));
+}
+
+static void test_gas_force_stop_immediate_and_starts_min_off() {
+  GasShaper g;
+  g.bootRestore(0, true);
+  g.shape(60.0f, 0);
+  g.forceStop(50);  // sensor fault / invariant trip / watchdog path
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 51));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 50 + kGasMinOffS - 1));
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 50 + kGasMinOffS));
+}
+
+static void test_gas_runtime_trip_bypasses_min_on() {
+  GasShaper::Config c;
+  c.maxRuntimeS = 100;
+  c.minOnS = 10000;  // far longer than the runtime cap
+  c.minOffS = 0;
+  GasShaper g(c);
+  g.shape(60.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 101));  // safety trip wins over min-on
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_TRUE(g.runtimeAlarm());
 }
 
 // ----------------------------------------------------------- HpInverterShaper
@@ -289,6 +384,14 @@ int main() {
   RUN_TEST(test_gas_invalid_input_drops_demand_and_alarms);
   RUN_TEST(test_gas_max_runtime_trips_and_recovers_only_after_call_ends);
   RUN_TEST(test_gas_extinguish_resets_runtime_clock);
+  RUN_TEST(test_gas_boot_starts_off_timer_fresh);
+  RUN_TEST(test_gas_boot_restore_served_lights_immediately);
+  RUN_TEST(test_gas_boot_restore_unserved_holds_full_min_off);
+  RUN_TEST(test_gas_min_on_blocks_comfort_stop_holds_min_fire);
+  RUN_TEST(test_gas_min_off_blocks_relight_after_comfort_stop);
+  RUN_TEST(test_gas_safety_stop_invalid_input_bypasses_min_on);
+  RUN_TEST(test_gas_force_stop_immediate_and_starts_min_off);
+  RUN_TEST(test_gas_runtime_trip_bypasses_min_on);
   RUN_TEST(test_hp_inv_starts_at_floor_then_slews_up);
   RUN_TEST(test_hp_inv_quantizes_to_step);
   RUN_TEST(test_hp_inv_small_dt_accumulates);

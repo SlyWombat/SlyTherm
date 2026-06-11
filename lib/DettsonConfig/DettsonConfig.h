@@ -29,6 +29,23 @@ constexpr float    kMinSetpointDeltaFloorC  = 1.1f;  // hard floor (2 degF); cla
 constexpr uint32_t kChangeoverDwellS        = 1800;  // 30 min since opposite call
 constexpr uint32_t kChangeoverSustainS      = 600;   // trigger must persist >=10 min
 
+// ---------- Presets & holds (ModeStateMachine; docs/07 gap G4) ----------
+// Hold semantics are Ecobee-style: a manual setpoint/mode change creates a
+// hold of kDefaultHoldType; presets are ignored while held, except an
+// until-next-preset hold ends when the next preset arrives.
+enum class HoldType : uint8_t {
+  kNone = 0,            // no hold (also a valid default: manual changes hold nothing)
+  kUntilNextPreset,
+  kTwoHours,
+  kFourHours,
+  kIndefinite,          // ends only on explicit clear
+};
+constexpr HoldType kDefaultHoldType = HoldType::kUntilNextPreset;
+constexpr uint32_t kHoldShortS      = 7200;   // "2 h" hold
+constexpr uint32_t kHoldLongS       = 14400;  // "4 h" hold
+constexpr uint8_t  kMaxPresets      = 8;      // config-driven roster cap
+constexpr uint8_t  kPresetNameMaxLen = 23;    // bytes, excluding nul
+
 // ---------- Dual fuel (DualFuelArbiter) ----------
 constexpr float    kBalancePointC           = -8.0f;  // mirror R02P034 P124 range -30..15
 constexpr float    kBalancePointHystC       = 2.0f;
@@ -42,6 +59,8 @@ constexpr uint32_t kDeescalationMinS        = 3600;   // stage back after 60 min
 // ---------- Gas modulation (GasShaper) ----------
 constexpr float    kGasFloorPct             = 40.0f;  // Chinook low fire; valid demand is 0 or 40-100
 constexpr uint32_t kGasMaxRuntimeS          = 14400;  // 4 h continuous -> drop + alarm (HP: alarm only, never auto-cycle)
+constexpr uint32_t kGasMinOnS               = 300;    // range 60-900; comfort stops only — safety stops always immediate (docs/07 G14)
+constexpr uint32_t kGasMinOffS              = 300;    // range 60-900; boot starts the off-timer fresh unless persisted state proves it served
 
 // ---------- Defrost tempering ----------
 constexpr float    kDefrostTemperHeatPct    = 35.0f;  // fixed, never PID
@@ -66,6 +85,7 @@ constexpr uint32_t kFusionSmoothingTauMinS  = 120;    // EMA tau 2-5 min
 constexpr uint32_t kFusionSmoothingTauMaxS  = 300;
 constexpr float    kFusionSlewCPerMin       = 0.1f;   // slew limit on participant-set changes
 constexpr float    kDs18b20DisagreeAlarmC   = 5.0f;   // fallback sensor vs fusion aggregate sanity
+constexpr float    kSensorOffsetMaxC        = 5.0f;   // per-sensor calibration offset clamp (docs/07 G6)
 
 // ---------- Outdoor temperature (OutdoorTempSource) ----------
 constexpr uint32_t kOatStaleS               = 1800;   // 30 min -> next rung (bus -> wired -> HA weather)

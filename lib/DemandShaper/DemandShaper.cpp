@@ -12,10 +12,37 @@ uint32_t elapsedS(uint32_t nowS, uint32_t thenS) {
 }  // namespace
 
 // ---------------------------------------------------------------- GasShaper
+void GasShaper::extinguish(uint32_t nowS) {
+  lit_ = false;
+  offAnchored_ = true;
+  offSinceS_ = nowS;
+  minOffWaived_ = false;
+}
+
+bool GasShaper::minOffServed(uint32_t nowS) const {
+  return minOffWaived_ || elapsedS(nowS, offSinceS_) >= cfg_.minOffS;
+}
+
+void GasShaper::bootRestore(uint32_t nowS, bool minOffServed) {
+  lit_ = false;
+  runtimeTripped_ = false;
+  offAnchored_ = true;
+  offSinceS_ = nowS;
+  minOffWaived_ = minOffServed;
+}
+
+void GasShaper::forceStop(uint32_t nowS) {
+  extinguish(nowS);  // safety stop: always immediate, min-off restarts
+}
+
 float GasShaper::shape(float requestPct, uint32_t nowS) {
+  if (!offAnchored_) {
+    offAnchored_ = true;  // boot without bootRestore(): off-timer starts fresh
+    offSinceS_ = nowS;
+  }
   if (invalidRequest(requestPct)) {
     inputAlarm_ = true;
-    lit_ = false;  // docs/04 §2: invalid input -> demand 0; the run ends
+    if (lit_) extinguish(nowS);  // docs/04 §2: invalid input -> demand 0, safety stop
     return 0.0f;
   }
   requestPct = clampTop(requestPct);
@@ -27,21 +54,24 @@ float GasShaper::shape(float requestPct, uint32_t nowS) {
     // Held at 0 until the upstream call actually ends; a fresh call may
     // then start a new timed run. Alarm stays latched until clearAlarms().
     if (requestPct <= offThresh) runtimeTripped_ = false;
-    lit_ = false;
     return 0.0f;
   }
 
   if (lit_) {
-    if (requestPct <= offThresh) lit_ = false;
-  } else if (requestPct >= onThresh) {
+    // Comfort stop: only after min-on; until then hold at minFire (G14).
+    if (requestPct <= offThresh && elapsedS(nowS, runStartS_) >= cfg_.minOnS) {
+      extinguish(nowS);
+    }
+  } else if (requestPct >= onThresh && minOffServed(nowS)) {
     lit_ = true;
+    minOffWaived_ = false;
     runStartS_ = nowS;
   }
 
   if (lit_ && elapsedS(nowS, runStartS_) > cfg_.maxRuntimeS) {
     runtimeTripped_ = true;
     runtimeAlarm_ = true;
-    lit_ = false;
+    extinguish(nowS);  // safety stop: bypasses min-on
     return 0.0f;
   }
 
@@ -50,8 +80,11 @@ float GasShaper::shape(float requestPct, uint32_t nowS) {
 }
 
 void GasShaper::reset() {
+  // Boot-conservative: the off-timer re-anchors fresh at the next shape().
   lit_ = false;
   runtimeTripped_ = false;
+  offAnchored_ = false;
+  minOffWaived_ = false;
 }
 
 // --------------------------------------------------------- HpInverterShaper

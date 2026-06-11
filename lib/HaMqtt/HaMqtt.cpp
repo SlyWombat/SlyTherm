@@ -25,6 +25,14 @@ std::string sensorParticipatingStateTopic(const std::string& sensorId) {
   return "dettson/state/sensor/" + sensorId + "/participating";
 }
 
+std::string sensorOffsetCommandTopic(const std::string& sensorId) {
+  return "dettson/cmd/sensor/" + sensorId + "/offset";
+}
+
+std::string sensorOffsetStateTopic(const std::string& sensorId) {
+  return "dettson/state/sensor/" + sensorId + "/offset";
+}
+
 std::string discoveryTopic(const char* component, const std::string& objectId) {
   return std::string(topic::kDiscoveryPrefix) + "/" + component + "/dettson/" +
          objectId + "/config";
@@ -60,6 +68,17 @@ const char* toString(Preset p) {
   return "home";
 }
 
+const char* toString(HoldType t) {
+  switch (t) {
+    case HoldType::kNone: return "none";
+    case HoldType::kUntilNextPreset: return "until_next_preset";
+    case HoldType::kTwoHours: return "two_hours";
+    case HoldType::kFourHours: return "four_hours";
+    case HoldType::kIndefinite: return "indefinite";
+  }
+  return "none";
+}
+
 // ---------- Inbound parsers ----------
 
 Parsed<float> parseSetpoint(const char* payloadStr, float minC, float maxC) {
@@ -75,6 +94,10 @@ Parsed<float> parseSetpoint(const char* payloadStr, float minC, float maxC) {
   r.ok = true;
   r.value = v;
   return r;
+}
+
+Parsed<float> parseSensorOffset(const char* payloadStr) {
+  return parseSetpoint(payloadStr, -kSensorOffsetMaxC, kSensorOffsetMaxC);
 }
 
 Parsed<Mode> parseMode(const char* payloadStr) {
@@ -102,6 +125,37 @@ Parsed<Preset> parsePreset(const char* payloadStr) {
   if (std::strcmp(payloadStr, "home") == 0) { r.ok = true; r.value = Preset::kHome; }
   else if (std::strcmp(payloadStr, "away") == 0) { r.ok = true; r.value = Preset::kAway; }
   else if (std::strcmp(payloadStr, "sleep") == 0) { r.ok = true; r.value = Preset::kSleep; }
+  return r;
+}
+
+Parsed<HoldCommand> parseHoldCommand(const char* payloadStr) {
+  Parsed<HoldCommand> r;
+  if (payloadStr == nullptr) return r;
+  if (std::strcmp(payloadStr, "clear") == 0) {
+    r.ok = true;
+    r.value.clear = true;
+  } else if (std::strcmp(payloadStr, "until_next_preset") == 0) {
+    r.ok = true;
+    r.value.type = HoldType::kUntilNextPreset;
+  } else if (std::strcmp(payloadStr, "two_hours") == 0) {
+    r.ok = true;
+    r.value.type = HoldType::kTwoHours;
+  } else if (std::strcmp(payloadStr, "four_hours") == 0) {
+    r.ok = true;
+    r.value.type = HoldType::kFourHours;
+  } else if (std::strcmp(payloadStr, "indefinite") == 0) {
+    r.ok = true;
+    r.value.type = HoldType::kIndefinite;
+  }
+  // "none" deliberately rejected: ending a hold is the explicit "clear"
+  return r;
+}
+
+Parsed<bool> parseEmHeatCommand(const char* payloadStr) {
+  Parsed<bool> r;
+  if (payloadStr == nullptr) return r;
+  if (std::strcmp(payloadStr, payload::kOn) == 0) { r.ok = true; r.value = true; }
+  else if (std::strcmp(payloadStr, payload::kOff) == 0) { r.ok = true; r.value = false; }
   return r;
 }
 
@@ -147,6 +201,47 @@ bool keywordToken(const char* q, const char* kw) {
   return !(std::isalnum(static_cast<unsigned char>(c)) || c == '_');
 }
 
+// Parses a JSON string token at q. Only \" \\ and \/ escapes are supported
+// (preset names are plain identifiers-with-spaces); anything else — control
+// chars, \uXXXX, unterminated — fails. Empty strings fail.
+bool stringToken(const char* q, std::string& out) {
+  if (*q != '"') return false;
+  ++q;
+  out.clear();
+  while (*q != '\0' && *q != '"') {
+    if (*q == '\\') {
+      ++q;
+      if (*q == '"' || *q == '\\' || *q == '/') out += *q++;
+      else return false;
+    } else if (static_cast<unsigned char>(*q) < 0x20) {
+      return false;
+    } else {
+      out += *q++;
+    }
+  }
+  return *q == '"' && !out.empty();
+}
+
+// p at '{': returns pointer to the matching '}' (string-aware), or nullptr.
+const char* objEnd(const char* p) {
+  int depth = 0;
+  bool inStr = false, esc = false;
+  for (; *p != '\0'; ++p) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (*p == '\\') esc = true;
+      else if (*p == '"') inStr = false;
+    } else if (*p == '"') {
+      inStr = true;
+    } else if (*p == '{') {
+      ++depth;
+    } else if (*p == '}') {
+      if (--depth == 0) return p;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 bool parseSensorJson(const char* json, SensorReading& out) {
@@ -177,6 +272,98 @@ bool parseSensorJson(const char* json, SensorReading& out) {
     out.humidityPct = v;
   }
   return out.hasTemp;  // a reading without a valid temp is unusable
+}
+
+bool parsePresetRosterJson(const char* json, std::vector<PresetEntry>& out) {
+  out.clear();
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+  const char* p = findValue(json, "presets");
+  if (p == nullptr || *p != '[') return false;
+  p = skipWs(p + 1);
+  while (*p != ']') {
+    if (*p != '{') { out.clear(); return false; }  // structural junk
+    const char* e = objEnd(p);
+    if (e == nullptr) { out.clear(); return false; }
+    const std::string entry(p, e + 1);  // nul-terminated slice for findValue
+
+    PresetEntry pe;
+    bool valid = true;
+    const char* n = findValue(entry.c_str(), "name");
+    if (n == nullptr || !stringToken(n, pe.name) ||
+        pe.name.size() > kPresetNameMaxLen) {
+      valid = false;
+    }
+    float v = 0.0f;
+    const char* h = findValue(entry.c_str(), "heat");
+    if (valid && h != nullptr && numberToken(h, v) && v >= kClimateMinTempC &&
+        v <= kClimateMaxTempC) {
+      pe.heatC = v;
+    } else {
+      valid = false;
+    }
+    const char* c = findValue(entry.c_str(), "cool");
+    if (valid && c != nullptr && numberToken(c, v) && v >= kClimateMinTempC &&
+        v <= kClimateMaxTempC) {
+      pe.coolC = v;
+    } else {
+      valid = false;
+    }
+    if (valid) {
+      for (const PresetEntry& prev : out) {
+        if (prev.name == pe.name) { valid = false; break; }  // duplicate name
+      }
+    }
+    if (valid && out.size() < kMaxPresets) out.push_back(pe);
+
+    p = skipWs(e + 1);
+    if (*p == ',') p = skipWs(p + 1);
+    else if (*p != ']') { out.clear(); return false; }
+  }
+  return true;  // an empty roster is a legitimate "clear the presets"
+}
+
+bool parseSensorRosterJson(const char* json, std::vector<SensorRosterEntry>& out) {
+  out.clear();
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+  const char* p = findValue(json, "sensors");
+  if (p == nullptr || *p != '[') return false;
+  p = skipWs(p + 1);
+  while (*p != ']') {
+    if (*p != '{') { out.clear(); return false; }  // structural junk
+    const char* e = objEnd(p);
+    if (e == nullptr) { out.clear(); return false; }
+    const std::string entry(p, e + 1);  // nul-terminated slice for findValue
+
+    SensorRosterEntry se;
+    bool valid = true;
+    const char* n = findValue(entry.c_str(), "id");
+    if (n == nullptr || !stringToken(n, se.id)) valid = false;
+    float v = 0.0f;
+    const char* m = findValue(entry.c_str(), "max_age_s");
+    if (m != nullptr && numberToken(m, v) && v > 0.0f) {
+      se.hasMaxAge = true;
+      se.maxAgeS = static_cast<uint32_t>(v);
+    }
+    const char* o = findValue(entry.c_str(), "offset");
+    if (o != nullptr && numberToken(o, v)) {
+      se.offsetC = v > kSensorOffsetMaxC
+                       ? kSensorOffsetMaxC
+                       : (v < -kSensorOffsetMaxC ? -kSensorOffsetMaxC : v);
+    }
+    if (valid) {
+      for (const SensorRosterEntry& prev : out) {
+        if (prev.id == se.id) { valid = false; break; }  // duplicate id
+      }
+    }
+    if (valid && out.size() < kSensorRosterMax) out.push_back(se);
+
+    p = skipWs(e + 1);
+    if (*p == ',') p = skipWs(p + 1);
+    else if (*p != ']') { out.clear(); return false; }
+  }
+  return true;  // an empty roster is a legitimate "clear the sensors"
 }
 
 // ---------- JSON building ----------
@@ -267,6 +454,20 @@ std::string strList(std::initializer_list<const char*> items) {
   return s;
 }
 
+std::string strList(const std::vector<std::string>& items) {
+  std::string s = "[";
+  bool first = true;
+  for (const std::string& it : items) {
+    if (!first) s += ',';
+    first = false;
+    s += '"';
+    s += jsonEscape(it);
+    s += '"';
+  }
+  s += ']';
+  return s;
+}
+
 std::string deviceJson() {
   return Obj()
       .raw("identifiers", strList({"dettson_esp32"}))
@@ -280,18 +481,29 @@ struct EntitySpec {
   std::string name;
   std::string uniqueId;
   std::string stateTopic;
+  std::string commandTopic;  // non-empty for editable entities (number)
   const char* unit = nullptr;
   const char* deviceClass = nullptr;
+  const char* valueTemplate = nullptr;
+  const char* jsonAttributesTopic = nullptr;
   bool diagnostic = false;
+  bool config = false;  // entity_category config (HA-editable settings)
   bool binary = false;  // adds payload_on/payload_off ON/OFF
+  bool hasRange = false;  // adds min/max/step (number entities)
+  float minV = 0.0f, maxV = 0.0f, stepV = 0.0f;
 };
 
 std::string entityDiscoveryJson(const EntitySpec& e) {
   Obj o;
   o.str("name", e.name).str("unique_id", e.uniqueId).str("state_topic", e.stateTopic);
+  if (!e.commandTopic.empty()) o.str("command_topic", e.commandTopic);
+  if (e.hasRange) o.num("min", e.minV).num("max", e.maxV).num("step", e.stepV);
   if (e.unit != nullptr) o.str("unit_of_measurement", e.unit);
   if (e.deviceClass != nullptr) o.str("device_class", e.deviceClass);
+  if (e.valueTemplate != nullptr) o.str("value_template", e.valueTemplate);
+  if (e.jsonAttributesTopic != nullptr) o.str("json_attributes_topic", e.jsonAttributesTopic);
   if (e.diagnostic) o.str("entity_category", "diagnostic");
+  else if (e.config) o.str("entity_category", "config");
   if (e.binary) o.str("payload_on", payload::kOn).str("payload_off", payload::kOff);
   o.str("availability_topic", topic::kAvailability)
       .str("payload_available", payload::kOnline)
@@ -302,13 +514,13 @@ std::string entityDiscoveryJson(const EntitySpec& e) {
 
 }  // namespace
 
-std::string climateDiscoveryJson() {
+std::string climateDiscoveryJson(const std::vector<std::string>& presetModes) {
   return Obj()
       .str("name", "Dettson HVAC")
       .str("unique_id", "dettson_hvac")
       .raw("modes", strList({"off", "heat", "cool", "heat_cool"}))
       .raw("fan_modes", strList({"auto", "on", "circulate"}))
-      .raw("preset_modes", strList({"home", "away", "sleep"}))
+      .raw("preset_modes", strList(presetModes))  // built from the roster
       .num("min_temp", kClimateMinTempC)
       .num("max_temp", kClimateMaxTempC)
       .num("temp_step", kClimateTempStepC)
@@ -406,6 +618,31 @@ std::string compressorLockedOutDiscoveryJson() {
   return entityDiscoveryJson(e);
 }
 
+std::string holdDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Hold";
+  e.uniqueId = "dettson_hold";
+  e.stateTopic = topic::kStateHold;
+  e.valueTemplate = "{{ value_json.type }}";
+  e.jsonAttributesTopic = topic::kStateHold;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string emHeatDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Emergency Heat";
+  e.uniqueId = "dettson_em_heat";
+  e.stateTopic = topic::kStateEmHeat;
+  e.commandTopic = topic::kCmdEmHeat;
+  e.binary = true;  // ON/OFF payloads, both directions
+  return entityDiscoveryJson(e);
+}
+
+std::string holdStateJson(HoldType t, uint32_t remainingS) {
+  return Obj().str("type", toString(t)).num("remaining", remainingS).close();
+}
+
 std::string sensorAgeDiscoveryJson(const std::string& sensorId) {
   EntitySpec e;
   e.name = "Dettson Sensor " + sensorId + " Age";
@@ -413,6 +650,21 @@ std::string sensorAgeDiscoveryJson(const std::string& sensorId) {
   e.stateTopic = sensorAgeStateTopic(sensorId);
   e.unit = "s";
   e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string sensorOffsetDiscoveryJson(const std::string& sensorId) {
+  EntitySpec e;
+  e.name = "Dettson Sensor " + sensorId + " Offset";
+  e.uniqueId = "dettson_sensor_" + sensorId + "_offset";
+  e.stateTopic = sensorOffsetStateTopic(sensorId);
+  e.commandTopic = sensorOffsetCommandTopic(sensorId);
+  e.unit = "°C";
+  e.config = true;
+  e.hasRange = true;
+  e.minV = -kSensorOffsetMaxC;
+  e.maxV = kSensorOffsetMaxC;
+  e.stepV = 0.1f;
   return entityDiscoveryJson(e);
 }
 

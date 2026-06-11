@@ -1,0 +1,76 @@
+# Runtime-based filter/maintenance reminder for the Dettson DT-1 (gap G3,
+# docs/07). Pairs with the runtime accumulator in
+# ha/packages/dettson_starter.yaml (input_number.dettson_filter_runtime_h),
+# but works against any entity whose state is accumulated runtime hours —
+# point a second instance at a UV-lamp or HRV-core counter for other
+# maintenance intervals.
+blueprint:
+  name: "Dettson: filter reminder by runtime hours"
+  description: >-
+    Raises a persistent notification when an accumulated-runtime-hours entity
+    crosses a threshold. The notification stays until dismissed or until the
+    counter is reset below the threshold (e.g. via the starter package's
+    "Dettson filter changed (reset)" button).
+  domain: automation
+  author: ElectricRV
+  input:
+    runtime_entity:
+      name: Runtime counter
+      description: >-
+        Entity holding accumulated blower/equipment runtime in hours since the
+        last service (starter package: input_number.dettson_filter_runtime_h).
+      default: input_number.dettson_filter_runtime_h
+      selector:
+        entity:
+          domain:
+            - input_number
+            - sensor
+            - counter
+    threshold_hours:
+      name: Reminder threshold (hours)
+      description: >-
+        Runtime hours between services. 300 h is a reasonable 1" filter
+        starting point; tighten for pets/allergies.
+      default: 300
+      selector:
+        number:
+          min: 10
+          max: 5000
+          step: 10
+          unit_of_measurement: h
+          mode: box
+    reminder_title:
+      name: Notification title
+      default: "Dettson: furnace filter due"
+      selector:
+        text:
+    notification_id:
+      name: Notification id
+      description: >-
+        Unique per blueprint instance, so multiple reminders do not overwrite
+        each other and a reset can dismiss the right one.
+      default: dettson_filter_reminder
+      selector:
+        text:
+
+variables:
+  runtime_entity: !input runtime_entity
+  threshold_hours: !input threshold_hours
+
+trigger:
+  - platform: numeric_state
+    entity_id: !input runtime_entity
+    above: !input threshold_hours
+
+action:
+  - service: persistent_notification.create
+    data:
+      notification_id: !input notification_id
+      title: !input reminder_title
+      message: >-
+        Accumulated runtime
+        {{ states(runtime_entity) | float(0) | round(0) }} h has passed the
+        {{ threshold_hours }} h service interval. Service the equipment, then
+        reset the counter.
+
+mode: single

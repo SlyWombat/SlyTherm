@@ -64,7 +64,10 @@ static void test_topic_map_matches_docs() {
   TEST_ASSERT_EQUAL_STRING("dettson/cmd/mode", topic::kCmdMode);
   TEST_ASSERT_EQUAL_STRING("dettson/cmd/fan_mode", topic::kCmdFanMode);
   TEST_ASSERT_EQUAL_STRING("dettson/cmd/preset", topic::kCmdPreset);
+  TEST_ASSERT_EQUAL_STRING("dettson/cmd/hold", topic::kCmdHold);
   TEST_ASSERT_EQUAL_STRING("dettson/config/sensors", topic::kConfigSensors);
+  TEST_ASSERT_EQUAL_STRING("dettson/config/presets", topic::kConfigPresets);
+  TEST_ASSERT_EQUAL_STRING("dettson/state/hold", topic::kStateHold);
   TEST_ASSERT_EQUAL_STRING("dettson/state/current_temp", topic::kStateCurrentTemp);
   TEST_ASSERT_EQUAL_STRING("dettson/state/setpoint", topic::kStateSetpoint);
   TEST_ASSERT_EQUAL_STRING("dettson/state/target_temp_low", topic::kStateTargetTempLow);
@@ -277,6 +280,249 @@ static void test_enum_round_trip() {
   TEST_ASSERT_TRUE(parsePreset(toString(Preset::kAway)).value == Preset::kAway);
 }
 
+// ---------- hold command parsing (G4) ----------
+
+static void test_parse_hold_command_accepts_types_and_clear() {
+  using dettson::HoldType;
+  Parsed<HoldCommand> r = parseHoldCommand("until_next_preset");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_FALSE(r.value.clear);
+  TEST_ASSERT_TRUE(r.value.type == HoldType::kUntilNextPreset);
+  TEST_ASSERT_TRUE(parseHoldCommand("two_hours").value.type == HoldType::kTwoHours);
+  TEST_ASSERT_TRUE(parseHoldCommand("four_hours").value.type == HoldType::kFourHours);
+  TEST_ASSERT_TRUE(parseHoldCommand("indefinite").value.type == HoldType::kIndefinite);
+  r = parseHoldCommand("clear");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.value.clear);
+}
+
+static void test_parse_hold_command_rejects_junk() {
+  TEST_ASSERT_FALSE(parseHoldCommand(nullptr).ok);
+  TEST_ASSERT_FALSE(parseHoldCommand("").ok);
+  TEST_ASSERT_FALSE(parseHoldCommand("none").ok);   // state-only string
+  TEST_ASSERT_FALSE(parseHoldCommand("Two_Hours").ok);
+  TEST_ASSERT_FALSE(parseHoldCommand("2h").ok);
+  TEST_ASSERT_FALSE(parseHoldCommand("clear ").ok);  // no trailing junk
+  TEST_ASSERT_FALSE(parseHoldCommand("hold").ok);
+}
+
+static void test_hold_state_json_and_round_trip() {
+  using dettson::HoldType;
+  std::string j = holdStateJson(HoldType::kTwoHours, 7032);
+  assertCoherentJson(j);
+  TEST_ASSERT_EQUAL_STRING("{\"type\":\"two_hours\",\"remaining\":7032}", j.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"type\":\"none\",\"remaining\":0}",
+                           holdStateJson(HoldType::kNone, 0).c_str());
+  // Wire strings round-trip through the command parser (except "none").
+  TEST_ASSERT_TRUE(parseHoldCommand(toString(HoldType::kFourHours)).value.type ==
+                   HoldType::kFourHours);
+}
+
+static void test_hold_discovery_json() {
+  std::string j = holdDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"value_template\":\"{{ value_json.type }}\""));
+  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"dettson/state/hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
+}
+
+// ---------- EM HEAT switch (G15) ----------
+
+static void test_em_heat_topics() {
+  TEST_ASSERT_EQUAL_STRING("dettson/cmd/em_heat", topic::kCmdEmHeat);
+  TEST_ASSERT_EQUAL_STRING("dettson/state/em_heat", topic::kStateEmHeat);
+}
+
+static void test_parse_em_heat_command() {
+  auto r = parseEmHeatCommand("ON");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.value);
+  r = parseEmHeatCommand("OFF");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_FALSE(r.value);
+  // Strict: HA switch default payloads only — rejection never mutates state.
+  TEST_ASSERT_FALSE(parseEmHeatCommand(nullptr).ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("on").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("off").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("ON ").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("1").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("emergency_heat").ok);
+}
+
+static void test_em_heat_discovery_json_and_not_a_mode_or_preset() {
+  std::string j = emHeatDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"dettson/cmd/em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"payload_on\":\"ON\""));
+  TEST_ASSERT_TRUE(has(j, "\"payload_off\":\"OFF\""));
+  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"dettson/availability\""));
+  // Mutual exclusion with comfort presets is structural: EM HEAT never
+  // appears as an hvac mode or in preset_modes (docs/06).
+  std::string climate = climateDiscoveryJson();
+  TEST_ASSERT_FALSE(has(climate, "emergency_heat"));
+  TEST_ASSERT_FALSE(has(climate, "em_heat"));
+}
+
+// ---------- preset roster config + dynamic discovery (G4) ----------
+
+static void test_preset_roster_json_round_trip() {
+  std::vector<PresetEntry> out;
+  TEST_ASSERT_TRUE(parsePresetRosterJson(
+      "{\"presets\":[{\"name\":\"home\",\"heat\":21,\"cool\":25},"
+      "{\"name\":\"movie night\",\"heat\":20.5,\"cool\":24.5}]}", out));
+  TEST_ASSERT_EQUAL(2, out.size());
+  TEST_ASSERT_EQUAL_STRING("home", out[0].name.c_str());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, out[0].heatC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, out[0].coolC);
+  TEST_ASSERT_EQUAL_STRING("movie night", out[1].name.c_str());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 24.5f, out[1].coolC);
+
+  // Whitespace, key order, unknown extra keys tolerated; names feed straight
+  // into the dynamic discovery list.
+  TEST_ASSERT_TRUE(parsePresetRosterJson(
+      " {\n \"presets\" : [ { \"cool\" : 28 , \"heat\" : 16 ,"
+      " \"name\" : \"away\" , \"icon\" : \"mdi:leaf\" } ]\n} ", out));
+  TEST_ASSERT_EQUAL(1, out.size());
+  std::string j = climateDiscoveryJson({out[0].name});
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"preset_modes\":[\"away\"]"));
+
+  // Empty roster is valid (clears the presets).
+  TEST_ASSERT_TRUE(parsePresetRosterJson("{\"presets\":[]}", out));
+  TEST_ASSERT_EQUAL(0, out.size());
+}
+
+static void test_preset_roster_json_rejects_structural_junk() {
+  std::vector<PresetEntry> out;
+  TEST_ASSERT_FALSE(parsePresetRosterJson(nullptr, out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson("", out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson("not json", out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson("{}", out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson("{\"presets\":42}", out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson("{\"presets\":[42]}", out));
+  TEST_ASSERT_FALSE(parsePresetRosterJson(
+      "{\"presets\":[{\"name\":\"x\",\"heat\":21,\"cool\":25}", out));  // unterminated
+  TEST_ASSERT_EQUAL(0, out.size());  // rejection leaves nothing half-applied
+}
+
+static void test_preset_roster_json_skips_invalid_entries_and_caps() {
+  std::vector<PresetEntry> out;
+  TEST_ASSERT_TRUE(parsePresetRosterJson(
+      "{\"presets\":["
+      "{\"heat\":21,\"cool\":25},"                                   // no name
+      "{\"name\":\"\",\"heat\":21,\"cool\":25},"                     // empty name
+      "{\"name\":\"hot\",\"heat\":35,\"cool\":36},"                  // heat > climate max 30
+      "{\"name\":\"nocool\",\"heat\":21},"                           // missing cool
+      "{\"name\":\"ok\",\"heat\":21,\"cool\":25},"
+      "{\"name\":\"ok\",\"heat\":18,\"cool\":26},"                   // duplicate
+      "{\"name\":\"a-name-longer-than-23-chars\",\"heat\":21,\"cool\":25}"
+      "]}", out));
+  TEST_ASSERT_EQUAL(1, out.size());
+  TEST_ASSERT_EQUAL_STRING("ok", out[0].name.c_str());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, out[0].heatC);  // first def wins
+
+  // 10 valid entries -> capped at kMaxPresets (8).
+  std::string big = "{\"presets\":[";
+  for (int i = 0; i < 10; ++i) {
+    if (i) big += ',';
+    big += "{\"name\":\"p" + std::to_string(i) + "\",\"heat\":20,\"cool\":25}";
+  }
+  big += "]}";
+  TEST_ASSERT_TRUE(parsePresetRosterJson(big.c_str(), out));
+  TEST_ASSERT_EQUAL(dettson::kMaxPresets, out.size());
+}
+
+// ---------- sensor calibration offsets (issue #49, gap G6) ----------
+
+static void test_sensor_offset_topics_and_discovery() {
+  TEST_ASSERT_EQUAL_STRING("dettson/cmd/sensor/kitchen/offset",
+                           sensorOffsetCommandTopic("kitchen").c_str());
+  TEST_ASSERT_EQUAL_STRING("dettson/state/sensor/kitchen/offset",
+                           sensorOffsetStateTopic("kitchen").c_str());
+  TEST_ASSERT_EQUAL_STRING("local", kLocalSensorId);
+
+  std::string j = sensorOffsetDiscoveryJson("kitchen");
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_sensor_kitchen_offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/sensor/kitchen/offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"dettson/cmd/sensor/kitchen/offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"min\":-5"));
+  TEST_ASSERT_TRUE(has(j, "\"max\":5"));
+  TEST_ASSERT_TRUE(has(j, "\"step\":0.1"));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"config\""));
+  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"dettson/availability\""));
+  TEST_ASSERT_TRUE(has(j, "\"device\":{"));
+
+  // The local DS18B20 fallback follows the same pattern.
+  std::string l = sensorOffsetDiscoveryJson(kLocalSensorId);
+  assertCoherentJson(l);
+  TEST_ASSERT_TRUE(has(l, "\"unique_id\":\"dettson_sensor_local_offset\""));
+  TEST_ASSERT_TRUE(has(l, "\"command_topic\":\"dettson/cmd/sensor/local/offset\""));
+}
+
+static void test_parse_sensor_offset_bounds() {
+  TEST_ASSERT_TRUE(parseSensorOffset("1.5").ok);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.5f, parseSensorOffset("1.5").value);
+  TEST_ASSERT_TRUE(parseSensorOffset("-5").ok);
+  TEST_ASSERT_TRUE(parseSensorOffset("5").ok);
+  TEST_ASSERT_TRUE(parseSensorOffset("0").ok);
+  TEST_ASSERT_FALSE(parseSensorOffset("5.1").ok);   // rejected, never clamped
+  TEST_ASSERT_FALSE(parseSensorOffset("-5.1").ok);
+  TEST_ASSERT_FALSE(parseSensorOffset("nan").ok);
+  TEST_ASSERT_FALSE(parseSensorOffset("").ok);
+  TEST_ASSERT_FALSE(parseSensorOffset(nullptr).ok);
+}
+
+static void test_sensor_roster_json_with_and_without_offset() {
+  std::vector<SensorRosterEntry> out;
+  TEST_ASSERT_TRUE(parseSensorRosterJson(
+      "{\"sensors\":[{\"id\":\"kitchen\",\"max_age_s\":600,\"offset\":-1.5},"
+      "{\"id\":\"hall\"}]}", out));
+  TEST_ASSERT_EQUAL(2, out.size());
+  TEST_ASSERT_EQUAL_STRING("kitchen", out[0].id.c_str());
+  TEST_ASSERT_TRUE(out[0].hasMaxAge);
+  TEST_ASSERT_EQUAL_UINT32(600, out[0].maxAgeS);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -1.5f, out[0].offsetC);
+  TEST_ASSERT_EQUAL_STRING("hall", out[1].id.c_str());
+  TEST_ASSERT_FALSE(out[1].hasMaxAge);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, out[1].offsetC);  // default 0
+
+  // Empty roster is valid (clears the sensors).
+  TEST_ASSERT_TRUE(parseSensorRosterJson("{\"sensors\":[]}", out));
+  TEST_ASSERT_EQUAL(0, out.size());
+}
+
+static void test_sensor_roster_offset_tolerance_and_clamp() {
+  std::vector<SensorRosterEntry> out;
+  // null/malformed offset -> 0; out-of-range -> clamped to ±kSensorOffsetMaxC
+  TEST_ASSERT_TRUE(parseSensorRosterJson(
+      "{\"sensors\":[{\"id\":\"a\",\"offset\":null},"
+      "{\"id\":\"b\",\"offset\":\"x\"},"
+      "{\"id\":\"c\",\"offset\":9},"
+      "{\"id\":\"d\",\"offset\":-9}]}", out));
+  TEST_ASSERT_EQUAL(4, out.size());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, out[0].offsetC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, out[1].offsetC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 5.0f, out[2].offsetC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -5.0f, out[3].offsetC);
+
+  // Missing/empty/duplicate ids skipped; structural junk rejected whole.
+  TEST_ASSERT_TRUE(parseSensorRosterJson(
+      "{\"sensors\":[{\"offset\":1},{\"id\":\"\"},{\"id\":\"a\"},{\"id\":\"a\"}]}",
+      out));
+  TEST_ASSERT_EQUAL(1, out.size());
+  TEST_ASSERT_EQUAL_STRING("a", out[0].id.c_str());
+  TEST_ASSERT_FALSE(parseSensorRosterJson("{\"sensors\":42}", out));
+  TEST_ASSERT_FALSE(parseSensorRosterJson("{}", out));
+  TEST_ASSERT_FALSE(parseSensorRosterJson(nullptr, out));
+  TEST_ASSERT_EQUAL(0, out.size());
+}
+
 // ---------- sensor JSON tolerance matrix ----------
 
 static void test_sensor_json_full_payload() {
@@ -376,6 +622,20 @@ int main() {
   RUN_TEST(test_parse_fan_mode);
   RUN_TEST(test_parse_preset);
   RUN_TEST(test_enum_round_trip);
+  RUN_TEST(test_parse_hold_command_accepts_types_and_clear);
+  RUN_TEST(test_parse_hold_command_rejects_junk);
+  RUN_TEST(test_hold_state_json_and_round_trip);
+  RUN_TEST(test_hold_discovery_json);
+  RUN_TEST(test_em_heat_topics);
+  RUN_TEST(test_parse_em_heat_command);
+  RUN_TEST(test_em_heat_discovery_json_and_not_a_mode_or_preset);
+  RUN_TEST(test_preset_roster_json_round_trip);
+  RUN_TEST(test_preset_roster_json_rejects_structural_junk);
+  RUN_TEST(test_preset_roster_json_skips_invalid_entries_and_caps);
+  RUN_TEST(test_sensor_offset_topics_and_discovery);
+  RUN_TEST(test_parse_sensor_offset_bounds);
+  RUN_TEST(test_sensor_roster_json_with_and_without_offset);
+  RUN_TEST(test_sensor_roster_offset_tolerance_and_clamp);
   RUN_TEST(test_sensor_json_full_payload);
   RUN_TEST(test_sensor_json_missing_and_null_fields_tolerated);
   RUN_TEST(test_sensor_json_invalid_temp_rejected);

@@ -56,6 +56,7 @@ struct SensorStatus {
   bool live = false;       // passed all health gates at the last fusedTemp()
   uint32_t ageS = 0;       // UINT32_MAX if never updated
   uint16_t faults = 0;     // FusionAlarm bits for this sensor (last evaluation)
+  float offsetC = 0.0f;    // active calibration offset (docs/07 G6)
 };
 
 // Bounds documented in docs/05 defaults table but not (yet) named in
@@ -77,6 +78,12 @@ class SensorFusion {
                       uint32_t maxAgeS = kSensorMaxAgeS);
   bool setParticipating(uint8_t id, bool participating);
   bool setSensorMaxAgeS(uint8_t id, uint32_t maxAgeS);
+
+  // Calibration offset (docs/07 G6), clamped to ±kSensorOffsetMaxC; applies
+  // to the local fallback sensor too. Corrected values feed every health gate
+  // and the fusion mean; a change routes through the slew limit (no output
+  // step) and never touches the stuck-value window. Non-finite is rejected.
+  bool setSensorOffsetC(uint8_t id, float offsetC);
 
   // Feed a sample. occ = kUnknown for sensors without occupancy (e.g. local
   // DS18B20). Returns false for an unregistered id (caller should alarm).
@@ -105,6 +112,7 @@ class SensorFusion {
     bool isLocal = false;
     bool participating = true;
     uint32_t maxAgeS = kSensorMaxAgeS;
+    float offsetC = 0.0f;
 
     bool hasUpdate = false;
     float tempC = 0.0f;
@@ -119,6 +127,8 @@ class SensorFusion {
 
     bool live = false;    // last-evaluation result
     uint16_t faults = 0;
+
+    float correctedC() const { return tempC + offsetC; }
   };
 
   Slot* find(uint8_t id);

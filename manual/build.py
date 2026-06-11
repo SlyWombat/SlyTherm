@@ -60,7 +60,7 @@ PDF_DIR = PROJECT / 'docs' / 'manuals'
 
 PRODUCT = 'ElectricRV Dual-Fuel Smart Thermostat'
 MODEL = 'DT-1 (Dettson/Gree edition)'
-DRAFT = 'DRAFT v0.1'
+DRAFT = 'DRAFT v0.2'
 
 MANUALS = {
     'user': {'title': 'User Manual', 'pdf': 'USER_MANUAL.pdf'},

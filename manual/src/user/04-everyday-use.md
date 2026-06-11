@@ -50,16 +50,44 @@ Tap a button on the mode row: **OFF / HEAT / COOL / AUTO / EM HEAT**.
 
 - **EM HEAT (emergency heat)** — gas furnace only; the heat pump is not used
   at all. Use this if the heat pump is damaged, iced up, or awaiting
-  service. Emergency heat is selected on the wall screen; in the phone app
-  the mode list shows Off / Heat / Cool / Auto.
+  service. In the phone app the mode list shows Off / Heat / Cool / Auto;
+  emergency heat appears there as a separate **Emergency Heat** switch on
+  the thermostat's device page. Turning the switch off returns the system
+  to whatever mode it was in before, and schedules keep adjusting
+  temperatures normally while it is on — only the choice of heat source is
+  pinned to gas.
 
 ## Choosing a preset
 
 Tap **Home**, **Away**, or **Sleep** on the preset row. Each preset is a
 pair of setpoints you (or your installer) define in Home Assistant — for
 example, Away might be heat 16 / cool 28 to save energy while nobody is in.
+Your household can also define its own presets with its own names (see
+*Schedules and presets*); the preset row shows whatever has been set up.
 Schedules normally switch presets for you automatically (see *Schedules and
 presets*).
+
+## Holding a temperature
+
+When you change the temperature or mode by hand, the thermostat places a
+**hold**: your change stays in effect and scheduled preset changes are
+ignored while the hold lasts.
+
+Out of the box, a hold lasts **until the next scheduled change** — nudge
+the temperature up in the evening, and the overnight Sleep preset still
+arrives on time. If you want something different, you can pick a timed
+hold instead:
+
+- **2 hours** or **4 hours** — your change is protected from the schedule
+  for that long. When the time runs out the thermostat doesn't jump
+  anywhere; it simply starts listening to the schedule again, and the next
+  scheduled change takes over as usual.
+- **Hold indefinitely** — the schedule is ignored until you clear the hold
+  yourself. Useful for guests, illness, or "just leave it alone" weeks.
+
+Timed and indefinite holds are chosen from the hold control on the wall
+screen or in Home Assistant, and the remaining time is shown while a timed
+hold is counting down.
 
 ## Why the thermostat sometimes waits
 

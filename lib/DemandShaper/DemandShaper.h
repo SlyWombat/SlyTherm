@@ -4,7 +4,9 @@
 // for the selected actuator:
 //   GasShaper        — Chinook modulating gas: output 0 or [floor..100] with
 //                      floor-snap hysteresis (never dither below the 40% floor,
-//                      docs/05 canonical table) + max-continuous-runtime trip.
+//                      docs/05 canonical table) + max-continuous-runtime trip
+//                      + gas min-on/min-off timers (docs/07 G14; comfort vs
+//                      safety stop split mirrors CompressorGuard).
 //   HpInverterShaper — inverter HP % path: slew-limited, quantized, floored.
 //   HpRelayShaper    — staged HP via relay: demand -> on/off duty at
 //                      <= max starts/hour, gated by a CompressorGuard-like
@@ -41,6 +43,15 @@ class GasShaper : public DemandShaper {
     float    lightMarginPct      = 2.0f;   // light only when request >= floor + margin
     float    extinguishMarginPct = 5.0f;   // extinguish only when request <= floor - margin
     uint32_t maxRuntimeS         = kGasMaxRuntimeS;  // continuous run cap -> drop + alarm
+    // Gas-side anti-short-cycle pair (docs/07 G14, docs/05 table). Stop
+    // semantics mirror CompressorGuard's comfort/safety distinction:
+    //   - min-on gates COMFORT stops only (request dropping out via shape()):
+    //     while unserved the burner is held lit at minFire (floorPct).
+    //   - SAFETY stops — invalid input, max-runtime trip, forceStop() — are
+    //     ALWAYS immediate (docs/04 §1: shedding demand is never blocked).
+    //   - every (re)light waits for min-off since the last extinguish.
+    uint32_t minOnS              = kGasMinOnS;
+    uint32_t minOffS             = kGasMinOffS;
   };
 
   GasShaper() {}
@@ -50,6 +61,17 @@ class GasShaper : public DemandShaper {
   void reset() override;
   bool alarm() const override { return inputAlarm_ || runtimeAlarm_; }
 
+  // Boot conservatism (CompressorGuard's unknown -> hold-off philosophy with
+  // the gas-appropriate timer): without this call the off-timer starts fresh
+  // at the first shape() call. Pass minOffServed=true only when persisted
+  // state proves the burner has already been off >= minOffS.
+  void bootRestore(uint32_t nowS, bool minOffServed);
+
+  // SAFETY stop (sensor fault, invariant trip, watchdog path): extinguishes
+  // immediately — min-on never applies — and (re)starts the min-off timer,
+  // so a persisting fault also blocks relight.
+  void forceStop(uint32_t nowS);
+
   bool lit() const { return lit_; }
   bool runtimeAlarm() const { return runtimeAlarm_; }  // latched until clearAlarms()
   bool inputAlarm() const { return inputAlarm_; }      // latched until clearAlarms()
@@ -57,12 +79,18 @@ class GasShaper : public DemandShaper {
   void setConfig(const Config& cfg) { cfg_ = cfg; }
 
  private:
+  void extinguish(uint32_t nowS);            // any stop lands here: starts min-off
+  bool minOffServed(uint32_t nowS) const;
+
   Config   cfg_;
   bool     lit_            = false;
   bool     runtimeTripped_ = false;  // forces 0 until the call ends (request drops out)
   bool     runtimeAlarm_   = false;
   bool     inputAlarm_     = false;
   uint32_t runStartS_      = 0;
+  bool     offAnchored_    = false;  // false until boot anchors the off-timer
+  uint32_t offSinceS_      = 0;
+  bool     minOffWaived_   = false;  // bootRestore(minOffServed=true); cleared on extinguish
 };
 
 // ---------------------------------------------------------------------------
