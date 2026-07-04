@@ -103,15 +103,21 @@ static void touchCb(lv_indev_drv_t*,lv_indev_data_t* data){
   else data->state=LV_INDEV_STATE_REL;
 }
 
-// ================= UI palette / theme ========================================
-#define COL_BG      0x0A0E13
-#define COL_CARD    0x141B24
-#define COL_INK     0xE6EDF3
-#define COL_MUTED   0x8A97A3
-#define COL_EMBER   0xFF7A18
-#define COL_CRYO    0x38BDF8
-#define COL_OK      0x36D399
-#define COL_WARN    0xF87272
+// ================= UI palette — SlyTherm design system (docs/09) ==============
+#define COL_BG       0x0B0F14   // neutral bg
+#define COL_CARD     0x151C25   // surface
+#define COL_RAISED   0x1F2A36   // surface.raised (buttons/keypad)
+#define COL_BORDER   0x2B3947   // border
+#define COL_INK      0xEAF0F6   // text.primary  (headings, values)
+#define COL_MUTED    0xAEB9C4   // text.secondary (body rows — bright enough to kill grey fringing)
+#define COL_TEXT3    0x7A8895   // text.tertiary  (captions only)
+#define COL_EMBER    0xFF7A18   // accent.heat
+#define COL_EMBER_HI 0xFFB020   // accent.heat.hi
+#define COL_CRYO     0x38BDF8   // accent.cool
+#define COL_CRYO_HI  0x7DD3FC   // accent.cool.hi
+#define COL_OK       0x37D39A   // state.ok
+#define COL_WARN     0xF2C14E   // state.warning
+#define COL_CRIT     0xFF5D5D   // state.critical
 
 // ================= model + demo control echo =================================
 static UiModel gModel;
@@ -123,12 +129,19 @@ struct DemoCtl {
   UserMode mode = UserMode::kOff;
   float heatC = 20.0f, coolC = 24.0f;
   bool heating = false, cooling = false;   // latched with hysteresis
+  uint32_t frames = 0, framesOk = 0, badcrc = 0;   // demo CT-485 sniffer counters
   void step(uint32_t nowS) {
     UiIntent it;
     while (gModel.popIntent(it)) {
       switch (it.type) {
         case IntentType::kSetSetpoints: heatC = it.heatC; coolC = it.coolC; break;
         case IntentType::kSetMode:      mode = it.mode; break;
+        case IntentType::kSetPreset:
+          switch (it.preset) {
+            case Preset::kHome:  heatC = 21.0f; coolC = 24.0f; break;
+            case Preset::kAway:  heatC = 17.0f; coolC = 28.0f; break;
+            case Preset::kSleep: heatC = 19.0f; coolC = 23.0f; break;
+          } break;
         default: break;
       }
     }
@@ -150,14 +163,37 @@ struct DemoCtl {
     gModel.setGasModulationPct(mod);
     gModel.setOutdoor(-4.0f, true, OutdoorSource::kHaWeather);
     gModel.setLinkHealth(true, true, false);
+
+    // demo remote sensors (so the Sensors tab has content)
+    SensorRow rows[3] = {};
+    strncpy(rows[0].name,"living", sizeof(rows[0].name)-1);
+    rows[0].tempC=roomC;        rows[0].occupied=true;  rows[0].ageS=5;  rows[0].participating=true;  rows[0].healthy=true;
+    strncpy(rows[1].name,"bedroom",sizeof(rows[1].name)-1);
+    rows[1].tempC=roomC-0.8f;   rows[1].occupied=false; rows[1].ageS=14; rows[1].participating=true;  rows[1].healthy=true;
+    strncpy(rows[2].name,"office", sizeof(rows[2].name)-1);
+    rows[2].tempC=roomC+0.6f;   rows[2].occupied=false; rows[2].ageS=95; rows[2].participating=false; rows[2].healthy=true;
+    gModel.setSensorRows(rows,3);
+
+    // demo CT-485 sniffer traffic
+    frames += 7; framesOk += 7;
+    if ((nowS % 9) == 0) badcrc++;
   }
 } gDemo;
 
 // ================= screen widgets (updated in render) ========================
 static lv_obj_t *wTemp, *wAction, *wHeatSp, *wCoolSp, *wModeLbl;
 static lv_obj_t *wWifi, *wMqtt, *wBus, *wOat;
-static lv_obj_t *wSensorList, *wSysBody;
+static lv_obj_t *wSensorList, *wSysBody, *wDiagBody, *wLockState;
 static lv_obj_t *modeBtns[4];
+
+// PIN keypad overlay (exercises UiModel's lock API)
+static lv_obj_t *kpad=nullptr, *kpadTitle=nullptr, *kpadDots=nullptr;
+enum class KpMode { Set, Unlock };
+static KpMode  kpMode = KpMode::Set;
+static uint8_t kpBuf[4];
+static int     kpN = 0;
+static uint32_t nowSeconds(){ return millis()/1000; }
+static constexpr uint32_t kPinSalt = 0x5A17C0DE;
 
 static const char* modeName(UserMode m){
   switch(m){case UserMode::kHeat:return "HEAT";case UserMode::kCool:return "COOL";
@@ -278,7 +314,8 @@ static void buildHome(lv_obj_t* tab){
 static void buildSensors(lv_obj_t* tab){
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Room sensors");
   lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
-  wSensorList=lv_label_create(tab); lv_obj_set_style_text_color(wSensorList,lv_color_hex(COL_MUTED),0);
+  wSensorList=lv_label_create(tab); lv_obj_set_style_text_color(wSensorList,lv_color_hex(COL_INK),0);
+  lv_obj_set_style_text_font(wSensorList,&lv_font_montserrat_20,0);
   lv_obj_align(wSensorList,LV_ALIGN_TOP_LEFT,4,44);
 }
 static void buildSystem(lv_obj_t* tab){
@@ -290,20 +327,107 @@ static void buildSystem(lv_obj_t* tab){
 static void buildDiag(lv_obj_t* tab){
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Diagnostics / CT-485 sniffer");
   lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0);
+  lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,44);
   lv_obj_t* n=lv_label_create(tab);
-  lv_label_set_text(n,"Live bus counters fold in here once the UI is\nwired to the control task's CT-485 stack.");
-  lv_obj_set_style_text_color(n,lv_color_hex(COL_MUTED),0); lv_obj_align(n,LV_ALIGN_TOP_LEFT,4,44);
+  lv_label_set_text(n,"(demo counters — folds onto the real control-task\nCT-485 stack when the UI is integrated)");
+  lv_obj_set_style_text_color(n,lv_color_hex(0x556270),0); lv_obj_align(n,LV_ALIGN_BOTTOM_LEFT,4,-4);
+}
+
+// ---- Presets tab ----
+static void presetEvt(lv_event_t* e){
+  gModel.setPreset((Preset)(intptr_t)lv_event_get_user_data(e));
+}
+static void buildPresets(lv_obj_t* tab){
+  lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Presets");
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  const char* nm[3]={"Home","Away","Sleep"};
+  const char* sub[3]={"21 / 24","17 / 28","19 / 23"};
+  Preset pv[3]={Preset::kHome,Preset::kAway,Preset::kSleep};
+  for(int i=0;i<3;i++){
+    lv_obj_t* b=lv_btn_create(tab); lv_obj_set_size(b,230,150);
+    lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*250,52);
+    lv_obj_set_style_bg_color(b,lv_color_hex(COL_CARD),0);
+    lv_obj_add_event_cb(b,presetEvt,LV_EVENT_CLICKED,(void*)(intptr_t)pv[i]);
+    lv_obj_t* l=lv_label_create(b); lv_label_set_text(l,nm[i]);
+    lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,4);
+    lv_obj_t* s=lv_label_create(b); lv_label_set_text_fmt(s,"heat/cool  %s",sub[i]);
+    lv_obj_set_style_text_color(s,lv_color_hex(COL_MUTED),0); lv_obj_align(s,LV_ALIGN_BOTTOM_MID,0,-6);
+  }
+}
+
+// ---- PIN keypad overlay ----
+static void kpadRefresh(){ char d[16]=""; for(int i=0;i<4;i++) strcat(d, i<kpN?"* ":"_ "); lv_label_set_text(kpadDots,d); }
+static void kpadOpen(KpMode m,const char* title){ kpMode=m; kpN=0; lv_label_set_text(kpadTitle,title); kpadRefresh();
+  lv_obj_clear_flag(kpad,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(kpad); }
+static void kpadClose(){ lv_obj_add_flag(kpad,LV_OBJ_FLAG_HIDDEN); }
+static void kpEvt(lv_event_t* e){
+  const int v=(int)(intptr_t)lv_event_get_user_data(e);
+  if(v==-1){ kpadClose(); return; }
+  if(v==-2){ kpN=0; kpadRefresh(); return; }
+  if(kpN<4){ kpBuf[kpN++]=(uint8_t)v; kpadRefresh(); }
+  if(kpN==4){
+    if(kpMode==KpMode::Set){ gModel.setUserPin(kpBuf,kPinSalt); lv_label_set_text(kpadTitle,"PIN saved - close"); }
+    else { gModel.beginPinEntry(PinContext::kUnlock,nowSeconds());
+      PinResult r=PinResult::kIdle; for(int i=0;i<4;i++) r=gModel.enterPinDigit(kpBuf[i],nowSeconds());
+      lv_label_set_text(kpadTitle, r==PinResult::kAccepted?"Unlocked - close":"Wrong PIN"); }
+    kpN=0; kpadRefresh();
+  }
+}
+static void buildKeypad(lv_obj_t* scr){
+  kpad=lv_obj_create(scr); lv_obj_set_size(kpad,360,420); lv_obj_center(kpad);
+  lv_obj_set_style_bg_color(kpad,lv_color_hex(0x141B24),0);
+  lv_obj_set_style_border_color(kpad,lv_color_hex(COL_CRYO),0); lv_obj_set_style_border_width(kpad,2,0);
+  lv_obj_clear_flag(kpad,LV_OBJ_FLAG_SCROLLABLE);
+  kpadTitle=lv_label_create(kpad); lv_obj_align(kpadTitle,LV_ALIGN_TOP_MID,0,4);
+  kpadDots=lv_label_create(kpad); lv_obj_set_style_text_font(kpadDots,&lv_font_montserrat_28,0);
+  lv_obj_align(kpadDots,LV_ALIGN_TOP_MID,0,36);
+  lv_obj_t* grid=lv_obj_create(kpad); lv_obj_set_size(grid,340,300); lv_obj_align(grid,LV_ALIGN_BOTTOM_MID,0,-8);
+  lv_obj_set_style_bg_opa(grid,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(grid,0,0);
+  lv_obj_set_flex_flow(grid,LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(grid,LV_FLEX_ALIGN_SPACE_EVENLY,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+  lv_obj_clear_flag(grid,LV_OBJ_FLAG_SCROLLABLE);
+  const char* keys[12]={"1","2","3","4","5","6","7","8","9","Esc","0","Clr"};
+  const int   vals[12]={1,2,3,4,5,6,7,8,9,-1,0,-2};
+  for(int i=0;i<12;i++){ lv_obj_t* b=lv_btn_create(grid); lv_obj_set_size(b,96,64);
+    lv_obj_add_event_cb(b,kpEvt,LV_EVENT_CLICKED,(void*)(intptr_t)vals[i]);
+    lv_obj_t* l=lv_label_create(b); lv_label_set_text(l,keys[i]); lv_obj_center(l); }
+  lv_obj_add_flag(kpad,LV_OBJ_FLAG_HIDDEN);
+}
+
+// ---- Settings tab ----
+static void setPinEvt(lv_event_t*){ kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
+static void lockEvt(lv_event_t*){ if(gModel.userPinSet()) gModel.lockNow(nowSeconds()); }
+static void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
+static void buildSettings(lv_obj_t* tab){
+  lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Settings");
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_t* tun=lv_label_create(tab);
+  lv_label_set_text(tun,"Balance point:   -2.0 C\nCompressor min OAT: -12.0 C\nAux max OAT:      4.0 C\nMin deadband:    2.0 C");
+  lv_obj_set_style_text_color(tun,lv_color_hex(COL_MUTED),0); lv_obj_align(tun,LV_ALIGN_TOP_LEFT,4,44);
+  wLockState=lv_label_create(tab); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,180);
+  struct B{const char* t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
+  for(int i=0;i<3;i++){ lv_obj_t* b=lv_btn_create(tab); lv_obj_set_size(b,150,60);
+    lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*170,230);
+    lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr);
+    lv_obj_t* l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
 }
 
 static void buildUi(){
   lv_obj_t* scr=lv_scr_act(); lv_obj_set_style_bg_color(scr,lv_color_hex(COL_BG),0);
-  lv_obj_set_style_text_font(scr,&lv_font_montserrat_20,0);  // larger default; cascades to labels
+  lv_obj_set_style_text_font(scr,&lv_font_montserrat_20,0);   // larger default; cascades to labels
+  lv_obj_set_style_text_color(scr,lv_color_hex(COL_INK),0);   // light default so headers aren't dark-on-dark
   lv_obj_t* tv=lv_tabview_create(scr,LV_DIR_BOTTOM,56);
   lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
-  buildHome  (lv_tabview_add_tab(tv,"Home"));
-  buildSensors(lv_tabview_add_tab(tv,"Sensors"));
-  buildSystem (lv_tabview_add_tab(tv,"System"));
-  buildDiag   (lv_tabview_add_tab(tv,"Diag"));
+  buildHome    (lv_tabview_add_tab(tv,"Home"));
+  buildPresets (lv_tabview_add_tab(tv,"Presets"));
+  buildSensors (lv_tabview_add_tab(tv,"Sensors"));
+  buildSystem  (lv_tabview_add_tab(tv,"System"));
+  buildSettings(lv_tabview_add_tab(tv,"Settings"));
+  buildDiag    (lv_tabview_add_tab(tv,"Diag"));
+  buildKeypad(scr);
 }
 
 // Update a label only when its text changed — skips the invalidate/redraw and
@@ -349,6 +473,14 @@ static void render(){
     "Outdoor:  %.1f\xC2\xB0  (%s)\nGas mod:  %.0f%%\nCompressor lockout: %lus\nMode:     %s",
     (double)s.outdoorTempC, s.outdoorValid?"valid":"--", (double)s.gasModulationPct,
     (unsigned long)s.compressorLockoutRemainS, modeName(s.mode)); setTxt(wSysBody,b); }
+  if(wLockState){ const bool unlocked = gModel.lockState()==LockState::kUnlocked;
+    snprintf(b,sizeof(b),"Lock: %s    PIN: %s", unlocked?"unlocked":"LOCKED",
+             gModel.userPinSet()?"set":"none");
+    setTxtCol(wLockState,b, unlocked?COL_OK:COL_WARN); }
+  if(wDiagBody){ snprintf(b,sizeof(b),
+    "baud:      9600 (demo)\nframes ok: %lu\nbad crc:   %lu\ntotal:     %lu",
+    (unsigned long)gDemo.framesOk,(unsigned long)gDemo.badcrc,(unsigned long)gDemo.frames);
+    setTxt(wDiagBody,b); }
 }
 
 void setup(){
