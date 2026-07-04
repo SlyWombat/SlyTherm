@@ -63,6 +63,12 @@
 #include <PubSubClient.h>
 #endif
 
+#ifdef SNIFFER_DISPLAY
+// Optional on-screen dashboard (Waveshare ESP32-S3 board only; read-only view
+// of the same counters — never touches the RS-485 UART). See sniffer_display.*.
+#include "sniffer_display.h"
+#endif
+
 static_assert(sniffer::kTxPin == -1,
               "RX-ONLY GUARANTEE: the sniffer must never attach a UART TX pin");
 
@@ -567,6 +573,54 @@ void wifiPump(uint32_t nowMs) {
   }
 }
 
+#ifdef SNIFFER_DISPLAY
+// Build the on-screen stats snapshot from the live counters and push it to the
+// panel. Read-only: touches no bus state. Called ~1 Hz from loop().
+void updateDisplay(uint32_t nowMs) {
+  const ct485::FrameAccumulator::Counters& c = gAcc.counters();
+  display::Stats s{};
+  s.ap            = gWifiAp;
+  s.wifiConnected = gWifiAp || (WiFi.status() == WL_CONNECTED);
+  const String ip = gWifiAp ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  strncpy(s.ip, ip.c_str(), sizeof(s.ip) - 1);
+  s.rssi     = gWifiAp ? 0 : static_cast<int>(WiFi.RSSI());
+  s.baud     = kBauds[gBaudIdx];
+  s.locked   = gBaudLocked;
+  s.bytes    = gTotalBytes;
+  s.ok       = c.framesOk;
+  s.badcrc   = c.badChecksum;
+  s.badlen   = c.badLength;
+  s.overrun  = c.overruns;
+  s.v9600    = gValidAtBaud[0];
+  s.v38400   = gValidAtBaud[1];
+  s.capRecords = gCapture.recordCount();
+  s.capBytes   = gCapture.bytesUsed();
+  s.uptimeMs = nowMs;
+  s.heap     = ESP.getFreeHeap();
+
+  // Top msgTypes by census (simple selection of the 4 largest, ties ignored).
+  s.topN = 0;
+  for (int rank = 0; rank < 4; ++rank) {
+    int      best      = -1;
+    uint32_t bestCount = 0;
+    for (int i = 0; i < 256; ++i) {
+      if (gCensus[i] <= bestCount) continue;
+      bool taken = false;
+      for (int j = 0; j < s.topN; ++j)
+        if (s.topType[j] == i) taken = true;
+      if (taken) continue;
+      best      = i;
+      bestCount = gCensus[i];
+    }
+    if (best < 0) break;
+    s.topType[s.topN]  = static_cast<uint8_t>(best);
+    s.topCount[s.topN] = bestCount;
+    s.topN++;
+  }
+  display::update(s);
+}
+#endif  // SNIFFER_DISPLAY
+
 }  // namespace
 
 void setup() {
@@ -583,7 +637,10 @@ void setup() {
   gWifiStaSinceMs  = millis();
 
   Serial.println();
-  Serial.println("Dettson CT-485 sniffer (Phase 1/2, RX-ONLY) — UART2 RX=GPIO16, no TX pin");
+  snprintf(gLine, sizeof(gLine),
+           "Dettson CT-485 sniffer (Phase 1/2, RX-ONLY) — UART2 RX=GPIO%d, no TX pin",
+           sniffer::kRxPin);
+  Serial.println(gLine);
   snprintf(gLine, sizeof(gLine), "AB trying baud=%lu",
            static_cast<unsigned long>(kBauds[gBaudIdx]));
   Serial.println(gLine);
@@ -602,6 +659,10 @@ void setup() {
 #ifdef SNIFFER_MQTT
   gMqtt.setServer(SNIFFER_MQTT_HOST, SNIFFER_MQTT_PORT);
   gMqtt.setBufferSize(sniffer::kMqttBufBytes);
+#endif
+
+#ifdef SNIFFER_DISPLAY
+  display::begin();  // headless-safe: logs and returns if the panel fails
 #endif
 }
 

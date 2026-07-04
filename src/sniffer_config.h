@@ -24,9 +24,24 @@
 
 namespace sniffer {
 
-// UART2 pins. TX is -1 (never attached): part of the RX-only guarantee in
-// main_sniffer.cpp — do not change to a real pin in this firmware.
+// UART pins for the RS-485 transceiver's RO ("receive out") TTL signal. TX is
+// ALWAYS -1 (never attached) on every board — part of the RX-only guarantee
+// enforced by the static_assert in main_sniffer.cpp. Do NOT set a real TX pin
+// in this firmware; TX belongs to Phase 3 only.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// Waveshare ESP32-S3-Touch-LCD-4.3B: the 800x480 RGB panel, octal PSRAM, I2C
+// touch and USB/UART0 consume almost every GPIO. kRxPin MUST be a pin that is
+// FREE and broken out on the board's header. Pins not taken by the panel /
+// PSRAM / I2C(8,9) / USB(19,20) / UART0(43,44) are roughly {6, 15, 16} (minus
+// whatever the "B" variant's CAN transceiver claims).
+//   >>> HARDWARE-VERIFY: confirm 16 is free & exposed on YOUR board's
+//   >>> silkscreen before wiring; change it here if not. Wire the RS-485
+//   >>> transceiver's RO/RXD output to this pin.
 constexpr int kRxPin = 16;
+#else
+// ESP32-DevKitC bench rig (docs/05 Phase 1): UART2 RX on GPIO16.
+constexpr int kRxPin = 16;
+#endif
 constexpr int kTxPin = -1;
 
 constexpr uint32_t kUsbBaud = 115200;
