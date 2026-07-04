@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 140" width="560" height="140" role="img" aria-label="SlyTherm">
+  <defs>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFB020"/><stop offset="1" stop-color="#FF6A12"/>
+    </linearGradient>
+    <linearGradient id="cool" x1="1" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#0E93C4"/><stop offset="1" stop-color="#5CCBF6"/>
+    </linearGradient>
+    <linearGradient id="therm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FF7A18"/><stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <clipPath id="face"><circle cx="70" cy="70" r="47"/></clipPath>
+  </defs>
+
+  <!-- dial mark -->
+  <g transform="translate(10,10)">
+    <circle cx="60" cy="60" r="54" fill="#0A0E13"/>
+    <g clip-path="url(#face)" transform="translate(10,10)">
+      <path d="M0 0 H120 V44 C92 40 78 74 60 66 C42 58 28 30 0 52 Z" fill="url(#warm)"/>
+      <path d="M0 52 C28 30 42 58 60 66 C78 74 92 40 120 44 V120 H0 Z" fill="url(#cool)"/>
+      <path d="M0 52 C28 30 42 58 60 66 C78 74 92 40 120 44" fill="none" stroke="#0A0E13" stroke-width="3"/>
+    </g>
+    <!-- bezel + tick marks (dashed ring) -->
+    <circle cx="70" cy="70" r="54" fill="none" stroke="#39B2FF" stroke-width="3"/>
+    <circle cx="70" cy="70" r="49" fill="none" stroke="#39B2FF" stroke-width="6"
+            stroke-dasharray="1.6 11.2" opacity="0.75"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="150" y="86" font-family="Segoe UI, system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif"
+        font-size="60" font-weight="800" letter-spacing="-2">
+    <tspan fill="#0F1720">Sly</tspan><tspan fill="url(#therm)">Therm</tspan>
+  </text>
+  <text x="152" y="112" font-family="ui-monospace, Menlo, Consolas, monospace"
+        font-size="12.5" letter-spacing="1.5" fill="#8a97a3">DUAL-FUEL CLIMATE CONTROL</text>
+</svg>
