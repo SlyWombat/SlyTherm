@@ -8,11 +8,38 @@
 // memory: LVGL v8, 800x40 internal-RAM partial buffer, GT911 raw I2C @0x5D).
 
 #include <Arduino.h>
-#include <Arduino_GFX_Library.h>
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>   // declares lgfx::Panel_RGB
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>     // declares lgfx::Bus_RGB
 #include <Wire.h>
 #include <lvgl.h>
 
 #include "UiModel.h"
+
+// LovyanGFX device for the Waveshare 4.3 RGB panel — its RGB driver manages the
+// framebuffer DMA robustly (fixes the Arduino_GFX offset + touch lag). Config
+// from the board's LovyanGFX reference (Pins.h): 14 MHz, hsync 20/10/10,
+// vsync 10/10/10, pclk_active_neg 0.
+class LGFX : public lgfx::LGFX_Device {
+  lgfx::Bus_RGB   _bus;
+  lgfx::Panel_RGB _panel;
+ public:
+  LGFX(){
+    { auto c=_panel.config(); c.memory_width=800; c.memory_height=480;
+      c.panel_width=800; c.panel_height=480; c.offset_x=0; c.offset_y=0; _panel.config(c); }
+    { auto c=_panel.config_detail(); c.use_psram=1; _panel.config_detail(c); } // 768KB FB in PSRAM
+    { auto c=_bus.config(); c.panel=&_panel;
+      c.pin_d0=14; c.pin_d1=38; c.pin_d2=18; c.pin_d3=17; c.pin_d4=10;         // B0-4
+      c.pin_d5=39; c.pin_d6=0;  c.pin_d7=45; c.pin_d8=48; c.pin_d9=47; c.pin_d10=21; // G0-5
+      c.pin_d11=1; c.pin_d12=2; c.pin_d13=42; c.pin_d14=41; c.pin_d15=40;      // R0-4
+      c.pin_henable=5; c.pin_vsync=3; c.pin_hsync=46; c.pin_pclk=7; c.freq_write=14000000;
+      c.hsync_polarity=0; c.hsync_front_porch=20; c.hsync_pulse_width=10; c.hsync_back_porch=10;
+      c.vsync_polarity=0; c.vsync_front_porch=10; c.vsync_pulse_width=10; c.vsync_back_porch=10;
+      c.pclk_active_neg=0; c.de_idle_high=0; c.pclk_idle_high=0; _bus.config(c); }
+    _panel.setBus(&_bus); setPanel(&_panel);
+  }
+};
 
 using namespace dettson;
 using namespace dettson::ui;
@@ -24,8 +51,7 @@ static uint8_t gCh422Out = 0;
 static void ch422Mode(uint8_t v){ Wire.beginTransmission(kCh422ModeAddr); Wire.write(v); Wire.endTransmission(); }
 static void ch422SetOut(uint8_t v){ gCh422Out=v; Wire.beginTransmission(kCh422OutAddr); Wire.write(v); Wire.endTransmission(); }
 
-static Arduino_ESP32RGBPanel* panel = nullptr;
-static Arduino_RGB_Display*   gfx   = nullptr;
+static LGFX gfx;
 
 static constexpr int     kSda=8, kScl=9, kTouchInt=4;
 static constexpr uint8_t kGt911Addr=0x5D;
@@ -47,12 +73,18 @@ static int gt911ReadReg(uint16_t reg,uint8_t* b,uint8_t n){
   return i;
 }
 static bool gt911Read(uint16_t& x,uint16_t& y){
-  uint8_t s=0; if(gt911ReadReg(0x814E,&s,1)!=1) return false;
-  bool hit=false;
-  if((s&0x80)&&(s&0x0F)>0){ uint8_t d[6]={0};
-    if(gt911ReadReg(0x8150,d,6)>=4){ x=d[0]|(d[1]<<8); y=d[2]|(d[3]<<8); hit=true; } }
-  if(s&0x80){ Wire.beginTransmission(kGt911Addr); Wire.write(0x81); Wire.write(0x4E); Wire.write(0); Wire.endTransmission(); }
-  return hit;
+  // Hold the last state BETWEEN GT911 samples so a continuous press reads as
+  // continuously down (the ready-bit is only set per new sample; reporting
+  // "released" in the gaps broke press-and-hold / made touch feel laggy).
+  static uint16_t lx=0,ly=0; static bool down=false;
+  uint8_t s=0;
+  if(gt911ReadReg(0x814E,&s,1)==1 && (s&0x80)){        // a new sample is ready
+    if((s&0x0F)>0){ uint8_t d[6]={0};
+      if(gt911ReadReg(0x8150,d,6)>=4){ lx=d[0]|(d[1]<<8); ly=d[2]|(d[3]<<8); down=true; } }
+    else down=false;                                    // fresh sample, no touch = up
+    Wire.beginTransmission(kGt911Addr); Wire.write(0x81); Wire.write(0x4E); Wire.write(0); Wire.endTransmission();
+  }
+  x=lx; y=ly; return down;
 }
 
 static constexpr uint16_t kHor=800, kVer=480;
@@ -62,7 +94,7 @@ static lv_disp_drv_t disp_drv;
 static lv_indev_drv_t indev_drv;
 
 static void flushCb(lv_disp_drv_t* d,const lv_area_t* a,lv_color_t* px){
-  gfx->draw16bitRGBBitmap(a->x1,a->y1,(uint16_t*)&px->full,a->x2-a->x1+1,a->y2-a->y1+1);
+  gfx.pushImage(a->x1,a->y1,a->x2-a->x1+1,a->y2-a->y1+1,(lgfx::rgb565_t*)px);
   lv_disp_flush_ready(d);
 }
 static void touchCb(lv_indev_drv_t*,lv_indev_data_t* data){
@@ -90,6 +122,7 @@ struct DemoCtl {
   float roomC = 21.3f;
   UserMode mode = UserMode::kOff;
   float heatC = 20.0f, coolC = 24.0f;
+  bool heating = false, cooling = false;   // latched with hysteresis
   void step(uint32_t nowS) {
     UiIntent it;
     while (gModel.popIntent(it)) {
@@ -99,13 +132,16 @@ struct DemoCtl {
         default: break;
       }
     }
-    // drift + action
+    // Latching hysteresis: heat turns on 0.4 below setpoint, off at setpoint
+    // (cool mirrored) — so it settles to Idle instead of chattering.
+    const bool heatMode = (mode==UserMode::kHeat||mode==UserMode::kAuto||mode==UserMode::kEmergencyHeat);
+    const bool coolMode = (mode==UserMode::kCool||mode==UserMode::kAuto);
+    if (heatMode){ if(!heating && roomC <= heatC-0.4f) heating=true; if(heating && roomC >= heatC) heating=false; } else heating=false;
+    if (coolMode){ if(!cooling && roomC >= coolC+0.4f) cooling=true; if(cooling && roomC <= coolC) cooling=false; } else cooling=false;
     HvacAction act = HvacAction::kIdle; uint8_t equip = kEquipNone; float mod = 0;
-    const bool heatCall = (mode==UserMode::kHeat||mode==UserMode::kAuto||mode==UserMode::kEmergencyHeat) && roomC < heatC-0.2f;
-    const bool coolCall = (mode==UserMode::kCool||mode==UserMode::kAuto) && roomC > coolC+0.2f;
-    if (heatCall){ roomC += 0.05f; act=HvacAction::kHeating; equip=kEquipGas|kEquipFan; mod=60; }
-    else if (coolCall){ roomC -= 0.05f; act=HvacAction::kCooling; equip=kEquipHpCool|kEquipFan; }
-    else roomC += (roomC>21.5f?-0.01f:0.01f);
+    if (heating){ roomC += 0.06f; act=HvacAction::kHeating; equip=kEquipGas|kEquipFan; mod=60; }
+    else if (cooling){ roomC -= 0.06f; act=HvacAction::kCooling; equip=kEquipHpCool|kEquipFan; }
+    else roomC += (roomC>19.0f ? -0.004f : 0.004f);   // slow drift toward ambient when idle
     gModel.setFusedTemp(roomC, true);
     gModel.setUserMode(mode);
     gModel.setSetpoints(heatC, coolC);
@@ -261,6 +297,7 @@ static void buildDiag(lv_obj_t* tab){
 
 static void buildUi(){
   lv_obj_t* scr=lv_scr_act(); lv_obj_set_style_bg_color(scr,lv_color_hex(COL_BG),0);
+  lv_obj_set_style_text_font(scr,&lv_font_montserrat_20,0);  // larger default; cascades to labels
   lv_obj_t* tv=lv_tabview_create(scr,LV_DIR_BOTTOM,56);
   lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
   buildHome  (lv_tabview_add_tab(tv,"Home"));
@@ -319,14 +356,9 @@ void setup(){
   Serial.println("[ui] SlyTherm wall UI (stage 2)");
   Wire.begin(kSda,kScl); Wire.setClock(400000);
   ch422Mode(0x01); ch422SetOut(kBitTpRst|kBitLcdRst); delay(20);
-  // prefer_speed MUST stay 16 MHz — the panel shows a solid-white (no-signal)
-  // screen at 12 MHz. Shake is mitigated by update-on-change rendering instead
-  // (minimal PSRAM writes); if that's not enough the fix is LovyanGFX (bounce buffer).
-  panel=new Arduino_ESP32RGBPanel(5,3,46,7,1,2,42,41,40,39,0,45,48,47,21,14,38,18,17,10,
-    0,40,48,88,0,13,3,32,1,16000000);
-  gfx=new Arduino_RGB_Display(kHor,kVer,panel,0,true);
-  if(!gfx->begin()) Serial.println("[ui] gfx begin FAILED");
-  gfx->fillScreen(BLACK);
+  gfx.init();
+  gfx.setColorDepth(16);
+  gfx.fillScreen(0x0000);
   ch422SetOut(kBitTpRst|kBitLcdRst|kBitLcdBl);
   gt911Reset(); Wire.beginTransmission(kGt911Addr); gGt911Ok=(Wire.endTransmission()==0);
   Serial.printf("[ui] GT911 %s\n", gGt911Ok?"present":"NO ACK");
