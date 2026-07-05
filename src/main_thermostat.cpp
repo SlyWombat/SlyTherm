@@ -82,8 +82,10 @@
 #include "UiModel.h"
 
 #ifdef DETTSON_UI
+#include <ESPmDNS.h>      // mDNS broker auto-discovery (silent home-system connect)
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
+#include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
 #endif
 
 #include "thermostat_config.h"
@@ -781,6 +783,7 @@ void mqttTask(void*) {
   // from the wall UI (Settings -> WiFi). Survives reflash.
   const bool haveWifi = wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
   if (!haveWifi) Serial.println("[mqtt] no saved Wi-Fi — set one on the wall UI (Settings -> WiFi)");
+  mqtt_cfg::begin(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT, THERMOSTAT_MQTT_USER, THERMOSTAT_MQTT_PASS);
 #else
   const bool haveWifi = strlen(THERMOSTAT_WIFI_SSID) > 0;
   if (haveWifi) {
@@ -790,17 +793,49 @@ void mqttTask(void*) {
     Serial.println("[mqtt] no Wi-Fi credentials (src/thermostat_secrets.h) — serial-only bench mode");
   }
 #endif
+#ifdef DETTSON_UI
+  // Broker provisioned on-device (mqtt_cfg): host kept in a task-persistent
+  // buffer because PubSubClient::setServer stores the pointer, not a copy.
+  static char sMqttHost[64] = {};
+  static uint16_t sMqttPort = 1883;
+  mqtt_cfg::current(sMqttHost, sizeof(sMqttHost), &sMqttPort, nullptr, 0, nullptr, 0);
+  gMqtt.setServer(sMqttHost, sMqttPort);
+#else
   gMqtt.setServer(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT);
+#endif
   gMqtt.setBufferSize(cfg::kMqttBufBytes);
   gMqtt.setCallback(onMqttMessage);
 
-  uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0;
+  uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0, lastDiscoverMs = 0;
   for (;;) {
     const uint32_t nowMs = millis();
 #ifdef DETTSON_UI
     wifi_prov::service(nowMs);
     gWifiConnected = wifi_prov::connected();
-    (void)haveWifi; (void)lastWifiTryMs;
+    (void)haveWifi; (void)haveMqtt; (void)lastWifiTryMs;
+    // Silent auto-discovery: Wi-Fi up but no broker saved -> browse mDNS for the
+    // MQTT broker (fallback: the Home Assistant host on the default port).
+    if (gWifiConnected && !mqtt_cfg::hostSet() && nowMs - lastDiscoverMs >= 15000) {
+      lastDiscoverMs = nowMs;
+      static bool sMdnsUp = false;
+      if (!sMdnsUp) sMdnsUp = MDNS.begin("slytherm");
+      IPAddress ip; uint16_t pt = 0;
+      int n = MDNS.queryService("mqtt", "tcp");
+      if (n > 0) { ip = MDNS.IP(0); pt = MDNS.port(0); }
+      else { n = MDNS.queryService("home-assistant", "tcp"); if (n > 0) { ip = MDNS.IP(0); pt = 1883; } }
+      if (n > 0 && ip != IPAddress(0, 0, 0, 0)) {
+        char host[24];
+        snprintf(host, sizeof(host), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+        Serial.printf("[mqtt] mDNS discovered broker %s:%u\n", host, pt ? pt : 1883);
+        mqtt_cfg::save(host, pt ? pt : 1883, "", "");  // anonymous; add auth in Installer
+      }
+    }
+    if (mqtt_cfg::takeDirty()) {  // broker (re)provisioned: discovery or UI save
+      mqtt_cfg::current(sMqttHost, sizeof(sMqttHost), &sMqttPort, nullptr, 0, nullptr, 0);
+      gMqtt.setServer(sMqttHost, sMqttPort);
+      gMqtt.disconnect();
+    }
+    const bool haveMqttNow = mqtt_cfg::hostSet();
 #else
     gWifiConnected = haveWifi && WiFi.status() == WL_CONNECTED;
     if (haveWifi && !gWifiConnected && nowMs - lastWifiTryMs >= cfg::kWifiRetryMs) {
@@ -808,14 +843,22 @@ void mqttTask(void*) {
       WiFi.disconnect();
       WiFi.begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
     }
+    const bool haveMqttNow = haveMqtt;
 #endif
-    if (gWifiConnected && haveMqtt && !gMqtt.connected() &&
+    if (gWifiConnected && haveMqttNow && !gMqtt.connected() &&
         nowMs - lastMqttTryMs >= cfg::kMqttReconnectMs) {
       lastMqttTryMs = nowMs;
       // LWT: availability topic -> retained "offline" (docs/06).
-      if (gMqtt.connect(cfg::kMqttClientId,
-                        strlen(THERMOSTAT_MQTT_USER) ? THERMOSTAT_MQTT_USER : nullptr,
-                        strlen(THERMOSTAT_MQTT_PASS) ? THERMOSTAT_MQTT_PASS : nullptr,
+#ifdef DETTSON_UI
+      char mqUser[48], mqPass[64];
+      mqtt_cfg::current(nullptr, 0, nullptr, mqUser, sizeof(mqUser), mqPass, sizeof(mqPass));
+      const char* muser = strlen(mqUser) ? mqUser : nullptr;
+      const char* mpass = strlen(mqPass) ? mqPass : nullptr;
+#else
+      const char* muser = strlen(THERMOSTAT_MQTT_USER) ? THERMOSTAT_MQTT_USER : nullptr;
+      const char* mpass = strlen(THERMOSTAT_MQTT_PASS) ? THERMOSTAT_MQTT_PASS : nullptr;
+#endif
+      if (gMqtt.connect(cfg::kMqttClientId, muser, mpass,
                         hm::topic::kAvailability, 0, true, hm::payload::kOffline)) {
         gMqtt.publish(hm::topic::kAvailability, hm::payload::kOnline, true);
         publishDiscovery();
@@ -826,6 +869,9 @@ void mqttTask(void*) {
       }
     }
     gMqttConnected = gMqtt.connected();
+#ifdef DETTSON_UI
+    mqtt_cfg::setConnected(gMqttConnected);
+#endif
     if (gMqttConnected) {
       gMqtt.loop();
       if (gDiscoveryDirty) { gDiscoveryDirty = false; publishDiscovery(); }

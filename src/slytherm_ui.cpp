@@ -13,6 +13,7 @@
 
 #include "slytherm_ui.h"
 #include "wifi_prov.h"
+#include "mqtt_cfg.h"
 
 using namespace dettson;
 using namespace dettson::ui;
@@ -110,6 +111,9 @@ WifiState gWs=WifiState::Status;
 bool gWifiOpen=false;
 char gSelSsid[33]={};
 char gNetSsids[wifi_prov::kMaxNets][33]={};
+// Home-system (MQTT broker) manual entry — Installer/Advanced (mqtt_cfg)
+lv_obj_t *srvOv=nullptr,*taHost=nullptr,*taPort=nullptr,*taUser=nullptr,*taSrvPass=nullptr,*kbdS=nullptr,*lblSrvStat=nullptr;
+bool gSrvOpen=false;
 // keypad
 lv_obj_t *kpad=nullptr,*kpadTitle=nullptr,*kpadDots=nullptr;
 enum class KpMode{Set,Unlock}; KpMode kpMode=KpMode::Set; uint8_t kpBuf[4]; int kpN=0;
@@ -223,7 +227,8 @@ void buildKeypad(lv_obj_t*scr){ kpad=lv_obj_create(scr); lv_obj_set_size(kpad,36
 void setPinEvt(lv_event_t*){ kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
 void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
 void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
-void openWifi(lv_event_t*);  // defined below (before buildUi)
+void openWifi(lv_event_t*);    // defined below (before buildUi)
+void openServer(lv_event_t*);  // defined below (before buildUi)
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
   wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,60);
   struct B{const char*t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
@@ -231,7 +236,10 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
   lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,60); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,200);
   lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
-  lv_obj_t*wl=lv_label_create(wb); lv_label_set_text(wl,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(wl,lv_color_hex(0x06202B),0); lv_obj_center(wl); }
+  lv_obj_t*wl=lv_label_create(wb); lv_label_set_text(wl,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(wl,lv_color_hex(0x06202B),0); lv_obj_center(wl);
+  lv_obj_t*sb=lv_btn_create(tab); lv_obj_set_size(sb,220,60); lv_obj_align(sb,LV_ALIGN_TOP_LEFT,240,200);
+  lv_obj_set_style_bg_color(sb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(sb,openServer,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl); }
 
 // ---- ambient (idle) screen ----
 void ambWake(lv_event_t*){ gAmbient=false; lv_scr_load(scrMain); }
@@ -366,13 +374,50 @@ void renderWifi(){ if(!gWifiOpen) return;
   }
 }
 
+// ---- Home system (broker) — Installer/Advanced manual entry (mqtt_cfg) ----
+void onSrvClose(lv_event_t*){ gSrvOpen=false; lv_obj_add_flag(srvOv,LV_OBJ_FLAG_HIDDEN); }
+void onSrvFocus(lv_event_t*e){ lv_obj_t*t=(lv_obj_t*)lv_event_get_target(e); if(!kbdS) return;
+  lv_keyboard_set_textarea(kbdS,t); lv_keyboard_set_mode(kbdS, t==taPort?LV_KEYBOARD_MODE_NUMBER:LV_KEYBOARD_MODE_TEXT_LOWER); }
+void onSrvSave(lv_event_t*){ uint16_t pt=(uint16_t)atoi(lv_textarea_get_text(taPort));
+  mqtt_cfg::save(lv_textarea_get_text(taHost), pt?pt:1883, lv_textarea_get_text(taUser), lv_textarea_get_text(taSrvPass)); }
+void onSrvKb(lv_event_t*){ onSrvSave(nullptr); }
+void buildServer(lv_obj_t*scr){ srvOv=lv_obj_create(scr); lv_obj_set_size(srvOv,800,480); lv_obj_set_pos(srvOv,0,0);
+  lv_obj_set_style_bg_color(srvOv,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(srvOv,0,0);
+  lv_obj_set_style_pad_all(srvOv,0,0); lv_obj_clear_flag(srvOv,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(srvOv,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_t*title=lv_label_create(srvOv); lv_label_set_text(title,"Home system (advanced)");
+  lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(title,lv_color_hex(COL_CRYO),0); lv_obj_align(title,LV_ALIGN_TOP_LEFT,10,8);
+  lv_obj_t*x=lv_btn_create(srvOv); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-8,6);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,onSrvClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  lblSrvStat=lv_label_create(srvOv); lv_obj_set_style_text_color(lblSrvStat,lv_color_hex(COL_MUTED),0);
+  lv_obj_set_style_text_font(lblSrvStat,&lv_font_montserrat_20,0); lv_obj_align(lblSrvStat,LV_ALIGN_TOP_LEFT,10,42);
+  taHost=lv_textarea_create(srvOv); lv_textarea_set_one_line(taHost,true); lv_textarea_set_placeholder_text(taHost,"broker host / IP");
+  lv_obj_set_size(taHost,500,46); lv_obj_align(taHost,LV_ALIGN_TOP_LEFT,10,70); lv_obj_add_event_cb(taHost,onSrvFocus,LV_EVENT_FOCUSED,nullptr);
+  taPort=lv_textarea_create(srvOv); lv_textarea_set_one_line(taPort,true); lv_textarea_set_placeholder_text(taPort,"1883");
+  lv_obj_set_size(taPort,110,46); lv_obj_align(taPort,LV_ALIGN_TOP_LEFT,520,70); lv_obj_add_event_cb(taPort,onSrvFocus,LV_EVENT_FOCUSED,nullptr);
+  mkBtn(srvOv,"Save",onSrvSave,LV_ALIGN_TOP_RIGHT,-8,70,COL_CRYO,140);
+  taUser=lv_textarea_create(srvOv); lv_textarea_set_one_line(taUser,true); lv_textarea_set_placeholder_text(taUser,"username (optional)");
+  lv_obj_set_size(taUser,310,46); lv_obj_align(taUser,LV_ALIGN_TOP_LEFT,10,124); lv_obj_add_event_cb(taUser,onSrvFocus,LV_EVENT_FOCUSED,nullptr);
+  taSrvPass=lv_textarea_create(srvOv); lv_textarea_set_one_line(taSrvPass,true); lv_textarea_set_password_mode(taSrvPass,true); lv_textarea_set_placeholder_text(taSrvPass,"password (optional)");
+  lv_obj_set_size(taSrvPass,310,46); lv_obj_align(taSrvPass,LV_ALIGN_TOP_LEFT,330,124); lv_obj_add_event_cb(taSrvPass,onSrvFocus,LV_EVENT_FOCUSED,nullptr);
+  kbdS=lv_keyboard_create(srvOv); lv_keyboard_set_textarea(kbdS,taHost); lv_obj_add_event_cb(kbdS,onSrvKb,LV_EVENT_READY,nullptr); }
+void openServer(lv_event_t*){ gSrvOpen=true; char h[64],u[48],p[64]; uint16_t pt=1883;
+  mqtt_cfg::current(h,sizeof(h),&pt,u,sizeof(u),p,sizeof(p)); lv_textarea_set_text(taHost,h);
+  char ps[8]; snprintf(ps,sizeof(ps),"%u",pt); lv_textarea_set_text(taPort,ps);
+  lv_textarea_set_text(taUser,u); lv_textarea_set_text(taSrvPass,p);
+  lv_obj_clear_flag(srvOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(srvOv); }
+void renderServer(){ if(!gSrvOpen||!lblSrvStat) return; char h[64]; uint16_t pt=1883; mqtt_cfg::current(h,sizeof(h),&pt,nullptr,0,nullptr,0);
+  char b[96]; const bool c=mqtt_cfg::connected();
+  if(c) snprintf(b,sizeof(b),"Connected  %s:%u",h,pt); else snprintf(b,sizeof(b),"Not connected%s%s",h[0]?"  ":"",h[0]?h:"");
+  setTxt(lblSrvStat,b); lv_obj_set_style_text_color(lblSrvStat,lv_color_hex(c?COL_OK:COL_MUTED),0); }
+
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0);
   lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_BOTTOM,56); lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
   buildHome(lv_tabview_add_tab(tv,"Home")); buildPresets(lv_tabview_add_tab(tv,"Presets"));
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
-  buildKeypad(scrMain); buildWifi(scrMain); buildAmbient(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildAmbient(); lv_scr_load(scrMain); }
 
 // ---- render from a model snapshot ----
 void renderMain(const DisplayState& s){ char b[128];
@@ -442,7 +487,7 @@ void service(){
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; lv_scr_load(scrAmb); }
     if(gAmbient) renderAmbient(s);
-    else { renderMain(s); renderWifi(); }
+    else { renderMain(s); renderWifi(); renderServer(); }
   }
   lv_timer_handler();
 }
