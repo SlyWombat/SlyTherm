@@ -245,6 +245,7 @@ PidShaper           gPid;
 GasShaper           gGasShaper;
 RecoveryEstimator   gRecovery;
 ui::UiModel         gUi;
+ui::UiModel::LockPersistBlob gShadowLock{};  // last lock state written to NVS (change-detect)
 safety::SafetySupervisor* gSup = nullptr;
 ct485::Ct485Thermostat*   gCt = nullptr;
 
@@ -1184,6 +1185,16 @@ void persistOnChange(uint32_t nowS) {
     gLastClockSaveS = nowS;
     gPrefs.putUInt("clk", nowS);
   }
+  // Screen-lock (PIN) blob: persist when it changes — a PIN set/lock/unlock from
+  // the wall UI updates gUi directly, so detect the change here (survives reboot).
+  {
+    ui::UiModel::LockPersistBlob lb;
+    uiLock(); gUi.saveLock(&lb); uiUnlock();
+    if (memcmp(&lb, &gShadowLock, sizeof(lb)) != 0) {
+      gPrefs.putBytes("lock", &lb, sizeof(lb));
+      gShadowLock = lb;
+    }
+  }
 }
 
 void updateRunSegments(const DemandSet& out, const FusedTemp& fused, uint32_t nowS) {
@@ -1702,6 +1713,7 @@ void setup() {
     ui::UiModel::LockPersistBlob blob;
     if (gPrefs.getBytes("lock", &blob, sizeof(blob)) == sizeof(blob))
       gUi.restoreLock(&blob, nowS);
+    gUi.saveLock(&gShadowLock);  // sync change-detect shadow to the restored state
   }
 
   // ---- Sensors ----
