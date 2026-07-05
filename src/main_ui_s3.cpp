@@ -36,7 +36,9 @@ class LGFX : public lgfx::LGFX_Device {
       c.pin_henable=5; c.pin_vsync=3; c.pin_hsync=46; c.pin_pclk=7; c.freq_write=14000000;
       c.hsync_polarity=0; c.hsync_front_porch=20; c.hsync_pulse_width=10; c.hsync_back_porch=10;
       c.vsync_polarity=0; c.vsync_front_porch=10; c.vsync_pulse_width=10; c.vsync_back_porch=10;
-      c.pclk_active_neg=0; c.de_idle_high=0; c.pclk_idle_high=0; _bus.config(c); }
+      // pclk_idle_high=1: latch pixel data on the stable clock edge — kills the
+      // colour fringing on sharp text edges (solid fills were already clean).
+      c.pclk_active_neg=0; c.de_idle_high=0; c.pclk_idle_high=1; _bus.config(c); }
     _panel.setBus(&_bus); setPanel(&_panel);
   }
 };
@@ -313,20 +315,20 @@ static void buildHome(lv_obj_t* tab){
 
 static void buildSensors(lv_obj_t* tab){
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Room sensors");
-  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_CRYO),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
   wSensorList=lv_label_create(tab); lv_obj_set_style_text_color(wSensorList,lv_color_hex(COL_INK),0);
   lv_obj_set_style_text_font(wSensorList,&lv_font_montserrat_20,0);
   lv_obj_align(wSensorList,LV_ALIGN_TOP_LEFT,4,44);
 }
 static void buildSystem(lv_obj_t* tab){
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"System");
-  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_CRYO),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
   wSysBody=lv_label_create(tab); lv_obj_set_style_text_color(wSysBody,lv_color_hex(COL_MUTED),0);
   lv_obj_align(wSysBody,LV_ALIGN_TOP_LEFT,4,44);
 }
 static void buildDiag(lv_obj_t* tab){
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Diagnostics / CT-485 sniffer");
-  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_CRYO),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
   wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0);
   lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,44);
   lv_obj_t* n=lv_label_create(tab);
@@ -341,7 +343,7 @@ static void presetEvt(lv_event_t* e){
 static void buildPresets(lv_obj_t* tab){
   lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Presets");
-  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_CRYO),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
   const char* nm[3]={"Home","Away","Sleep"};
   const char* sub[3]={"21 / 24","17 / 28","19 / 23"};
   Preset pv[3]={Preset::kHome,Preset::kAway,Preset::kSleep};
@@ -403,7 +405,7 @@ static void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock
 static void buildSettings(lv_obj_t* tab){
   lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* t=lv_label_create(tab); lv_label_set_text(t,"Settings");
-  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
+  lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_CRYO),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,4,0);
   lv_obj_t* tun=lv_label_create(tab);
   lv_label_set_text(tun,"Balance point:   -2.0 C\nCompressor min OAT: -12.0 C\nAux max OAT:      4.0 C\nMin deadband:    2.0 C");
   lv_obj_set_style_text_color(tun,lv_color_hex(COL_MUTED),0); lv_obj_align(tun,LV_ALIGN_TOP_LEFT,4,44);
