@@ -21,7 +21,7 @@ using namespace dettson;
 using namespace dettson::ui;
 
 extern "C" const lv_img_dsc_t slymark_img;  // generated from assets/slytherm-mark.svg (slymark_img.c)
-LV_FONT_DECLARE(font_now80);                 // 80px subset (0-9 . ° -) for the hero (font_now80.c)
+LV_FONT_DECLARE(font_now80);                 // 80px subset (0-9 . ° -) for the hero, 108px (font_now80.c)
 
 // ---- LovyanGFX RGB panel (validated) ---------------------------------------
 class LGFX : public lgfx::LGFX_Device {
@@ -166,35 +166,35 @@ void presetEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } Preset p
 
 lv_obj_t* card(lv_obj_t*p){ lv_obj_t*c=lv_obj_create(p); lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0);
   lv_obj_set_style_border_width(c,0,0); lv_obj_set_style_radius(c,14,0); lv_obj_clear_flag(c,LV_OBJ_FLAG_SCROLLABLE); return c; }
-lv_obj_t* spBtn(lv_obj_t*p,const char*t,int code,lv_align_t al){ lv_obj_t*b=lv_btn_create(p); lv_obj_set_size(b,64,64);
-  lv_obj_align(b,al,0,0); lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),0); void*u=(void*)(intptr_t)code;
+lv_obj_t* spBtn(lv_obj_t*p,const char*t,int code,lv_align_t al,int xo=0,int yo=0){ lv_obj_t*b=lv_btn_create(p); lv_obj_set_size(b,64,64);
+  lv_obj_align(b,al,xo,yo); lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),0); void*u=(void*)(intptr_t)code;
   lv_obj_add_event_cb(b,spEvt,LV_EVENT_PRESSED,u); lv_obj_add_event_cb(b,spEvt,LV_EVENT_SHORT_CLICKED,u);
   lv_obj_add_event_cb(b,spEvt,LV_EVENT_LONG_PRESSED_REPEAT,u);
-  lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,t); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_center(l); return b; }
+  lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,t); lv_obj_set_style_text_font(l,&lv_font_montserrat_48,0); lv_obj_center(l); return b; }
 lv_obj_t* header(lv_obj_t*tab,const char*t){ lv_obj_t*h=lv_label_create(tab); lv_label_set_text(h,t);
   lv_obj_set_style_text_font(h,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(h,lv_color_hex(COL_CRYO),0);
   lv_obj_align(h,LV_ALIGN_TOP_LEFT,4,0); return h; }
 
 void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_style_pad_all(tab,0,0);
   // hero: NOW + big current temp + action + presence (left); logo/status live in the top bar
-  lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,26,12);
-  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,20,28);
+  lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,26,6);
+  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,18,20);
   wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0);
   lv_obj_set_style_bg_color(wAction,lv_color_hex(COL_RAISED),0); lv_obj_set_style_bg_opa(wAction,LV_OPA_COVER,0);
   lv_obj_set_style_pad_hor(wAction,13,0); lv_obj_set_style_pad_ver(wAction,5,0); lv_obj_set_style_radius(wAction,15,0);
-  lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,124);
-  wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_TOP_LEFT,26,160);
+  lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,172);
+  wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_TOP_LEFT,26,208);
   // heat + cool cards (right), big target font, shown per mode
-  gHeatCard=card(tab); lv_obj_set_size(gHeatCard,272,150); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,12);
+  gHeatCard=card(tab); lv_obj_set_size(gHeatCard,340,170); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gHeatCard,0,0);
   lv_obj_set_style_border_color(gHeatCard,lv_color_hex(COL_EMBER),0); lv_obj_set_style_border_width(gHeatCard,1,0);
-  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,10,6); }
-  wHeatSp=lv_label_create(gHeatCard); lv_obj_set_style_text_font(wHeatSp,&lv_font_montserrat_48,0); lv_obj_align(wHeatSp,LV_ALIGN_TOP_MID,0,28);
-  spBtn(gHeatCard,"-",-1,LV_ALIGN_BOTTOM_LEFT); spBtn(gHeatCard,"+",1,LV_ALIGN_BOTTOM_RIGHT);
-  gCoolCard=card(tab); lv_obj_set_size(gCoolCard,272,150); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,172);
+  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
+  wHeatSp=lv_label_create(gHeatCard); lv_obj_set_style_text_font(wHeatSp,&lv_font_montserrat_48,0); lv_obj_align(wHeatSp,LV_ALIGN_TOP_MID,0,34);
+  spBtn(gHeatCard,"-",-1,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gHeatCard,"+",1,LV_ALIGN_BOTTOM_MID,76,-8);
+  gCoolCard=card(tab); lv_obj_set_size(gCoolCard,340,170); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gCoolCard,0,0);
   lv_obj_set_style_border_color(gCoolCard,lv_color_hex(COL_CRYO),0); lv_obj_set_style_border_width(gCoolCard,1,0);
-  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,10,6); }
-  wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&lv_font_montserrat_48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,28);
-  spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_LEFT); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_RIGHT);
+  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
+  wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&lv_font_montserrat_48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,34);
+  spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_MID,76,-8);
   wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\npick a mode to set a temperature");
   lv_obj_set_style_text_color(wOffMsg,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(wOffMsg,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(wOffMsg,LV_ALIGN_TOP_RIGHT,-64,96);
   // mode selector across the reclaimed bottom
@@ -461,6 +461,10 @@ void screenshotPoll(){
   if(!sbuf) sbuf=(uint8_t*)ps_malloc((size_t)800*480*2+64);
   if(!sbuf) return;
   WiFiClient c=srv->available(); if(!c) return;
+  // optional: client may send a screen index (one line) to switch to first
+  String cmd=""; uint32_t t0=millis();
+  while(millis()-t0<250){ if(c.available()){ char ch=c.read(); if(ch=='\n'||ch=='\r') break; cmd+=ch; if(cmd.length()>3) break; } }
+  if(cmd.length()>0 && gTabview){ int idx=cmd.toInt(); if(idx>=0&&idx<6){ lv_tabview_set_act(gTabview,(uint32_t)idx,LV_ANIM_OFF); lv_refr_now(NULL); } }
   lv_img_dsc_t dsc; memset(&dsc,0,sizeof(dsc));
   if(lv_snapshot_take_to_buf(lv_scr_act(),LV_IMG_CF_TRUE_COLOR,&dsc,sbuf,(uint32_t)800*480*2+64)==LV_RES_OK){
     char hdr[48]; int hn=snprintf(hdr,sizeof(hdr),"SLYSHOT %u %u\n",(unsigned)dsc.header.w,(unsigned)dsc.header.h);
@@ -487,7 +491,7 @@ void buildTopBar(lv_obj_t*scr){
   lv_obj_t*mk=lv_img_create(brand); lv_img_set_src(mk,&slymark_img); lv_obj_align(mk,LV_ALIGN_LEFT_MID,0,0);
   lv_obj_t*wm=lv_label_create(brand); lv_label_set_text(wm,"SlyTherm"); lv_obj_set_style_text_color(wm,lv_color_hex(COL_INK),0); lv_obj_align(wm,LV_ALIGN_LEFT_MID,54,0);
   wCaret=lv_label_create(brand); lv_label_set_text(wCaret,LV_SYMBOL_DOWN); lv_obj_set_style_text_color(wCaret,lv_color_hex(COL_TEXT3),0); lv_obj_align(wCaret,LV_ALIGN_LEFT_MID,158,0);
-  wOnline=lv_label_create(bar); lv_obj_align(wOnline,LV_ALIGN_RIGHT_MID,-150,0);
+  wOnline=lv_obj_create(bar); lv_obj_set_size(wOnline,14,14); lv_obj_set_style_radius(wOnline,LV_RADIUS_CIRCLE,0); lv_obj_set_style_border_width(wOnline,0,0); lv_obj_align(wOnline,LV_ALIGN_RIGHT_MID,-142,0);
   wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-12,0);
 }
 void buildNavMenu(lv_obj_t*scr){
@@ -538,11 +542,11 @@ void renderMain(const DisplayState& s){ char b[128];
     setTxt(wFollow,b); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.coolSetpointC); setTxt(wCoolSp,b);
-  setTxt(wOnline, s.wifiOk?"online":"offline"); lv_obj_set_style_text_color(wOnline,lv_color_hex(s.wifiOk?COL_OK:COL_WARN),0);
+  lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);
   if(s.outdoorValid){ snprintf(b,sizeof(b),"Outside %.0f\xC2\xB0",(double)s.outdoorTempC); setTxt(wOat,b);} else setTxt(wOat,"Outside --");
-  { const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto;
-    if(sh) lv_obj_clear_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);
-    if(sc){ lv_obj_clear_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,s.mode==UserMode::kCool?12:172);} else lv_obj_add_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);
+  { const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto, au=s.mode==UserMode::kAuto;
+    if(sh){ lv_obj_clear_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,au?6:84);} else lv_obj_add_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);
+    if(sc){ lv_obj_clear_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,au?182:84);} else lv_obj_add_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);
     if(s.mode==UserMode::kOff) lv_obj_clear_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN); }
   for(int i=0;i<4;i++){ bool on=((i==0)&&s.mode==UserMode::kOff)||((i==1)&&s.mode==UserMode::kHeat)||((i==2)&&s.mode==UserMode::kCool)||((i==3)&&s.mode==UserMode::kAuto);
     lv_obj_set_style_bg_color(modeBtns[i],lv_color_hex(on?COL_CRYO:COL_RAISED),0); }

@@ -4,8 +4,10 @@
 The firmware serves the current LVGL screen on TCP :8081 as a
 "SLYSHOT <w> <h>\\n" header followed by raw little-endian RGB565.
 
-Usage: slyshot.py [ip] [out.png]   (defaults: 192.168.10.13, slyshot.png)
-Requires Pillow.
+Usage: slyshot.py [ip] [out.png] [screen]
+  screen: optional index to switch to first -
+          0 Home  1 Presets  2 Sensors  3 System  4 Settings  5 Diag
+Defaults: 192.168.10.13, slyshot.png. Requires Pillow.
 """
 import socket
 import sys
@@ -16,6 +18,8 @@ out = sys.argv[2] if len(sys.argv) > 2 else "slyshot.png"
 
 s = socket.create_connection((ip, 8081), timeout=10)
 s.settimeout(10)
+if len(sys.argv) > 3:
+    s.sendall((sys.argv[3] + "\n").encode())
 
 hdr = b""
 while b"\n" not in hdr:
