@@ -103,9 +103,11 @@ lv_obj_t *wTemp,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wSensorLis
 lv_obj_t *modeBtns[4];
 // ambient widgets
 lv_obj_t *aName,*aTemp,*aTarget,*aAlarm;
-// WiFi provisioning screen widgets
-lv_obj_t *wifiOv=nullptr,*lblWifiStat=nullptr,*listNets=nullptr,*pwPanel=nullptr,*lblSel=nullptr,*taPass=nullptr,*kbd=nullptr;
-bool gWifiOpen=false, gScanShown=false;
+// WiFi setup — state machine (one screen per state; flow per docs/09 + mockup)
+lv_obj_t *wifiOv=nullptr, *taPass=nullptr, *taSsid=nullptr, *kbd=nullptr, *wfLine=nullptr, *wfSub=nullptr;
+enum class WifiState { Status, Scanning, List, Password, Other, Connecting, ResultOk, ResultFail };
+WifiState gWs=WifiState::Status;
+bool gWifiOpen=false;
 char gSelSsid[33]={};
 char gNetSsids[wifi_prov::kMaxNets][33]={};
 // keypad
@@ -243,52 +245,125 @@ void buildAmbient(){ scrAmb=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrAm
   aAlarm=lv_label_create(scrAmb); lv_obj_set_style_text_color(aAlarm,lv_color_hex(COL_CRIT),0);   // alarm visible even in ambient (docs/04 §1c)
   lv_obj_set_style_text_font(aAlarm,&lv_font_montserrat_20,0); lv_obj_align(aAlarm,LV_ALIGN_BOTTOM_MID,0,-16); lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
 
-// ---- WiFi provisioning screen (Settings -> WiFi setup) ----
-void wifiClose(lv_event_t*){ gWifiOpen=false; lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); }
-void pwHide(){ if(pwPanel) lv_obj_add_flag(pwPanel,LV_OBJ_FLAG_HIDDEN); }
-void wifiScanBtn(lv_event_t*){ wifi_prov::requestScan(); gScanShown=false; if(listNets) lv_obj_clean(listNets); }
-void wifiForgetBtn(lv_event_t*){ wifi_prov::forget(); }
-void wifiConnectBtn(lv_event_t*){ wifi_prov::requestConnect(gSelSsid, lv_textarea_get_text(taPass)); pwHide(); }
-void kbEvt(lv_event_t*e){ lv_event_code_t c=lv_event_get_code(e); if(c==LV_EVENT_READY) wifiConnectBtn(nullptr); else if(c==LV_EVENT_CANCEL) pwHide(); }
-void netEvt(lv_event_t*e){ int idx=(int)(intptr_t)lv_event_get_user_data(e); if(idx<0||idx>=wifi_prov::kMaxNets) return;
-  strlcpy(gSelSsid,gNetSsids[idx],sizeof(gSelSsid)); lv_label_set_text_fmt(lblSel,"Password for %s",gSelSsid);
-  lv_textarea_set_text(taPass,""); lv_keyboard_set_textarea(kbd,taPass); lv_obj_clear_flag(pwPanel,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(pwPanel); }
-void buildWifi(lv_obj_t*scr){
-  wifiOv=lv_obj_create(scr); lv_obj_set_size(wifiOv,800,480); lv_obj_set_pos(wifiOv,0,0);
-  lv_obj_set_style_bg_color(wifiOv,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(wifiOv,0,0);
-  lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);
-  lblWifiStat=lv_label_create(wifiOv); lv_obj_set_style_text_color(lblWifiStat,lv_color_hex(COL_INK),0);
-  lv_obj_set_style_text_font(lblWifiStat,&lv_font_montserrat_20,0); lv_obj_align(lblWifiStat,LV_ALIGN_TOP_LEFT,6,12);
-  struct WB{const char*t; lv_event_cb_t cb; int x;} wb[3]={{"Scan",wifiScanBtn,-320},{"Forget",wifiForgetBtn,-180},{"Close",wifiClose,-8}};
-  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(wifiOv); lv_obj_set_size(b,120,44); lv_obj_align(b,LV_ALIGN_TOP_RIGHT,wb[i].x,4);
-    lv_obj_add_event_cb(b,wb[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,wb[i].t); lv_obj_center(l); }
-  listNets=lv_list_create(wifiOv); lv_obj_set_size(listNets,780,412); lv_obj_align(listNets,LV_ALIGN_BOTTOM_MID,0,-4);
-  lv_obj_set_style_bg_color(listNets,lv_color_hex(COL_CARD),0);
-  pwPanel=lv_obj_create(wifiOv); lv_obj_set_size(pwPanel,800,480); lv_obj_set_pos(pwPanel,0,0);
-  lv_obj_set_style_bg_color(pwPanel,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(pwPanel,0,0);
-  lv_obj_clear_flag(pwPanel,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(pwPanel,LV_OBJ_FLAG_HIDDEN);
-  lblSel=lv_label_create(pwPanel); lv_obj_set_style_text_color(lblSel,lv_color_hex(COL_INK),0);
-  lv_obj_set_style_text_font(lblSel,&lv_font_montserrat_20,0); lv_obj_align(lblSel,LV_ALIGN_TOP_LEFT,8,10);
-  taPass=lv_textarea_create(pwPanel); lv_textarea_set_one_line(taPass,true); lv_textarea_set_password_mode(taPass,true);
-  lv_obj_set_size(taPass,520,44); lv_obj_align(taPass,LV_ALIGN_TOP_LEFT,8,44);
-  lv_obj_t*bc=lv_btn_create(pwPanel); lv_obj_set_size(bc,150,44); lv_obj_align(bc,LV_ALIGN_TOP_RIGHT,-8,44);
-  lv_obj_add_event_cb(bc,wifiConnectBtn,LV_EVENT_CLICKED,nullptr); lv_obj_t*bl=lv_label_create(bc); lv_label_set_text(bl,"Connect"); lv_obj_center(bl);
-  kbd=lv_keyboard_create(pwPanel); lv_keyboard_set_textarea(kbd,taPass); lv_obj_add_event_cb(kbd,kbEvt,LV_EVENT_ALL,nullptr);
+// ---- WiFi setup: state machine (Settings -> WiFi setup) --------------------
+void wifiGoto(WifiState s);  // fwd
+
+lv_obj_t* mkBtn(lv_obj_t*p,const char*t,lv_event_cb_t cb,lv_align_t al,int x,int y,uint32_t bg,int w=140){
+  lv_obj_t*b=lv_btn_create(p); lv_obj_set_size(b,w,46); lv_obj_align(b,al,x,y);
+  lv_obj_set_style_bg_color(b,lv_color_hex(bg),0); lv_obj_add_event_cb(b,cb,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,t);
+  if(bg==COL_CRYO) lv_obj_set_style_text_color(l,lv_color_hex(0x06202B),0); lv_obj_center(l); return b; }
+
+void onWifiClose(lv_event_t*){ gWifiOpen=false; lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); }
+void onScan(lv_event_t*){ wifi_prov::requestScan(); wifiGoto(WifiState::Scanning); }
+void onForget(lv_event_t*){ wifi_prov::forget(); wifiGoto(WifiState::Status); }
+void onBackStatus(lv_event_t*){ wifiGoto(WifiState::Status); }
+void onBackList(lv_event_t*){ wifiGoto(WifiState::List); }
+void onNet(lv_event_t*e){ int i=(int)(intptr_t)lv_event_get_user_data(e); if(i<0||i>=wifi_prov::kMaxNets) return;
+  strlcpy(gSelSsid,gNetSsids[i],sizeof(gSelSsid)); wifiGoto(WifiState::Password); }
+void onOther(lv_event_t*){ gSelSsid[0]=0; wifiGoto(WifiState::Other); }
+void doConnect(){ if(gWs==WifiState::Other){ const char*ss=lv_textarea_get_text(taSsid); if(!ss[0]) return;
+    strlcpy(gSelSsid,ss,sizeof(gSelSsid)); wifi_prov::requestConnect(ss,lv_textarea_get_text(taPass)); }
+  else wifi_prov::requestConnect(gSelSsid,lv_textarea_get_text(taPass));
+  wifiGoto(WifiState::Connecting); }
+void onConnect(lv_event_t*){ doConnect(); }
+void onDone(lv_event_t*){ wifiGoto(WifiState::Status); }
+void onTryAgain(lv_event_t*){ wifiGoto(gSelSsid[0]?WifiState::Password:WifiState::List); }
+void onShowPw(lv_event_t*){ if(taPass) lv_textarea_set_password_mode(taPass,!lv_textarea_get_password_mode(taPass)); }
+void onTaFocus(lv_event_t*e){ if(kbd) lv_keyboard_set_textarea(kbd,(lv_obj_t*)lv_event_get_target(e)); }
+void onKb(lv_event_t*e){ lv_event_code_t c=lv_event_get_code(e); if(c==LV_EVENT_READY) doConnect(); else if(c==LV_EVENT_CANCEL) wifiGoto(WifiState::List); }
+
+void buildList(){ lv_obj_t*list=lv_list_create(wifiOv); lv_obj_set_size(list,780,352); lv_obj_align(list,LV_ALIGN_TOP_MID,0,46);
+  lv_obj_set_style_bg_color(list,lv_color_hex(COL_CARD),0);
+  wifi_prov::Net raw[wifi_prov::kMaxNets]; int n=wifi_prov::scanResults(raw,wifi_prov::kMaxNets);
+  wifi_prov::Net uniq[wifi_prov::kMaxNets]; int m=0;                  // merge duplicate SSIDs, strongest signal
+  for(int i=0;i<n;i++){ if(!raw[i].ssid[0]) continue; int f=-1;
+    for(int j=0;j<m;j++) if(strcmp(uniq[j].ssid,raw[i].ssid)==0){ f=j; break; }
+    if(f<0) uniq[m++]=raw[i]; else if(raw[i].rssi>uniq[f].rssi) uniq[f]=raw[i]; }
+  for(int i=0;i<m;i++){ strlcpy(gNetSsids[i],uniq[i].ssid,sizeof(gNetSsids[i])); char it[56];
+    snprintf(it,sizeof(it),"%s   %d dBm%s",uniq[i].ssid,(int)uniq[i].rssi,uniq[i].locked?"":"  (open)");
+    lv_obj_t*b=lv_list_add_btn(list,LV_SYMBOL_WIFI,it); lv_obj_add_event_cb(b,onNet,LV_EVENT_CLICKED,(void*)(intptr_t)i); }
+  if(m==0) lv_list_add_text(list,"No networks found");
+  lv_obj_t*ob=lv_list_add_btn(list,LV_SYMBOL_PLUS,"Other network"); lv_obj_add_event_cb(ob,onOther,LV_EVENT_CLICKED,nullptr);
+  mkBtn(wifiOv,"Back",onBackStatus,LV_ALIGN_BOTTOM_LEFT,8,-8,COL_RAISED);
+  mkBtn(wifiOv,"Rescan",onScan,LV_ALIGN_BOTTOM_RIGHT,-8,-8,COL_RAISED); }
+
+void wifiUpdateStatus(){ if(gWs!=WifiState::Status||!wfLine) return; char ss[33],ip[20]; int8_t r; bool c;
+  wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&r,&c);
+  if(c){ setTxt(wfLine,"Connected"); lv_obj_set_style_text_color(wfLine,lv_color_hex(COL_OK),0);
+    char b[64]; snprintf(b,sizeof(b),"%s    %s    %d dBm",ss,ip,(int)r); setTxt(wfSub,b); }
+  else { setTxt(wfLine,"Not connected"); lv_obj_set_style_text_color(wfLine,lv_color_hex(COL_INK),0); setTxt(wfSub,""); } }
+
+void wifiGoto(WifiState s){ gWs=s; lv_obj_clean(wifiOv); taPass=taSsid=kbd=wfLine=wfSub=nullptr;
+  lv_obj_t*title=lv_label_create(wifiOv); lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0);
+  lv_obj_set_style_text_color(title,lv_color_hex(COL_CRYO),0); lv_obj_align(title,LV_ALIGN_TOP_LEFT,10,10);
+  lv_obj_t*x=lv_btn_create(wifiOv); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-8,6);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,onWifiClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  switch(s){
+    case WifiState::Status: lv_label_set_text(title,"WiFi");
+      wfLine=lv_label_create(wifiOv); lv_obj_set_style_text_font(wfLine,&lv_font_montserrat_28,0); lv_obj_align(wfLine,LV_ALIGN_CENTER,0,-30);
+      wfSub=lv_label_create(wifiOv); lv_obj_set_style_text_color(wfSub,lv_color_hex(COL_TEXT3),0); lv_obj_align(wfSub,LV_ALIGN_CENTER,0,12);
+      if(wifi_prov::connected()){ mkBtn(wifiOv,"Change network",onScan,LV_ALIGN_BOTTOM_RIGHT,-8,-8,COL_RAISED,190);
+        mkBtn(wifiOv,"Forget",onForget,LV_ALIGN_BOTTOM_LEFT,8,-8,COL_RAISED); }
+      else mkBtn(wifiOv,"Connect",onScan,LV_ALIGN_BOTTOM_MID,0,-8,COL_CRYO,190);
+      wifiUpdateStatus(); break;
+    case WifiState::Scanning: lv_label_set_text(title,"WiFi");
+      { lv_obj_t*sp=lv_spinner_create(wifiOv,1000,60); lv_obj_set_size(sp,54,54); lv_obj_align(sp,LV_ALIGN_CENTER,0,-16);
+        lv_obj_t*l=lv_label_create(wifiOv); lv_label_set_text(l,"Scanning\xE2\x80\xA6"); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_align(l,LV_ALIGN_CENTER,0,42); }
+      break;
+    case WifiState::List: lv_label_set_text(title,"Choose a network"); buildList(); break;
+    case WifiState::Password: lv_label_set_text(title,gSelSsid);
+      taPass=lv_textarea_create(wifiOv); lv_textarea_set_one_line(taPass,true); lv_textarea_set_password_mode(taPass,true);
+      lv_textarea_set_placeholder_text(taPass,"password"); lv_obj_set_size(taPass,460,48); lv_obj_align(taPass,LV_ALIGN_TOP_LEFT,10,52);
+      mkBtn(wifiOv,"show",onShowPw,LV_ALIGN_TOP_LEFT,482,52,COL_RAISED,90);
+      mkBtn(wifiOv,"Connect",onConnect,LV_ALIGN_TOP_RIGHT,-8,52,COL_CRYO,150);
+      kbd=lv_keyboard_create(wifiOv); lv_keyboard_set_textarea(kbd,taPass); lv_obj_add_event_cb(kbd,onKb,LV_EVENT_ALL,nullptr);
+      break;
+    case WifiState::Other: lv_label_set_text(title,"Other network");
+      taSsid=lv_textarea_create(wifiOv); lv_textarea_set_one_line(taSsid,true); lv_textarea_set_placeholder_text(taSsid,"network name (SSID)");
+      lv_obj_set_size(taSsid,600,48); lv_obj_align(taSsid,LV_ALIGN_TOP_LEFT,10,52); lv_obj_add_event_cb(taSsid,onTaFocus,LV_EVENT_FOCUSED,nullptr);
+      taPass=lv_textarea_create(wifiOv); lv_textarea_set_one_line(taPass,true); lv_textarea_set_password_mode(taPass,true); lv_textarea_set_placeholder_text(taPass,"password");
+      lv_obj_set_size(taPass,460,48); lv_obj_align(taPass,LV_ALIGN_TOP_LEFT,10,108); lv_obj_add_event_cb(taPass,onTaFocus,LV_EVENT_FOCUSED,nullptr);
+      mkBtn(wifiOv,"Connect",onConnect,LV_ALIGN_TOP_RIGHT,-8,108,COL_CRYO,150);
+      kbd=lv_keyboard_create(wifiOv); lv_keyboard_set_textarea(kbd,taSsid); lv_obj_add_event_cb(kbd,onKb,LV_EVENT_ALL,nullptr);
+      break;
+    case WifiState::Connecting: lv_label_set_text(title,"WiFi");
+      { lv_obj_t*sp=lv_spinner_create(wifiOv,1000,60); lv_obj_set_size(sp,54,54); lv_obj_align(sp,LV_ALIGN_CENTER,0,-16);
+        lv_obj_t*l=lv_label_create(wifiOv); char b[64]; snprintf(b,sizeof(b),"Connecting to %s\xE2\x80\xA6",gSelSsid);
+        lv_label_set_text(l,b); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_align(l,LV_ALIGN_CENTER,0,42); }
+      break;
+    case WifiState::ResultOk: lv_label_set_text(title,"WiFi");
+      { lv_obj_t*l=lv_label_create(wifiOv); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(l,lv_color_hex(COL_OK),0);
+        char b[48]; snprintf(b,sizeof(b),"Connected to %s",gSelSsid); lv_label_set_text(l,b); lv_obj_align(l,LV_ALIGN_CENTER,0,-20);
+        char ss[33],ip[20]; int8_t r; bool c; wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&r,&c);
+        lv_obj_t*s2=lv_label_create(wifiOv); lv_obj_set_style_text_color(s2,lv_color_hex(COL_TEXT3),0); lv_label_set_text(s2,ip); lv_obj_align(s2,LV_ALIGN_CENTER,0,20); }
+      mkBtn(wifiOv,"Done",onDone,LV_ALIGN_BOTTOM_MID,0,-8,COL_CRYO,150); break;
+    case WifiState::ResultFail: lv_label_set_text(title,"WiFi");
+      { lv_obj_t*l=lv_label_create(wifiOv); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRIT),0);
+        lv_label_set_text(l,"Couldn't connect"); lv_obj_align(l,LV_ALIGN_CENTER,0,-20);
+        lv_obj_t*s2=lv_label_create(wifiOv); lv_obj_set_style_text_color(s2,lv_color_hex(COL_TEXT3),0);
+        char b[64]; snprintf(b,sizeof(b),"Check the password for %s",gSelSsid); lv_label_set_text(s2,b); lv_obj_align(s2,LV_ALIGN_CENTER,0,20); }
+      mkBtn(wifiOv,"Back",onBackList,LV_ALIGN_BOTTOM_LEFT,8,-8,COL_RAISED);
+      mkBtn(wifiOv,"Try again",onTryAgain,LV_ALIGN_BOTTOM_RIGHT,-8,-8,COL_CRYO); break;
+  }
 }
-void openWifi(lv_event_t*){ gWifiOpen=true; gScanShown=false; if(listNets) lv_obj_clean(listNets);
-  lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(wifiOv); pwHide(); wifi_prov::requestScan(); }
-void renderWifi(){ if(!gWifiOpen||!lblWifiStat) return; char ss[33],ip[20]; int8_t rssi=0; bool conn=false;
-  wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rssi,&conn); wifi_prov::ConnState cs=wifi_prov::connState(); char b[100];
-  const char* cst = cs==wifi_prov::ConnState::kConnecting?"connecting...":cs==wifi_prov::ConnState::kFailed?"connect failed":"";
-  if(conn) snprintf(b,sizeof(b),"Connected: %s  %s (%d dBm)",ss,ip,(int)rssi);
-  else snprintf(b,sizeof(b),"Not connected  %s",cst[0]?cst:ss);
-  setTxt(lblWifiStat,b); lv_obj_set_style_text_color(lblWifiStat,lv_color_hex(conn?COL_OK:COL_MUTED),0);
-  if(!gScanShown && wifi_prov::scanState()==wifi_prov::ScanState::kDone){ gScanShown=true;
-    wifi_prov::Net nets[wifi_prov::kMaxNets]; int n=wifi_prov::scanResults(nets,wifi_prov::kMaxNets); lv_obj_clean(listNets);
-    for(int i=0;i<n;i++){ strlcpy(gNetSsids[i],nets[i].ssid,sizeof(gNetSsids[i])); char it[56];
-      snprintf(it,sizeof(it),"%s   %d dBm%s",nets[i].ssid,(int)nets[i].rssi,nets[i].locked?"":"  (open)");
-      lv_obj_t*btn=lv_list_add_btn(listNets,LV_SYMBOL_WIFI,it); lv_obj_add_event_cb(btn,netEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i); }
-    if(n==0) lv_list_add_text(listNets,"no networks found - tap Scan"); }
+
+void buildWifi(lv_obj_t*scr){ wifiOv=lv_obj_create(scr); lv_obj_set_size(wifiOv,800,480); lv_obj_set_pos(wifiOv,0,0);
+  lv_obj_set_style_bg_color(wifiOv,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(wifiOv,0,0);
+  lv_obj_set_style_pad_all(wifiOv,0,0); lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); }
+
+void openWifi(lv_event_t*){ gWifiOpen=true; lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(wifiOv); wifiGoto(WifiState::Status); }
+
+void renderWifi(){ if(!gWifiOpen) return;
+  switch(gWs){
+    case WifiState::Scanning:   if(wifi_prov::scanState()==wifi_prov::ScanState::kDone) wifiGoto(WifiState::List); break;
+    case WifiState::Connecting: { wifi_prov::ConnState cs=wifi_prov::connState();
+      if(cs==wifi_prov::ConnState::kConnected) wifiGoto(WifiState::ResultOk);
+      else if(cs==wifi_prov::ConnState::kFailed) wifiGoto(WifiState::ResultFail); break; }
+    case WifiState::Status:     wifiUpdateStatus(); break;
+    default: break;
+  }
 }
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
