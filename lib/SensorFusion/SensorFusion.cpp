@@ -251,10 +251,26 @@ SensorStatus SensorFusion::status(uint8_t id, uint32_t nowS) const {
   if (!s) return st;
   st.registered = true;
   st.live = s->live;
+  st.participating = s->participating;
+  st.hasTemp = s->hasUpdate;
+  st.tempC = s->correctedC();
   st.faults = s->faults;
   st.offsetC = s->offsetC;
   st.ageS = s->hasUpdate ? ageOf(nowS, s->lastUpdateS) : UINT32_MAX;
+  st.everOccupied = s->everOccupied;
+  st.occupied = s->everOccupied && ageOf(nowS, s->lastOccS) <= occupancyWindowS_;
+  st.lastOccAgeS = s->everOccupied ? ageOf(nowS, s->lastOccS) : UINT32_MAX;
+  st.weight = s->weight;
   return st;
+}
+
+uint8_t SensorFusion::dominantParticipant() const {
+  const Slot* best = nullptr;
+  for (const auto& s : slots_) {
+    if (!s.used || s.isLocal || !s.live) continue;
+    if (!best || s.weight > best->weight) best = &s;
+  }
+  return best ? best->id : 0xFF;
 }
 
 void SensorFusion::setWeightRampTauS(uint32_t tauS) {

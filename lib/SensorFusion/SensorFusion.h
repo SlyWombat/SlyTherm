@@ -54,9 +54,16 @@ struct FusedTemp {
 struct SensorStatus {
   bool registered = false;
   bool live = false;       // passed all health gates at the last fusedTemp()
+  bool participating = false;
+  bool hasTemp = false;
+  float tempC = 0.0f;      // corrected (offset applied) last value; valid iff hasTemp
   uint32_t ageS = 0;       // UINT32_MAX if never updated
   uint16_t faults = 0;     // FusionAlarm bits for this sensor (last evaluation)
   float offsetC = 0.0f;    // active calibration offset (docs/07 G6)
+  bool occupied = false;   // occupied within the occupancy window ("present now")
+  bool everOccupied = false;
+  uint32_t lastOccAgeS = 0xFFFFFFFFu;  // seconds since last occupied (max = never)
+  float weight = 1.0f;     // current occupancy weight = influence on the fusion
 };
 
 // Bounds documented in docs/05 defaults table but not (yet) named in
@@ -94,6 +101,11 @@ class SensorFusion {
   FusedTemp fusedTemp(uint32_t nowS);
 
   SensorStatus status(uint8_t id, uint32_t nowS) const;
+
+  // Id of the sensor with the greatest current influence on the fused value
+  // (top occupancy weight among live, non-local participants) — the "driving"
+  // sensor for the ambient screen. 0xFF if none (local-only / all bad).
+  uint8_t dominantParticipant() const;
 
   // Runtime tunables, clamped to the documented ranges.
   void setWeightRampTauS(uint32_t tauS);    // [kWeightRampTauMinS, kWeightRampTauMaxS]

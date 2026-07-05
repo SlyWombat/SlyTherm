@@ -81,6 +81,10 @@
 #include "SensorFusion.h"
 #include "UiModel.h"
 
+#ifdef DETTSON_UI
+#include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
+#endif
+
 #include "thermostat_config.h"
 #if __has_include("thermostat_secrets.h")
 #include "thermostat_secrets.h"
@@ -136,6 +140,11 @@ uint32_t nowSeconds() {
 SemaphoreHandle_t gCmdMux;   // Pending mailbox + sensor table
 SemaphoreHandle_t gSnapMux;  // control -> MQTT state snapshot
 SemaphoreHandle_t gCtMux;    // Ct485Thermostat instance
+// Guards gUi across the control task and the wall-UI task (DETTSON_UI). Null
+// (no-op) when the UI task isn't built, so all wraps stay compile-safe.
+SemaphoreHandle_t gUiMux = nullptr;
+inline void uiLock()   { if (gUiMux) xSemaphoreTake(gUiMux, portMAX_DELAY); }
+inline void uiUnlock() { if (gUiMux) xSemaphoreGive(gUiMux); }
 
 constexpr size_t kFusionSlots = SensorFusion::kMaxSensors;  // 8: local + 7 remotes
 constexpr size_t kSensorNameLen = 24;
@@ -441,7 +450,7 @@ void saveGuardBlob() {
 
 void saveLockBlob() {
   ui::UiModel::LockPersistBlob blob;
-  gUi.saveLock(&blob);
+  uiLock(); gUi.saveLock(&blob); uiUnlock();
   gPrefs.putBytes("lock", &blob, sizeof(blob));
 }
 
@@ -1035,7 +1044,7 @@ void consumeCommands(uint32_t nowS) {
   }
   if (p.hasFan) gFanMode = p.fan;
   if (p.lockClear) {
-    gUi.clearUserPin();
+    uiLock(); gUi.clearUserPin(); uiUnlock();  // saveLockBlob() self-locks below
     saveLockBlob();
     xSemaphoreTake(gSnapMux, portMAX_DELAY);
     gSnap.lockTombstone = true;
@@ -1050,6 +1059,7 @@ void consumeCommands(uint32_t nowS) {
 
   // Wall-UI intents (no LVGL binding yet; queue stays wired so the binding
   // is drop-in). Control task re-validates through ModeStateMachine.
+  uiLock();
   ui::UiIntent intent;
   while (gUi.popIntent(intent)) {
     switch (intent.type) {
@@ -1070,6 +1080,7 @@ void consumeCommands(uint32_t nowS) {
         break;
     }
   }
+  uiUnlock();
 }
 
 void persistOnChange(uint32_t nowS) {
@@ -1219,9 +1230,11 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   strlcpy(s.changeReason, changeReason, sizeof(s.changeReason));
   s.healthProblem = gSup->healthProblem();
   strlcpy(s.lastError, gSup->alarms().lastErrorText(), sizeof(s.lastError));
+  uiLock();
   s.lockState = static_cast<hm::LockState>(gUi.lockState());
   s.lockLevel = static_cast<hm::LockLevel>(gUi.lockLevel());
   s.pinSet = gUi.userPinSet();
+  uiUnlock();
 
   xSemaphoreTake(gCtMux, portMAX_DELAY);
   snprintf(s.busJson, sizeof(s.busJson),
@@ -1409,7 +1422,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   updateRunSegments(out, fused, nowS);
   adviseRecovery(fused, oat, nowS);
 
-  // ---- UI model sync (render side is the future LVGL binding) ----
+  // ---- UI model sync (rendered by the wall-UI task, DETTSON_UI) ----
+  uiLock();
   gUi.tick(nowS);
   gUi.setFusedTemp(fused.value, fused.valid);
   gUi.setSetpoints(gModeSm->heatSetpoint(), gModeSm->coolSetpoint());
@@ -1433,7 +1447,28 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   gUi.setGasModulationPct(out.gasHeatPct);
   gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive);
   gUi.setDegradedMode(fused.degraded);
+  // Per-sensor rows for the Sensors screen + ambient "driving sensor".
+  {
+    ui::SensorRow rows[ui::kMaxSensorRows];
+    uint8_t rn = 0;
+    const uint8_t dom = gFusion.dominantParticipant();
+    for (size_t i = 0; i < kFusionSlots && rn < ui::kMaxSensorRows; ++i) {
+      if (!gSensorTable[i].used) continue;
+      const SensorStatus stt = gFusion.status(static_cast<uint8_t>(i), nowS);
+      ui::SensorRow& r = rows[rn++];
+      strlcpy(r.name, gSensorTable[i].name, sizeof(r.name));
+      r.tempC = stt.tempC;
+      r.occupied = stt.occupied;
+      r.ageS = (stt.ageS == 0xFFFFFFFFu) ? 0 : stt.ageS;
+      r.participating = stt.participating || gSensorTable[i].inRoster;
+      r.healthy = stt.faults == 0 && stt.hasTemp;
+      r.dominant = (static_cast<uint8_t>(i) == dom);
+      r.lastOccAgeS = stt.lastOccAgeS;
+    }
+    gUi.setSensorRows(rows, rn);
+  }
   safety::syncAlarmsToUi(gSup->alarms(), gUi);
+  uiUnlock();
 
   // ---- Persistence + outbound snapshot ----
   persistOnChange(nowS);
@@ -1447,6 +1482,18 @@ void controlTask(void*) {
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(cfg::kControlPeriodMs));
   }
 }
+
+#ifdef DETTSON_UI
+// Wall-UI task (core 0). Renders gUi (filled by the control task) and routes
+// touch into it — display-only, demand authority stays in the control task.
+void uiTask(void*) {
+  slytherm_ui::begin(&gUi, gUiMux);
+  for (;;) {
+    slytherm_ui::service();
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+#endif
 
 #ifdef DETTSON_DS18B20
 OneWire* gOneWire = nullptr;
@@ -1619,12 +1666,20 @@ void setup() {
   gCmdMux = xSemaphoreCreateMutex();
   gSnapMux = xSemaphoreCreateMutex();
   gCtMux = xSemaphoreCreateMutex();
+#ifdef DETTSON_UI
+  gUiMux = xSemaphoreCreateMutex();
+#endif
 
   // Task layout (docs/01 §4): Wi-Fi/MQTT core 0; control + CT-485 core 1,
   // CT-485 above control so a slow control cycle can't starve bus timing.
   xTaskCreatePinnedToCore(mqttTask, "mqtt", cfg::kMqttStack, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(controlTask, "control", cfg::kControlStack, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(ct485Task, "ct485", cfg::kCt485Stack, nullptr, 4, nullptr, 1);
+#ifdef DETTSON_UI
+  // Wall UI on core 0 with Wi-Fi/MQTT; control + CT-485 keep core 1 to protect
+  // the control cadence and future TX turnaround (docs/03 §8, issue #28).
+  xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
+#endif
 }
 
 void loop() {

@@ -83,6 +83,8 @@ struct SensorRow {
   uint32_t ageS          = 0;
   bool     participating = false;
   bool     healthy       = false;
+  bool     dominant      = false;        // the sensor currently driving demand
+  uint32_t lastOccAgeS   = 0xFFFFFFFFu;  // seconds since last occupied (max = never)
 };
 
 struct Alarm {
