@@ -1,0 +1,147 @@
+<title>SlyTherm tabs — Presets / System / Diag</title>
+<style>
+  :root{
+    --bg:#0B0F14; --card:#141B24; --raised:#1E2833; --border:#28333f;
+    --ink:#EAF0F6; --sec:#AEB9C4; --ter:#7A8895;
+    --ember:#FF7A18; --ember2:#FFB020; --cryo:#38BDF8; --cryo2:#7DD3FC;
+    --ok:#37D39A; --warn:#F2C14E; --crit:#FF5D5D;
+    --page:#0e1116; --pink:#EAF0F6;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --mono:ui-monospace,"Cascadia Code",Menlo,monospace;
+  }
+  @media(prefers-color-scheme:light){ :root{ --page:#eef1f5; --pink:#0f1720; } }
+  :root[data-theme="dark"]{ --page:#0e1116; --pink:#EAF0F6; }
+  :root[data-theme="light"]{ --page:#eef1f5; --pink:#0f1720; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--pink);font-family:var(--sans);line-height:1.5}
+  .wrap{max-width:1040px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ter);margin:0 0 8px}
+  h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em}
+  p.lead{color:var(--sec);max-width:70ch;margin:.2em 0 0}
+  .cap{font-family:var(--mono);font-size:12px;color:var(--ter);margin:0 0 8px;letter-spacing:.04em}
+  .cap b{color:var(--pink)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:22px;margin-top:22px}
+  .dev{aspect-ratio:800/480;background:#05070a;border-radius:12px;padding:9px;box-shadow:inset 0 0 0 1px #1b2430}
+  .scr{width:100%;height:100%;background:var(--bg);border-radius:6px;color:var(--ink);padding:12px 15px;display:flex;flex-direction:column;font-size:13px;overflow:hidden}
+  .h3{font-size:17px;font-weight:700;color:var(--cryo2);margin:0 0 8px}
+  /* presets */
+  .pcard{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:12px;background:var(--card);border-radius:12px;padding:12px 14px;margin-bottom:9px;border:1px solid transparent}
+  .pcard.active{border-color:var(--ok);background:linear-gradient(90deg,rgba(55,211,154,.10),var(--card) 40%)}
+  .pcard .ic{width:34px;height:34px;border-radius:9px;background:var(--raised);display:grid;place-items:center;font-size:17px}
+  .pcard .nm{font-weight:600;font-size:15px}
+  .pcard .tmp{font-family:var(--mono);color:var(--sec);font-size:13px}
+  .pcard .badge{font-size:10px;font-family:var(--mono);letter-spacing:.1em;color:#06202b;background:var(--ok);padding:3px 9px;border-radius:20px}
+  .pcard .edit{color:var(--ter);font-size:13px;border:1px solid var(--border);border-radius:8px;padding:5px 11px}
+  .hint{color:var(--ter);font-size:12px;margin-top:auto}
+  /* system list */
+  .srow{display:grid;grid-template-columns:170px 1fr;gap:10px;padding:8px 4px;border-bottom:1px solid #1a2129;font-size:14px}
+  .srow .k{color:var(--ter)} .srow .v{color:var(--ink)} .srow .v.warn{color:var(--warn)} .srow .v.ok{color:var(--ok)}
+  .srow .v .mono{font-family:var(--mono)}
+  .sys{overflow:auto}
+  /* diag */
+  .seg{display:flex;gap:6px;margin-bottom:9px}
+  .seg div{padding:5px 12px;border-radius:8px;background:var(--card);color:var(--sec);font-size:12px}
+  .seg div.on{background:var(--raised);color:var(--ink)}
+  .alarm{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;background:var(--card);border-radius:10px;padding:10px 12px;margin-bottom:7px}
+  .alarm .w{color:var(--warn)} .alarm .c{color:var(--crit)}
+  .alarm .t{font-size:13px} .alarm .t small{color:var(--ter);font-family:var(--mono);display:block;font-size:11px}
+  .alarm .go{color:var(--ter)}
+  .bus{background:#070b0f;border-radius:10px;padding:8px 10px;font-family:var(--mono);font-size:11.5px;color:var(--sec);overflow:auto;line-height:1.7}
+  .bus .rx{color:var(--cryo2)} .bus .tx{color:var(--ember2)} .bus .t{color:var(--ter)}
+  .counts{display:flex;gap:18px;margin:8px 2px 0;font-family:var(--mono);font-size:12px;color:var(--ter)}
+  .counts b{color:var(--ink)}
+  /* alarm detail */
+  .det{background:var(--card);border-radius:12px;padding:16px;flex:1}
+  .det .big{font-size:19px;font-weight:700;color:var(--warn);margin-bottom:6px}
+  .det p{color:var(--sec);font-size:14px;margin:8px 0}
+  .det .fix{color:var(--ink)} .det code{font-family:var(--mono);color:var(--ter);font-size:12px}
+  .tabbar{display:flex;margin-top:10px;border-top:1px solid var(--border);font-size:12px}
+  .tabbar div{flex:1;text-align:center;padding:8px 0;color:var(--ter)} .tabbar div.on{color:var(--cryo2);box-shadow:inset 0 2px 0 var(--cryo2)}
+  .footnote{margin-top:28px;color:var(--ter);font-family:var(--mono);font-size:12px;border-top:1px solid var(--border);padding-top:16px}
+  .rules{color:var(--sec);max-width:78ch} .rules li{margin:7px 0} .rules b{color:var(--pink)}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">SlyTherm · wall UI · tabs</p>
+  <h1>Presets · System · Diagnostics</h1>
+  <p class="lead">Reworking the three tabs you flagged. Presets show which is active and let you apply/edit; System
+    becomes a real status page (no "(valid)"); Diagnostics grows an alarm drill-down and a read-only CT-485 bus
+    monitor. Same design language as Home/Sensors. 800×480.</p>
+
+  <div class="grid">
+    <!-- Presets -->
+    <div>
+      <p class="cap"><b>Presets</b> — active state + apply/edit</p>
+      <div class="dev"><div class="scr">
+        <div class="h3">Presets</div>
+        <div class="pcard active"><span class="ic">🏠</span><span><div class="nm">Home</div><div class="tmp">heat 21° · cool 24°</div></span><span class="badge">ACTIVE</span><span class="edit">Edit</span></div>
+        <div class="pcard"><span class="ic">🌙</span><span><div class="nm">Sleep</div><div class="tmp">heat 19° · cool 23°</div></span><span></span><span class="edit">Edit</span></div>
+        <div class="pcard"><span class="ic">✈️</span><span><div class="nm">Away</div><div class="tmp">heat 17° · cool 28°</div></span><span></span><span class="edit">Edit</span></div>
+        <div class="hint">Tap a preset to apply it now · Edit to change its temperatures · a manual setpoint change shows as "Hold" until the next preset.</div>
+        <div class="tabbar"><div>Home</div><div class="on">Presets</div><div>Sensors</div><div>System</div><div>Settings</div><div>Diag</div></div>
+      </div></div>
+    </div>
+
+    <!-- System -->
+    <div>
+      <p class="cap"><b>System</b> — real status, no "(valid)"</p>
+      <div class="dev"><div class="scr">
+        <div class="h3">System</div>
+        <div class="sys">
+          <div class="srow"><span class="k">Now running</span><span class="v">Idle</span></div>
+          <div class="srow"><span class="k">Heat source</span><span class="v">Gas ready · heat pump paused</span></div>
+          <div class="srow"><span class="k">Reading</span><span class="v">20.9° from 3 rooms <span class="mono">(basement, living, bedroom)</span></span></div>
+          <div class="srow"><span class="k">Outdoor</span><span class="v">4° <span class="mono">· HA weather</span></span></div>
+          <div class="srow"><span class="k">Compressor</span><span class="v warn">Locked out · min-off 116s</span></div>
+          <div class="srow"><span class="k">Dual-fuel</span><span class="v">Balance point 2° · changeover none</span></div>
+          <div class="srow"><span class="k">Gas modulation</span><span class="v">0%</span></div>
+          <div class="srow"><span class="k">Furnace bus</span><span class="v ok">Connected <span class="mono">· unaddressed, listen-only</span></span></div>
+          <div class="srow"><span class="k">Firmware</span><span class="v mono">v0.6.0 · up 2h 14m</span></div>
+        </div>
+        <div class="tabbar"><div>Home</div><div>Presets</div><div>Sensors</div><div class="on">System</div><div>Settings</div><div>Diag</div></div>
+      </div></div>
+    </div>
+
+    <!-- Diag: alarms + bus -->
+    <div>
+      <p class="cap"><b>Diagnostics</b> — alarms + read-only bus monitor</p>
+      <div class="dev"><div class="scr">
+        <div class="h3">Diagnostics</div>
+        <div class="seg"><div class="on">Alarms (3)</div><div>Bus monitor</div><div>Links</div></div>
+        <div class="alarm"><span class="w">⚠</span><span class="t">Outdoor temperature unavailable<small>heat pump paused — using gas · OAT invalid: fail-cold</small></span><span class="go">›</span></div>
+        <div class="alarm"><span class="w">⚠</span><span class="t">Heat pump locked out<small>waiting for a valid outdoor temperature</small></span><span class="go">›</span></div>
+        <div class="alarm"><span class="w">⚠</span><span class="t">Compressor min-off running<small>116 s left before the compressor may restart</small></span><span class="go">›</span></div>
+        <div class="bus" style="margin-top:6px;max-height:96px">
+          <div><span class="t">12:41:03.114</span> <span class="rx">RX</span> node05→coord GET_STATUS <span class="t">7E 05 00 86 …</span></div>
+          <div><span class="t">12:41:03.140</span> <span class="rx">RX</span> coord→node05 STATUS <span class="t">7E 00 05 87 4A …</span></div>
+        </div>
+        <div class="tabbar"><div>Home</div><div>Presets</div><div>Sensors</div><div>System</div><div>Settings</div><div class="on">Diag</div></div>
+      </div></div>
+    </div>
+
+    <!-- Alarm detail drill-in -->
+    <div>
+      <p class="cap"><b>Alarm detail</b> — tap an alarm (plain language + installer code)</p>
+      <div class="dev"><div class="scr">
+        <div class="h3">‹ Alarm</div>
+        <div class="det">
+          <div class="big">⚠ Outdoor temperature unavailable</div>
+          <p>The thermostat can't read an outdoor temperature, so it's playing it safe: the <b>heat pump is paused</b> and heating runs on <b>gas only</b>.</p>
+          <p class="fix"><b>To fix:</b> provide an outdoor temperature — add an outdoor sensor in Home Assistant, or wire an outdoor probe. It clears automatically once a reading arrives.</p>
+          <p><code>code: OAT_INVALID · policy: fail-cold (gas only) · source: none</code></p>
+        </div>
+        <div class="tabbar"><div>Home</div><div>Presets</div><div>Sensors</div><div>System</div><div>Settings</div><div class="on">Diag</div></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul class="rules">
+      <li><b>Presets</b> — active one is badged + accent-bordered; tap to apply, <b>Edit</b> to change its heat/cool temps; a manual nudge reads as "Hold" until a preset is chosen.</li>
+      <li><b>System</b> — plain status rows (no "(valid)"): what's running, heat source, the reading + which rooms, outdoor + source, compressor timers, dual-fuel state, gas modulation, furnace-bus state, firmware + uptime.</li>
+      <li><b>Diagnostics → Alarms</b>: plain-language list (ties to #66) with a <b>drill-in</b> per alarm — what happened, how to fix, and the technical code for an installer.</li>
+      <li><b>Diagnostics → Bus monitor</b>: the read-only CT-485 sniffer folded in — live decoded frames (time · src→dst · type · bytes) + counters, so the wall unit is also your listen-only bus tool.</li>
+      <li><b>Diagnostics → Links</b>: WiFi/MQTT/broker + versions (moves the cramped Home status bar's detail here).</li>
+    </ul>
+  </div>
+</div>
