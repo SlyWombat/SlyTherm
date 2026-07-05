@@ -4,7 +4,9 @@ Ready-made HA config closing gap **G3** in [`../docs/07-ecobee-gap-analysis.md`]
 
 ```text
 ha/
-├── packages/dettson_starter.yaml          # one self-contained HA package
+├── packages/
+│   ├── dettson_starter.yaml               # schedules / vacation / alerts / presence (gap G3)
+│   └── dettson_sensors.yaml               # live room-sensor bridge → the wall unit (issue #22)
 └── blueprints/
     ├── dettson_presence_away.yaml         # reusable presence -> Away automation
     ├── dettson_filter_reminder.yaml       # reusable runtime-hours reminder
@@ -31,6 +33,34 @@ ha/
 ### 2. The blueprints
 
 Copy the blueprint files into `<config>/blueprints/automation/dettson/` (or import via **Settings → Automations & Scenes → Blueprints → Import**, pointing at the raw file URL if this repo is hosted), then create automations from them in the UI.
+
+## Live sensors → the wall unit (issue #22)
+
+`packages/dettson_sensors.yaml` feeds your HA room temperatures (and optional
+occupancy) into the thermostat, so the wall unit's **Sensors** screen and the
+occupancy-weighted "follow me" fusion use real rooms — not just the local probe.
+
+**Prerequisite — one shared broker.** The thermostat and HA must use the same
+MQTT broker (e.g. Mosquitto on kdocker2):
+
+1. Run Mosquitto and add HA's **MQTT integration** pointed at it.
+2. Point the wall unit at the same broker: set `THERMOSTAT_MQTT_HOST` /
+   `THERMOSTAT_MQTT_PORT` in `src/thermostat_secrets.h` and reflash. (Wi-Fi
+   itself is joined on the wall unit under **Settings → WiFi setup** — no
+   reflash needed for that.)
+
+**Then:**
+
+1. Copy `packages/dettson_sensors.yaml` into `<config>/packages/`.
+2. Edit the `dettson_rooms` block with your entities — `id`, `temp`, optional
+   `occ` (a presence/occupancy `binary_sensor`), `max_age_s`, optional `offset`.
+3. Reload automations (or restart HA).
+
+**Verify** in **Settings → Devices & Services → MQTT → Configure → Listen to a
+topic**: each room publishes `{"temp":…}` on `dettson/sensors/<id>/state` every
+~30 s, and the retained `dettson/config/sensors` lists your ids. On the wall
+unit the rooms then appear on the **Sensors** tab (the driving room marked), and
+the fused **control temp** replaces `--.-°`.
 
 ## What each piece does
 
