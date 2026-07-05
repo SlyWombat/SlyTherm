@@ -12,6 +12,7 @@
 #include <lvgl.h>
 
 #include "slytherm_ui.h"
+#include "wifi_prov.h"
 
 using namespace dettson;
 using namespace dettson::ui;
@@ -77,10 +78,11 @@ void gtReset(){ pinMode(kInt,OUTPUT); digitalWrite(kInt,LOW);
 int gtReg(uint16_t r,uint8_t*b,uint8_t n){ Wire.beginTransmission(kGt); Wire.write(r>>8); Wire.write(r&0xFF);
   if(Wire.endTransmission(false)!=0) return 0; uint8_t g=Wire.requestFrom(kGt,n),i=0;
   while(i<g&&Wire.available()) b[i++]=Wire.read(); return i; }
-bool gtRead(uint16_t&x,uint16_t&y){ static uint16_t lx=0,ly=0; static bool dn=false; uint8_t s=0;
-  if(gtReg(0x814E,&s,1)==1 && (s&0x80)){ if((s&0x0F)>0){ uint8_t d[6]={0};
-      if(gtReg(0x8150,d,6)>=4){ lx=d[0]|(d[1]<<8); ly=d[2]|(d[3]<<8); dn=true; } } else dn=false;
+bool gtRead(uint16_t&x,uint16_t&y){ static uint16_t lx=0,ly=0; static bool dn=false; static uint32_t readyMs=0; uint8_t s=0;
+  if(gtReg(0x814E,&s,1)==1 && (s&0x80)){ readyMs=millis();
+    if((s&0x0F)>0){ uint8_t d[6]={0}; if(gtReg(0x8150,d,6)>=4){ lx=d[0]|(d[1]<<8); ly=d[2]|(d[3]<<8); dn=true; } } else dn=false;
     Wire.beginTransmission(kGt); Wire.write(0x81); Wire.write(0x4E); Wire.write(0); Wire.endTransmission(); }
+  else if(dn && millis()-readyMs>150) dn=false;  // no fresh GT911 sample -> released (frees LVGL idle timer)
   x=lx; y=ly; return dn; }
 
 // ---- LVGL glue ----
@@ -100,7 +102,12 @@ bool gAmbient=false;
 lv_obj_t *wTemp,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wSensorList,*wSysBody,*wDiagBody,*wLockState;
 lv_obj_t *modeBtns[4];
 // ambient widgets
-lv_obj_t *aName,*aTemp,*aTarget;
+lv_obj_t *aName,*aTemp,*aTarget,*aAlarm;
+// WiFi provisioning screen widgets
+lv_obj_t *wifiOv=nullptr,*lblWifiStat=nullptr,*listNets=nullptr,*pwPanel=nullptr,*lblSel=nullptr,*taPass=nullptr,*kbd=nullptr;
+bool gWifiOpen=false, gScanShown=false;
+char gSelSsid[33]={};
+char gNetSsids[wifi_prov::kMaxNets][33]={};
 // keypad
 lv_obj_t *kpad=nullptr,*kpadTitle=nullptr,*kpadDots=nullptr;
 enum class KpMode{Set,Unlock}; KpMode kpMode=KpMode::Set; uint8_t kpBuf[4]; int kpN=0;
@@ -214,11 +221,15 @@ void buildKeypad(lv_obj_t*scr){ kpad=lv_obj_create(scr); lv_obj_set_size(kpad,36
 void setPinEvt(lv_event_t*){ kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
 void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
 void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
+void openWifi(lv_event_t*);  // defined below (before buildUi)
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
   wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,60);
   struct B{const char*t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
   for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,150,60); lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*170,120);
-    lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); } }
+    lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
+  lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,60); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,200);
+  lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*wl=lv_label_create(wb); lv_label_set_text(wl,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(wl,lv_color_hex(0x06202B),0); lv_obj_center(wl); }
 
 // ---- ambient (idle) screen ----
 void ambWake(lv_event_t*){ gAmbient=false; lv_scr_load(scrMain); }
@@ -228,7 +239,57 @@ void buildAmbient(){ scrAmb=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrAm
   lv_obj_set_style_text_font(aName,&lv_font_montserrat_28,0); lv_obj_align(aName,LV_ALIGN_CENTER,0,-90);
   aTemp=lv_label_create(scrAmb); lv_obj_set_style_text_color(aTemp,lv_color_hex(COL_MUTED),0);
   lv_obj_set_style_text_font(aTemp,&lv_font_montserrat_48,0); lv_obj_align(aTemp,LV_ALIGN_CENTER,0,-10);
-  aTarget=lv_label_create(scrAmb); lv_obj_set_style_text_font(aTarget,&lv_font_montserrat_28,0); lv_obj_align(aTarget,LV_ALIGN_CENTER,0,80); }
+  aTarget=lv_label_create(scrAmb); lv_obj_set_style_text_font(aTarget,&lv_font_montserrat_28,0); lv_obj_align(aTarget,LV_ALIGN_CENTER,0,80);
+  aAlarm=lv_label_create(scrAmb); lv_obj_set_style_text_color(aAlarm,lv_color_hex(COL_CRIT),0);   // alarm visible even in ambient (docs/04 §1c)
+  lv_obj_set_style_text_font(aAlarm,&lv_font_montserrat_20,0); lv_obj_align(aAlarm,LV_ALIGN_BOTTOM_MID,0,-16); lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
+
+// ---- WiFi provisioning screen (Settings -> WiFi setup) ----
+void wifiClose(lv_event_t*){ gWifiOpen=false; lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); }
+void pwHide(){ if(pwPanel) lv_obj_add_flag(pwPanel,LV_OBJ_FLAG_HIDDEN); }
+void wifiScanBtn(lv_event_t*){ wifi_prov::requestScan(); gScanShown=false; if(listNets) lv_obj_clean(listNets); }
+void wifiForgetBtn(lv_event_t*){ wifi_prov::forget(); }
+void wifiConnectBtn(lv_event_t*){ wifi_prov::requestConnect(gSelSsid, lv_textarea_get_text(taPass)); pwHide(); }
+void kbEvt(lv_event_t*e){ lv_event_code_t c=lv_event_get_code(e); if(c==LV_EVENT_READY) wifiConnectBtn(nullptr); else if(c==LV_EVENT_CANCEL) pwHide(); }
+void netEvt(lv_event_t*e){ int idx=(int)(intptr_t)lv_event_get_user_data(e); if(idx<0||idx>=wifi_prov::kMaxNets) return;
+  strlcpy(gSelSsid,gNetSsids[idx],sizeof(gSelSsid)); lv_label_set_text_fmt(lblSel,"Password for %s",gSelSsid);
+  lv_textarea_set_text(taPass,""); lv_keyboard_set_textarea(kbd,taPass); lv_obj_clear_flag(pwPanel,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(pwPanel); }
+void buildWifi(lv_obj_t*scr){
+  wifiOv=lv_obj_create(scr); lv_obj_set_size(wifiOv,800,480); lv_obj_set_pos(wifiOv,0,0);
+  lv_obj_set_style_bg_color(wifiOv,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(wifiOv,0,0);
+  lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);
+  lblWifiStat=lv_label_create(wifiOv); lv_obj_set_style_text_color(lblWifiStat,lv_color_hex(COL_INK),0);
+  lv_obj_set_style_text_font(lblWifiStat,&lv_font_montserrat_20,0); lv_obj_align(lblWifiStat,LV_ALIGN_TOP_LEFT,6,12);
+  struct WB{const char*t; lv_event_cb_t cb; int x;} wb[3]={{"Scan",wifiScanBtn,-320},{"Forget",wifiForgetBtn,-180},{"Close",wifiClose,-8}};
+  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(wifiOv); lv_obj_set_size(b,120,44); lv_obj_align(b,LV_ALIGN_TOP_RIGHT,wb[i].x,4);
+    lv_obj_add_event_cb(b,wb[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,wb[i].t); lv_obj_center(l); }
+  listNets=lv_list_create(wifiOv); lv_obj_set_size(listNets,780,412); lv_obj_align(listNets,LV_ALIGN_BOTTOM_MID,0,-4);
+  lv_obj_set_style_bg_color(listNets,lv_color_hex(COL_CARD),0);
+  pwPanel=lv_obj_create(wifiOv); lv_obj_set_size(pwPanel,800,480); lv_obj_set_pos(pwPanel,0,0);
+  lv_obj_set_style_bg_color(pwPanel,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(pwPanel,0,0);
+  lv_obj_clear_flag(pwPanel,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(pwPanel,LV_OBJ_FLAG_HIDDEN);
+  lblSel=lv_label_create(pwPanel); lv_obj_set_style_text_color(lblSel,lv_color_hex(COL_INK),0);
+  lv_obj_set_style_text_font(lblSel,&lv_font_montserrat_20,0); lv_obj_align(lblSel,LV_ALIGN_TOP_LEFT,8,10);
+  taPass=lv_textarea_create(pwPanel); lv_textarea_set_one_line(taPass,true); lv_textarea_set_password_mode(taPass,true);
+  lv_obj_set_size(taPass,520,44); lv_obj_align(taPass,LV_ALIGN_TOP_LEFT,8,44);
+  lv_obj_t*bc=lv_btn_create(pwPanel); lv_obj_set_size(bc,150,44); lv_obj_align(bc,LV_ALIGN_TOP_RIGHT,-8,44);
+  lv_obj_add_event_cb(bc,wifiConnectBtn,LV_EVENT_CLICKED,nullptr); lv_obj_t*bl=lv_label_create(bc); lv_label_set_text(bl,"Connect"); lv_obj_center(bl);
+  kbd=lv_keyboard_create(pwPanel); lv_keyboard_set_textarea(kbd,taPass); lv_obj_add_event_cb(kbd,kbEvt,LV_EVENT_ALL,nullptr);
+}
+void openWifi(lv_event_t*){ gWifiOpen=true; gScanShown=false; if(listNets) lv_obj_clean(listNets);
+  lv_obj_clear_flag(wifiOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(wifiOv); pwHide(); wifi_prov::requestScan(); }
+void renderWifi(){ if(!gWifiOpen||!lblWifiStat) return; char ss[33],ip[20]; int8_t rssi=0; bool conn=false;
+  wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rssi,&conn); wifi_prov::ConnState cs=wifi_prov::connState(); char b[100];
+  const char* cst = cs==wifi_prov::ConnState::kConnecting?"connecting...":cs==wifi_prov::ConnState::kFailed?"connect failed":"";
+  if(conn) snprintf(b,sizeof(b),"Connected: %s  %s (%d dBm)",ss,ip,(int)rssi);
+  else snprintf(b,sizeof(b),"Not connected  %s",cst[0]?cst:ss);
+  setTxt(lblWifiStat,b); lv_obj_set_style_text_color(lblWifiStat,lv_color_hex(conn?COL_OK:COL_MUTED),0);
+  if(!gScanShown && wifi_prov::scanState()==wifi_prov::ScanState::kDone){ gScanShown=true;
+    wifi_prov::Net nets[wifi_prov::kMaxNets]; int n=wifi_prov::scanResults(nets,wifi_prov::kMaxNets); lv_obj_clean(listNets);
+    for(int i=0;i<n;i++){ strlcpy(gNetSsids[i],nets[i].ssid,sizeof(gNetSsids[i])); char it[56];
+      snprintf(it,sizeof(it),"%s   %d dBm%s",nets[i].ssid,(int)nets[i].rssi,nets[i].locked?"":"  (open)");
+      lv_obj_t*btn=lv_list_add_btn(listNets,LV_SYMBOL_WIFI,it); lv_obj_add_event_cb(btn,netEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i); }
+    if(n==0) lv_list_add_text(listNets,"no networks found - tap Scan"); }
+}
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0);
@@ -236,7 +297,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildHome(lv_tabview_add_tab(tv,"Home")); buildPresets(lv_tabview_add_tab(tv,"Presets"));
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
-  buildKeypad(scrMain); buildAmbient(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildAmbient(); lv_scr_load(scrMain); }
 
 // ---- render from a model snapshot ----
 void renderMain(const DisplayState& s){ char b[128];
@@ -274,7 +335,9 @@ void renderAmbient(const DisplayState& s){ char b[64];
   if(heat){ snprintf(b,sizeof(b),"heating to %.1f\xC2\xB0",(double)s.heatSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_DIM_EMB),0); }
   else if(cool){ snprintf(b,sizeof(b),"cooling to %.1f\xC2\xB0",(double)s.coolSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_DIM_CRY),0); }
   else { snprintf(b,sizeof(b),"idle"); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_DIM),0); }
-  setTxt(aTarget,b); }
+  setTxt(aTarget,b);
+  if(s.alarmCount>0){ lv_obj_clear_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); setTxt(aAlarm, s.alarms[0].text[0]?s.alarms[0].text:"alarm"); }
+  else lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
 
 }  // namespace
 
@@ -300,11 +363,11 @@ void service(){
   static uint32_t lastRender=0;
   if(now-lastRender>=250){ lastRender=now;
     DisplayState s; L(); s=gM->state(); U();
-    const bool alarm = s.alarmCount>0;
-    // idle -> ambient (never while an alarm is active); alarm -> force wake
-    if(gAmbient && alarm){ gAmbient=false; lv_scr_load(scrMain); }
-    else if(!gAmbient && !alarm && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; lv_scr_load(scrAmb); }
-    if(gAmbient) renderAmbient(s); else renderMain(s);
+    // Ambient starts on idle regardless of alarms; the ambient screen shows the
+    // alarm banner (docs/04 §1c) rather than blocking the screensaver.
+    if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; lv_scr_load(scrAmb); }
+    if(gAmbient) renderAmbient(s);
+    else { renderMain(s); renderWifi(); }
   }
   lv_timer_handler();
 }

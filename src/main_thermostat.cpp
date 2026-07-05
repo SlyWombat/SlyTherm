@@ -83,6 +83,7 @@
 
 #ifdef DETTSON_UI
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
+#include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #endif
 
 #include "thermostat_config.h"
@@ -774,14 +775,21 @@ void publishSnapshot(bool force) {
 }
 
 void mqttTask(void*) {
-  const bool haveWifi = strlen(THERMOSTAT_WIFI_SSID) > 0;
   const bool haveMqtt = strlen(THERMOSTAT_MQTT_HOST) > 0;
+#ifdef DETTSON_UI
+  // Wi-Fi owned by wifi_prov: NVS-saved creds (or compile-time fallback), set
+  // from the wall UI (Settings -> WiFi). Survives reflash.
+  const bool haveWifi = wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
+  if (!haveWifi) Serial.println("[mqtt] no saved Wi-Fi — set one on the wall UI (Settings -> WiFi)");
+#else
+  const bool haveWifi = strlen(THERMOSTAT_WIFI_SSID) > 0;
   if (haveWifi) {
     WiFi.mode(WIFI_STA);
     WiFi.begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
   } else {
     Serial.println("[mqtt] no Wi-Fi credentials (src/thermostat_secrets.h) — serial-only bench mode");
   }
+#endif
   gMqtt.setServer(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT);
   gMqtt.setBufferSize(cfg::kMqttBufBytes);
   gMqtt.setCallback(onMqttMessage);
@@ -789,12 +797,18 @@ void mqttTask(void*) {
   uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0;
   for (;;) {
     const uint32_t nowMs = millis();
+#ifdef DETTSON_UI
+    wifi_prov::service(nowMs);
+    gWifiConnected = wifi_prov::connected();
+    (void)haveWifi; (void)lastWifiTryMs;
+#else
     gWifiConnected = haveWifi && WiFi.status() == WL_CONNECTED;
     if (haveWifi && !gWifiConnected && nowMs - lastWifiTryMs >= cfg::kWifiRetryMs) {
       lastWifiTryMs = nowMs;
       WiFi.disconnect();
       WiFi.begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
     }
+#endif
     if (gWifiConnected && haveMqtt && !gMqtt.connected() &&
         nowMs - lastMqttTryMs >= cfg::kMqttReconnectMs) {
       lastMqttTryMs = nowMs;
