@@ -191,7 +191,38 @@ rows; reserve `text.tertiary` for captions/hints.
 
 ---
 
-## 8. Rules of thumb (the lessons)
+## 8. Screen states — active & ambient idle
+
+The wall UI has two states. **Active** is the full tabbed UI (Home, Presets,
+Sensors, …). **Ambient idle** is a calm at-rest "screensaver with value."
+
+**Transition:** after **5 minutes** with no touch → ambient. **Any touch** →
+wake to the active **Home/control** screen; the waking touch only wakes (it does
+NOT actuate the control it landed on).
+
+**Ambient content** (dimmed design-system tokens — `text.secondary`/`tertiary`
+on `bg`; "dimmer" is a low-luminance colour scheme, since the CH422G backlight
+is on/off, not PWM):
+- The **sensor currently driving demand** — dominant occupied participant name
+  (e.g. "living room") — plus the **fused control temperature**, large.
+- The **target** (heat or cool setpoint for the active mode).
+- A **heat/cool graphic**: ember flame when heating, cryo snowflake when
+  cooling, neutral when idle.
+
+**Hard rules for ambient:**
+- **Alarms override ambient** — a critical alarm shows full-brightness; ambient
+  never hides a fault (docs/04 §1c).
+- Ambient is **display-only** — no demand authority, like every UI surface.
+
+**Presence detection:** idle-timeout only (no proximity sensor on the board).
+Optional future signals: HA **room occupancy** (dim faster / at night); true
+approach-wake would need a **PIR added to the carrier board** (hardware change).
+
+**Data needed:** `SensorFusion` must expose the **dominant (top-weighted)
+participant** for the "driving sensor" line, alongside per-sensor last-occupied
+presence.
+
+## 9. Rules of thumb (the lessons)
 
 - Headers/values → `text.primary`; body/rows → `text.secondary`; captions →
   `text.tertiary`. **Never** put readable content in tertiary.
