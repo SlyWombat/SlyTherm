@@ -9,6 +9,7 @@
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include <Wire.h>
+#include <WiFi.h>
 #include <lvgl.h>
 
 #include "slytherm_ui.h"
@@ -450,6 +451,27 @@ void renderServer(){ if(!gSrvOpen||!lblSrvStat) return; char h[64]; uint16_t pt=
   if(c) snprintf(b,sizeof(b),"Connected  %s:%u",h,pt); else snprintf(b,sizeof(b),"Not connected%s%s",h[0]?"  ":"",h[0]?h:"");
   setTxt(lblSrvStat,b); lv_obj_set_style_text_color(lblSrvStat,lv_color_hex(c?COL_OK:COL_MUTED),0); }
 
+// Screenshot server: on connect to :8081, snapshot the active screen (into
+// PSRAM) and stream it as raw RGB565 with a "SLYSHOT <w> <h>\n" header. Runs on
+// the UI task so lv_snapshot is safe. Decode with tools/slyshot.py.
+void screenshotPoll(){
+  static WiFiServer* srv=nullptr; static uint8_t* sbuf=nullptr;
+  if(WiFi.status()!=WL_CONNECTED) return;
+  if(!srv){ srv=new WiFiServer(8081); srv->begin(); srv->setNoDelay(true); }
+  if(!sbuf) sbuf=(uint8_t*)ps_malloc((size_t)800*480*2+64);
+  if(!sbuf) return;
+  WiFiClient c=srv->available(); if(!c) return;
+  lv_img_dsc_t dsc; memset(&dsc,0,sizeof(dsc));
+  if(lv_snapshot_take_to_buf(lv_scr_act(),LV_IMG_CF_TRUE_COLOR,&dsc,sbuf,(uint32_t)800*480*2+64)==LV_RES_OK){
+    char hdr[48]; int hn=snprintf(hdr,sizeof(hdr),"SLYSHOT %u %u\n",(unsigned)dsc.header.w,(unsigned)dsc.header.h);
+    c.write((const uint8_t*)hdr,hn);
+    uint32_t total=(uint32_t)dsc.header.w*dsc.header.h*2, sent=0;
+    while(sent<total && c.connected()){ uint32_t ch=total-sent; if(ch>1460) ch=1460;
+      int w=c.write(sbuf+sent,ch); if(w<=0) break; sent+=(uint32_t)w; }
+  } else c.print("SLYSHOT ERR\n");
+  c.stop();
+}
+
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0);
   lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_BOTTOM,56); gTabview=tv; lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
@@ -559,6 +581,7 @@ void service(){
       telnet_log::logf("[ui] screen=%s fusedT=%.1f valid=%d mode=%d act=%d wifi=%d mqtt=%d bus=%d sensors=%d alarms=%d",
         scr,(double)s.fusedTempC,(int)s.fusedTempValid,(int)s.mode,(int)s.action,(int)s.wifiOk,(int)s.mqttOk,(int)s.busOk,(int)s.sensorCount,(int)s.alarmCount); }
   }
+  screenshotPoll();
   lv_timer_handler();
 }
 
