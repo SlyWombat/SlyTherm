@@ -21,6 +21,7 @@ using namespace dettson;
 using namespace dettson::ui;
 
 extern "C" const lv_img_dsc_t slymark_img;  // generated from assets/slytherm-mark.svg (slymark_img.c)
+LV_FONT_DECLARE(font_now80);                 // 80px subset (0-9 . ° -) for the hero (font_now80.c)
 
 // ---- LovyanGFX RGB panel (validated) ---------------------------------------
 class LGFX : public lgfx::LGFX_Device {
@@ -106,6 +107,7 @@ bool gAmbient=false;
 // main-screen widgets
 lv_obj_t *wTemp,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wSensorList,*wSysBody,*wDiagBody,*wLockState;
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[3];  // UI v2 Home/Presets
+lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 struct PresetDef{ const char* name; float heat; float cool; };
 const PresetDef kPresetDefs[3]={{"Home",21.0f,24.0f},{"Away",17.0f,28.0f},{"Sleep",19.0f,23.0f}};
 // #66: map an internal alarm string to homeowner-friendly text (wall UI + shared idea for HA).
@@ -173,37 +175,35 @@ lv_obj_t* header(lv_obj_t*tab,const char*t){ lv_obj_t*h=lv_label_create(tab); lv
   lv_obj_set_style_text_font(h,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(h,lv_color_hex(COL_CRYO),0);
   lv_obj_align(h,LV_ALIGN_TOP_LEFT,4,0); return h; }
 
-void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
-  // logo mark (approx dial) + wordmark, top-left
-  lv_obj_t*mark=lv_img_create(tab); lv_img_set_src(mark,&slymark_img); lv_obj_align(mark,LV_ALIGN_TOP_LEFT,8,4);  // real SVG dial mark (slymark_img.c)
-  lv_obj_t*wm=lv_label_create(tab); lv_label_set_text(wm,"SlyTherm"); lv_obj_set_style_text_color(wm,lv_color_hex(COL_INK),0); lv_obj_align(wm,LV_ALIGN_TOP_LEFT,46,12);
-  wOnline=lv_label_create(tab); lv_obj_align(wOnline,LV_ALIGN_TOP_RIGHT,-120,12);
-  wOat=lv_label_create(tab); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_TOP_RIGHT,-8,12);
-  // current temp + action + presence (left)
-  lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_LEFT_MID,22,-54);
-  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&lv_font_montserrat_48,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_LEFT_MID,18,-16);
-  wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0); lv_obj_align(wAction,LV_ALIGN_LEFT_MID,22,28);
-  wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_LEFT_MID,22,58);
-  // heat + cool cards (right), shown per mode
-  gHeatCard=card(tab); lv_obj_set_size(gHeatCard,250,120); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-12,44);
+void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_style_pad_all(tab,0,0);
+  // hero: NOW + big current temp + action + presence (left); logo/status live in the top bar
+  lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,26,12);
+  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,20,28);
+  wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0);
+  lv_obj_set_style_bg_color(wAction,lv_color_hex(COL_RAISED),0); lv_obj_set_style_bg_opa(wAction,LV_OPA_COVER,0);
+  lv_obj_set_style_pad_hor(wAction,13,0); lv_obj_set_style_pad_ver(wAction,5,0); lv_obj_set_style_radius(wAction,15,0);
+  lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,124);
+  wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_TOP_LEFT,26,160);
+  // heat + cool cards (right), big target font, shown per mode
+  gHeatCard=card(tab); lv_obj_set_size(gHeatCard,272,150); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,12);
   lv_obj_set_style_border_color(gHeatCard,lv_color_hex(COL_EMBER),0); lv_obj_set_style_border_width(gHeatCard,1,0);
-  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,6,2); }
-  wHeatSp=lv_label_create(gHeatCard); lv_obj_set_style_text_font(wHeatSp,&lv_font_montserrat_28,0); lv_obj_align(wHeatSp,LV_ALIGN_LEFT_MID,10,6);
+  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,10,6); }
+  wHeatSp=lv_label_create(gHeatCard); lv_obj_set_style_text_font(wHeatSp,&lv_font_montserrat_48,0); lv_obj_align(wHeatSp,LV_ALIGN_TOP_MID,0,28);
   spBtn(gHeatCard,"-",-1,LV_ALIGN_BOTTOM_LEFT); spBtn(gHeatCard,"+",1,LV_ALIGN_BOTTOM_RIGHT);
-  gCoolCard=card(tab); lv_obj_set_size(gCoolCard,250,120); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-12,172);
+  gCoolCard=card(tab); lv_obj_set_size(gCoolCard,272,150); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,172);
   lv_obj_set_style_border_color(gCoolCard,lv_color_hex(COL_CRYO),0); lv_obj_set_style_border_width(gCoolCard,1,0);
-  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,6,2); }
-  wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&lv_font_montserrat_28,0); lv_obj_align(wCoolSp,LV_ALIGN_LEFT_MID,10,6);
+  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL TO"); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_LEFT,10,6); }
+  wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&lv_font_montserrat_48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,28);
   spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_LEFT); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_RIGHT);
   wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\npick a mode to set a temperature");
-  lv_obj_set_style_text_color(wOffMsg,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(wOffMsg,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(wOffMsg,LV_ALIGN_RIGHT_MID,-70,-10);
-  // mode selector (bottom)
+  lv_obj_set_style_text_color(wOffMsg,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(wOffMsg,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(wOffMsg,LV_ALIGN_TOP_RIGHT,-64,96);
+  // mode selector across the reclaimed bottom
   const char*mn[4]={"OFF","HEAT","COOL","AUTO"}; UserMode mv[4]={UserMode::kOff,UserMode::kHeat,UserMode::kCool,UserMode::kAuto};
-  lv_obj_t*mrow=lv_obj_create(tab); lv_obj_set_size(mrow,440,52); lv_obj_align(mrow,LV_ALIGN_BOTTOM_MID,0,-4);
+  lv_obj_t*mrow=lv_obj_create(tab); lv_obj_set_size(mrow,470,56); lv_obj_align(mrow,LV_ALIGN_BOTTOM_MID,0,-12);
   lv_obj_set_style_bg_opa(mrow,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(mrow,0,0);
   lv_obj_set_flex_flow(mrow,LV_FLEX_FLOW_ROW); lv_obj_set_flex_align(mrow,LV_FLEX_ALIGN_SPACE_BETWEEN,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
   lv_obj_clear_flag(mrow,LV_OBJ_FLAG_SCROLLABLE);
-  for(int i=0;i<4;i++){ lv_obj_t*b=lv_btn_create(mrow); lv_obj_set_size(b,100,46);
+  for(int i=0;i<4;i++){ lv_obj_t*b=lv_btn_create(mrow); lv_obj_set_size(b,108,50);
     lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_center(l); modeBtns[i]=b; } }
 
@@ -472,12 +472,50 @@ void screenshotPoll(){
   c.stop();
 }
 
-void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
-  lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0);
-  lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_BOTTOM,56); gTabview=tv; lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
+// ---- pull-down navigation (logo -> drop-down menu; swipe still works) ----
+void onNavToggle(lv_event_t*){ if(!gNavMenu) return; bool hidden=lv_obj_has_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN);
+  if(hidden){ lv_obj_clear_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gNavMenu); if(wCaret) lv_label_set_text(wCaret,LV_SYMBOL_UP); }
+  else { lv_obj_add_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN); if(wCaret) lv_label_set_text(wCaret,LV_SYMBOL_DOWN); } }
+void onNavPick(lv_event_t*e){ int i=(int)(intptr_t)lv_event_get_user_data(e);
+  if(gTabview) lv_tabview_set_act(gTabview,(uint32_t)i,LV_ANIM_OFF);
+  lv_obj_add_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN); if(wCaret) lv_label_set_text(wCaret,LV_SYMBOL_DOWN); }
+void buildTopBar(lv_obj_t*scr){
+  lv_obj_t*bar=lv_obj_create(scr); lv_obj_set_size(bar,800,48); lv_obj_set_pos(bar,0,0);
+  lv_obj_set_style_bg_color(bar,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(bar,0,0); lv_obj_set_style_pad_all(bar,0,0); lv_obj_clear_flag(bar,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*brand=lv_btn_create(bar); lv_obj_set_size(brand,200,46); lv_obj_align(brand,LV_ALIGN_LEFT_MID,2,0);
+  lv_obj_set_style_bg_opa(brand,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(brand,0,0); lv_obj_add_event_cb(brand,onNavToggle,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*mk=lv_img_create(brand); lv_img_set_src(mk,&slymark_img); lv_obj_align(mk,LV_ALIGN_LEFT_MID,0,0);
+  lv_obj_t*wm=lv_label_create(brand); lv_label_set_text(wm,"SlyTherm"); lv_obj_set_style_text_color(wm,lv_color_hex(COL_INK),0); lv_obj_align(wm,LV_ALIGN_LEFT_MID,54,0);
+  wCaret=lv_label_create(brand); lv_label_set_text(wCaret,LV_SYMBOL_DOWN); lv_obj_set_style_text_color(wCaret,lv_color_hex(COL_TEXT3),0); lv_obj_align(wCaret,LV_ALIGN_LEFT_MID,158,0);
+  wOnline=lv_label_create(bar); lv_obj_align(wOnline,LV_ALIGN_RIGHT_MID,-150,0);
+  wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-12,0);
+}
+void buildNavMenu(lv_obj_t*scr){
+  gNavMenu=lv_obj_create(scr); lv_obj_set_size(gNavMenu,800,480); lv_obj_set_pos(gNavMenu,0,0);
+  lv_obj_set_style_bg_color(gNavMenu,lv_color_hex(0x03060A),0); lv_obj_set_style_bg_opa(gNavMenu,LV_OPA_60,0); lv_obj_set_style_border_width(gNavMenu,0,0);
+  lv_obj_set_style_pad_all(gNavMenu,0,0); lv_obj_clear_flag(gNavMenu,LV_OBJ_FLAG_SCROLLABLE); lv_obj_add_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(gNavMenu,onNavToggle,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*panel=lv_obj_create(gNavMenu); lv_obj_set_size(panel,800,300); lv_obj_set_pos(panel,0,0);
+  lv_obj_set_style_bg_color(panel,lv_color_hex(0x0F151C),0); lv_obj_set_style_border_width(panel,0,0); lv_obj_set_style_radius(panel,0,0);
+  lv_obj_set_style_pad_all(panel,0,0); lv_obj_clear_flag(panel,LV_OBJ_FLAG_SCROLLABLE);
+  const char* names[6]={"Home","Presets","Sensors","System","Settings","Diag"};
+  const char* ic[6]={LV_SYMBOL_HOME,LV_SYMBOL_LIST,LV_SYMBOL_GPS,LV_SYMBOL_SETTINGS,LV_SYMBOL_SETTINGS,LV_SYMBOL_WARNING};
+  for(int i=0;i<6;i++){ lv_obj_t*t=lv_btn_create(panel); lv_obj_set_size(t,244,128); lv_obj_align(t,LV_ALIGN_TOP_LEFT,16+(i%3)*256,16+(i/3)*140);
+    lv_obj_set_style_bg_color(t,lv_color_hex(COL_CARD),0); lv_obj_add_event_cb(t,onNavPick,LV_EVENT_CLICKED,(void*)(intptr_t)i);
+    lv_obj_t*l=lv_label_create(t); lv_label_set_text_fmt(l,"%s  %s",ic[i],names[i]); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_center(l); }
+}
+
+void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrMain,0,0);
+  lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrMain,LV_OBJ_FLAG_SCROLLABLE);
+  buildTopBar(scrMain);
+  lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_TOP,0); gTabview=tv;
+  lv_obj_set_pos(tv,0,48); lv_obj_set_size(tv,800,432);
+  lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(tv,0,0); lv_obj_set_style_pad_all(tv,0,0);
+  lv_obj_add_flag(lv_tabview_get_tab_btns(tv),LV_OBJ_FLAG_HIDDEN);
   buildHome(lv_tabview_add_tab(tv,"Home")); buildPresets(lv_tabview_add_tab(tv,"Presets"));
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
+  buildNavMenu(scrMain);
   buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildAmbient(); lv_scr_load(scrMain); }
 
 // ---- render from a model snapshot ----
@@ -492,10 +530,10 @@ void renderMain(const DisplayState& s){ char b[128];
     setTxt(wAction,b); }
   { const SensorRow* dom=nullptr; int nPart=0;
     for(uint8_t i=0;i<s.sensorCount;i++){ if(s.sensors[i].participating) nPart++; if(s.sensors[i].dominant) dom=&s.sensors[i]; }
-    if(dom && dom->occupied) snprintf(b,sizeof(b),"Reading %s \xC2\xB7 Present",dom->name);
-    else if(dom && dom->lastOccAgeS<3600u) snprintf(b,sizeof(b),"Reading %s \xC2\xB7 Last entered %lu min ago",dom->name,(unsigned long)(dom->lastOccAgeS/60u));
-    else if(dom && dom->lastOccAgeS<10800u) snprintf(b,sizeof(b),"Reading %s \xC2\xB7 Last entered %lu hr ago",dom->name,(unsigned long)((dom->lastOccAgeS+1800u)/3600u));
-    else if(nPart>0) snprintf(b,sizeof(b),"Nobody home \xC2\xB7 averaging %d rooms",nPart);
+    if(dom && dom->occupied) snprintf(b,sizeof(b),"Reading %s - Present",dom->name);
+    else if(dom && dom->lastOccAgeS<3600u) snprintf(b,sizeof(b),"Reading %s - Last entered %lu min ago",dom->name,(unsigned long)(dom->lastOccAgeS/60u));
+    else if(dom && dom->lastOccAgeS<10800u) snprintf(b,sizeof(b),"Reading %s - Last entered %lu hr ago",dom->name,(unsigned long)((dom->lastOccAgeS+1800u)/3600u));
+    else if(nPart>0) snprintf(b,sizeof(b),"Nobody home - averaging %d rooms",nPart);
     else strcpy(b,"Local sensor only");
     setTxt(wFollow,b); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
@@ -504,7 +542,7 @@ void renderMain(const DisplayState& s){ char b[128];
   if(s.outdoorValid){ snprintf(b,sizeof(b),"Outside %.0f\xC2\xB0",(double)s.outdoorTempC); setTxt(wOat,b);} else setTxt(wOat,"Outside --");
   { const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto;
     if(sh) lv_obj_clear_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);
-    if(sc){ lv_obj_clear_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-12,s.mode==UserMode::kCool?44:172);} else lv_obj_add_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);
+    if(sc){ lv_obj_clear_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,s.mode==UserMode::kCool?12:172);} else lv_obj_add_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);
     if(s.mode==UserMode::kOff) lv_obj_clear_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN); }
   for(int i=0;i<4;i++){ bool on=((i==0)&&s.mode==UserMode::kOff)||((i==1)&&s.mode==UserMode::kHeat)||((i==2)&&s.mode==UserMode::kCool)||((i==3)&&s.mode==UserMode::kAuto);
     lv_obj_set_style_bg_color(modeBtns[i],lv_color_hex(on?COL_CRYO:COL_RAISED),0); }
