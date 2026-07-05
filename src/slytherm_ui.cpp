@@ -14,6 +14,7 @@
 #include "slytherm_ui.h"
 #include "wifi_prov.h"
 #include "mqtt_cfg.h"
+#include "telnet_log.h"
 
 using namespace dettson;
 using namespace dettson::ui;
@@ -97,7 +98,7 @@ void touchCb(lv_indev_drv_t*,lv_indev_data_t*dt){ uint16_t x,y;
   else dt->state=LV_INDEV_STATE_REL; }
 
 // ---- screens ----
-lv_obj_t *scrMain=nullptr, *scrAmb=nullptr;
+lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
 bool gAmbient=false;
 // main-screen widgets
 lv_obj_t *wTemp,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wSensorList,*wSysBody,*wDiagBody,*wLockState;
@@ -281,18 +282,27 @@ void onShowPw(lv_event_t*){ if(taPass) lv_textarea_set_password_mode(taPass,!lv_
 void onTaFocus(lv_event_t*e){ if(kbd) lv_keyboard_set_textarea(kbd,(lv_obj_t*)lv_event_get_target(e)); }
 void onKb(lv_event_t*e){ lv_event_code_t c=lv_event_get_code(e); if(c==LV_EVENT_READY) doConnect(); else if(c==LV_EVENT_CANCEL) wifiGoto(WifiState::List); }
 
+// Dark styling for a list row (belt-and-suspenders vs the theme flag).
+void styleRow(lv_obj_t* b){ lv_obj_set_style_bg_color(b,lv_color_hex(COL_CARD),0);
+  lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);
+  lv_obj_set_style_text_color(b,lv_color_hex(COL_INK),0); lv_obj_set_style_border_width(b,0,0);
+  lv_obj_set_style_radius(b,8,0); }
 void buildList(){ lv_obj_t*list=lv_list_create(wifiOv); lv_obj_set_size(list,780,352); lv_obj_align(list,LV_ALIGN_TOP_MID,0,46);
-  lv_obj_set_style_bg_color(list,lv_color_hex(COL_CARD),0);
+  lv_obj_set_style_bg_color(list,lv_color_hex(COL_BG),0); lv_obj_set_style_border_width(list,0,0); lv_obj_set_style_pad_row(list,6,0);
   wifi_prov::Net raw[wifi_prov::kMaxNets]; int n=wifi_prov::scanResults(raw,wifi_prov::kMaxNets);
   wifi_prov::Net uniq[wifi_prov::kMaxNets]; int m=0;                  // merge duplicate SSIDs, strongest signal
   for(int i=0;i<n;i++){ if(!raw[i].ssid[0]) continue; int f=-1;
     for(int j=0;j<m;j++) if(strcmp(uniq[j].ssid,raw[i].ssid)==0){ f=j; break; }
     if(f<0) uniq[m++]=raw[i]; else if(raw[i].rssi>uniq[f].rssi) uniq[f]=raw[i]; }
-  for(int i=0;i<m;i++){ strlcpy(gNetSsids[i],uniq[i].ssid,sizeof(gNetSsids[i])); char it[56];
-    snprintf(it,sizeof(it),"%s   %d dBm%s",uniq[i].ssid,(int)uniq[i].rssi,uniq[i].locked?"":"  (open)");
-    lv_obj_t*b=lv_list_add_btn(list,LV_SYMBOL_WIFI,it); lv_obj_add_event_cb(b,onNet,LV_EVENT_CLICKED,(void*)(intptr_t)i); }
-  if(m==0) lv_list_add_text(list,"No networks found");
-  lv_obj_t*ob=lv_list_add_btn(list,LV_SYMBOL_PLUS,"Other network"); lv_obj_add_event_cb(ob,onOther,LV_EVENT_CLICKED,nullptr);
+  for(int x=0;x<m-1;x++) for(int y=x+1;y<m;y++)                       // strongest signal first
+    if(uniq[y].rssi>uniq[x].rssi){ wifi_prov::Net t=uniq[x]; uniq[x]=uniq[y]; uniq[y]=t; }
+  for(int i=0;i<m;i++){ strlcpy(gNetSsids[i],uniq[i].ssid,sizeof(gNetSsids[i])); char it[48];
+    snprintf(it,sizeof(it),"%s%s",uniq[i].ssid,uniq[i].locked?"":"   (open)");
+    lv_obj_t*b=lv_list_add_btn(list,LV_SYMBOL_WIFI,it); styleRow(b); lv_obj_add_event_cb(b,onNet,LV_EVENT_CLICKED,(void*)(intptr_t)i); }
+  if(m==0){ lv_obj_t*t=lv_list_add_text(list,"No networks found"); lv_obj_set_style_text_color(t,lv_color_hex(COL_MUTED),0); }
+  lv_obj_t*ob=lv_list_add_btn(list,LV_SYMBOL_PLUS,"Other network"); styleRow(ob); lv_obj_add_event_cb(ob,onOther,LV_EVENT_CLICKED,nullptr);
+  { char names[120]=""; for(int i=0;i<m && i<8;i++){ strncat(names,gNetSsids[i],sizeof(names)-strlen(names)-2); if(i<m-1&&i<7) strncat(names,", ",3); }
+    telnet_log::logf("[ui] WiFi list: %d networks [%s]", m, names); }
   mkBtn(wifiOv,"Back",onBackStatus,LV_ALIGN_BOTTOM_LEFT,8,-8,COL_RAISED);
   mkBtn(wifiOv,"Rescan",onScan,LV_ALIGN_BOTTOM_RIGHT,-8,-8,COL_RAISED); }
 
@@ -303,6 +313,8 @@ void wifiUpdateStatus(){ if(gWs!=WifiState::Status||!wfLine) return; char ss[33]
   else { setTxt(wfLine,"Not connected"); lv_obj_set_style_text_color(wfLine,lv_color_hex(COL_INK),0); setTxt(wfSub,""); } }
 
 void wifiGoto(WifiState s){ gWs=s; lv_obj_clean(wifiOv); taPass=taSsid=kbd=wfLine=wfSub=nullptr;
+  { static const char* nm[]={"Status","Scanning","List","Password","Other","Connecting","Result-OK","Result-FAIL"};
+    telnet_log::logf("[ui] WiFi -> %s%s%s", nm[(int)s], gSelSsid[0]?" ssid=":"", gSelSsid[0]?gSelSsid:""); }
   lv_obj_t*title=lv_label_create(wifiOv); lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0);
   lv_obj_set_style_text_color(title,lv_color_hex(COL_CRYO),0); lv_obj_align(title,LV_ALIGN_TOP_LEFT,10,10);
   lv_obj_t*x=lv_btn_create(wifiOv); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-8,6);
@@ -318,7 +330,7 @@ void wifiGoto(WifiState s){ gWs=s; lv_obj_clean(wifiOv); taPass=taSsid=kbd=wfLin
       wifiUpdateStatus(); break;
     case WifiState::Scanning: lv_label_set_text(title,"WiFi");
       { lv_obj_t*sp=lv_spinner_create(wifiOv,1000,60); lv_obj_set_size(sp,54,54); lv_obj_align(sp,LV_ALIGN_CENTER,0,-16);
-        lv_obj_t*l=lv_label_create(wifiOv); lv_label_set_text(l,"Scanning\xE2\x80\xA6"); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_align(l,LV_ALIGN_CENTER,0,42); }
+        lv_obj_t*l=lv_label_create(wifiOv); lv_label_set_text(l,"Scanning..."); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_align(l,LV_ALIGN_CENTER,0,42); }
       break;
     case WifiState::List: lv_label_set_text(title,"Choose a network"); buildList(); break;
     case WifiState::Password: lv_label_set_text(title,gSelSsid);
@@ -338,7 +350,7 @@ void wifiGoto(WifiState s){ gWs=s; lv_obj_clean(wifiOv); taPass=taSsid=kbd=wfLin
       break;
     case WifiState::Connecting: lv_label_set_text(title,"WiFi");
       { lv_obj_t*sp=lv_spinner_create(wifiOv,1000,60); lv_obj_set_size(sp,54,54); lv_obj_align(sp,LV_ALIGN_CENTER,0,-16);
-        lv_obj_t*l=lv_label_create(wifiOv); char b[64]; snprintf(b,sizeof(b),"Connecting to %s\xE2\x80\xA6",gSelSsid);
+        lv_obj_t*l=lv_label_create(wifiOv); char b[64]; snprintf(b,sizeof(b),"Connecting to %s...",gSelSsid);
         lv_label_set_text(l,b); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_align(l,LV_ALIGN_CENTER,0,42); }
       break;
     case WifiState::ResultOk: lv_label_set_text(title,"WiFi");
@@ -405,7 +417,8 @@ void openServer(lv_event_t*){ gSrvOpen=true; char h[64],u[48],p[64]; uint16_t pt
   mqtt_cfg::current(h,sizeof(h),&pt,u,sizeof(u),p,sizeof(p)); lv_textarea_set_text(taHost,h);
   char ps[8]; snprintf(ps,sizeof(ps),"%u",pt); lv_textarea_set_text(taPort,ps);
   lv_textarea_set_text(taUser,u); lv_textarea_set_text(taSrvPass,p);
-  lv_obj_clear_flag(srvOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(srvOv); }
+  lv_obj_clear_flag(srvOv,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(srvOv);
+  telnet_log::logf("[ui] Home system screen (broker %s:%u connected=%d)", h, pt, mqtt_cfg::connected()); }
 void renderServer(){ if(!gSrvOpen||!lblSrvStat) return; char h[64]; uint16_t pt=1883; mqtt_cfg::current(h,sizeof(h),&pt,nullptr,0,nullptr,0);
   char b[96]; const bool c=mqtt_cfg::connected();
   if(c) snprintf(b,sizeof(b),"Connected  %s:%u",h,pt); else snprintf(b,sizeof(b),"Not connected%s%s",h[0]?"  ":"",h[0]?h:"");
@@ -413,7 +426,7 @@ void renderServer(){ if(!gSrvOpen||!lblSrvStat) return; char h[64]; uint16_t pt=
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0);
-  lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_BOTTOM,56); lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
+  lv_obj_t*tv=lv_tabview_create(scrMain,LV_DIR_BOTTOM,56); gTabview=tv; lv_obj_set_style_bg_color(tv,lv_color_hex(COL_BG),0);
   buildHome(lv_tabview_add_tab(tv,"Home")); buildPresets(lv_tabview_add_tab(tv,"Presets"));
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
@@ -488,6 +501,13 @@ void service(){
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; lv_scr_load(scrAmb); }
     if(gAmbient) renderAmbient(s);
     else { renderMain(s); renderWifi(); renderServer(); }
+    static uint32_t lastSnap=0;
+    if(now-lastSnap>=8000){ lastSnap=now;
+      static const char* tabs[]={"Home","Presets","Sensors","System","Settings","Diag"};
+      int ti=gTabview?(int)lv_tabview_get_tab_act(gTabview):0;
+      const char* scr = gAmbient?"AMBIENT": gSrvOpen?"HomeSystem": gWifiOpen?"WiFi": (ti>=0&&ti<6?tabs[ti]:"?");
+      telnet_log::logf("[ui] screen=%s fusedT=%.1f valid=%d mode=%d act=%d wifi=%d mqtt=%d bus=%d sensors=%d alarms=%d",
+        scr,(double)s.fusedTempC,(int)s.fusedTempValid,(int)s.mode,(int)s.action,(int)s.wifiOk,(int)s.mqttOk,(int)s.busOk,(int)s.sensorCount,(int)s.alarmCount); }
   }
   lv_timer_handler();
 }

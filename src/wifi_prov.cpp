@@ -77,17 +77,24 @@ void service(uint32_t nowMs){
     WiFi.begin(gActiveSsid,gActivePass); gLastBeginMs=nowMs;
   }
 
-  // scan request + async poll
+  // scan request — SYNCHRONOUS. The async scan returns 0 while already
+  // associated (confirmed on this ESP32-S3); a blocking scan enumerates
+  // reliably whether connected or not. Blocks this task ~2-4 s; the UI keeps
+  // animating "Scanning" on its own task.
+  (void)gScanning; (void)gScanStartMs;
   L(); bool sReq=gScanReq; gScanReq=false; U();
-  if(sReq && !gScanning){ WiFi.scanNetworks(true,false); gScanning=true; gScanStartMs=nowMs; L(); gScanSt=ScanState::kScanning; U(); }
-  if(gScanning){ int n=WiFi.scanComplete();
-    if(n>=0){ Net tmp[kMaxNets]; int c=0;
-      for(int i=0;i<n && c<kMaxNets;i++){ strlcpy(tmp[c].ssid,WiFi.SSID(i).c_str(),sizeof(tmp[c].ssid));
-        tmp[c].rssi=WiFi.RSSI(i); tmp[c].locked=WiFi.encryptionType(i)!=WIFI_AUTH_OPEN; c++; }
-      WiFi.scanDelete(); gScanning=false;
-      L(); memcpy(gNets,tmp,sizeof(Net)*c); gNetCount=c; gScanSt=ScanState::kDone; U(); }
-    else if(n==WIFI_SCAN_FAILED || nowMs-gScanStartMs>10000){ WiFi.scanDelete(); gScanning=false;
-      L(); gScanSt=ScanState::kDone; gNetCount=0; U(); }
+  if(sReq){
+    WiFi.scanDelete();
+    int n = WiFi.scanNetworks(false /*sync*/, false /*show_hidden*/);
+    Net tmp[kMaxNets]; int c=0;
+    for(int i=0;i<n && c<kMaxNets;i++){
+      strlcpy(tmp[c].ssid, WiFi.SSID(i).c_str(), sizeof(tmp[c].ssid));
+      tmp[c].rssi = WiFi.RSSI(i);
+      tmp[c].locked = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+      c++;
+    }
+    WiFi.scanDelete();
+    L(); memcpy(gNets, tmp, sizeof(Net)*c); gNetCount = c; gScanSt = ScanState::kDone; U();
   }
 }
 

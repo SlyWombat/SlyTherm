@@ -538,7 +538,10 @@ struct EntitySpec {
 
 std::string entityDiscoveryJson(const EntitySpec& e) {
   Obj o;
-  o.str("name", e.name).str("unique_id", e.uniqueId).str("state_topic", e.stateTopic);
+  // object_id pins a clean entity_id (sensor.dettson_<x>) instead of HA
+  // auto-prefixing the device name (docs/06; matches ha/packages).
+  o.str("name", e.name).str("unique_id", e.uniqueId).str("object_id", e.uniqueId)
+      .str("state_topic", e.stateTopic);
   if (!e.commandTopic.empty()) o.str("command_topic", e.commandTopic);
   if (e.hasRange) o.num("min", e.minV).num("max", e.maxV).num("step", e.stepV);
   if (e.unit != nullptr) o.str("unit_of_measurement", e.unit);
@@ -561,6 +564,7 @@ std::string climateDiscoveryJson(const std::vector<std::string>& presetModes) {
   return Obj()
       .str("name", "Dettson HVAC")
       .str("unique_id", "dettson_hvac")
+      .str("object_id", "dettson_hvac")
       .raw("modes", strList({"off", "heat", "cool", "heat_cool"}))
       .raw("fan_modes", strList({"auto", "on", "circulate"}))
       .raw("preset_modes", strList(presetModes))  // built from the roster

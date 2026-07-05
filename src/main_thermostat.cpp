@@ -86,6 +86,7 @@
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
+#include "telnet_log.h"   // WiFi-accessible debug log (port 23)
 #endif
 
 #include "thermostat_config.h"
@@ -784,6 +785,7 @@ void mqttTask(void*) {
   const bool haveWifi = wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
   if (!haveWifi) Serial.println("[mqtt] no saved Wi-Fi — set one on the wall UI (Settings -> WiFi)");
   mqtt_cfg::begin(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT, THERMOSTAT_MQTT_USER, THERMOSTAT_MQTT_PASS);
+  telnet_log::begin();
 #else
   const bool haveWifi = strlen(THERMOSTAT_WIFI_SSID) > 0;
   if (haveWifi) {
@@ -811,6 +813,7 @@ void mqttTask(void*) {
     const uint32_t nowMs = millis();
 #ifdef DETTSON_UI
     wifi_prov::service(nowMs);
+    telnet_log::poll();
     gWifiConnected = wifi_prov::connected();
     (void)haveWifi; (void)haveMqtt; (void)lastWifiTryMs;
     // Silent auto-discovery: Wi-Fi up but no broker saved -> browse mDNS for the
@@ -820,13 +823,17 @@ void mqttTask(void*) {
       static bool sMdnsUp = false;
       if (!sMdnsUp) sMdnsUp = MDNS.begin("slytherm");
       IPAddress ip; uint16_t pt = 0;
-      int n = MDNS.queryService("mqtt", "tcp");
+      int n = MDNS.queryService("mqtt", "tcp");                       // 1: advertised broker
       if (n > 0) { ip = MDNS.IP(0); pt = MDNS.port(0); }
-      else { n = MDNS.queryService("home-assistant", "tcp"); if (n > 0) { ip = MDNS.IP(0); pt = 1883; } }
+      else { n = MDNS.queryService("home-assistant", "tcp"); if (n > 0) { ip = MDNS.IP(0); pt = 1883; } }  // 2: HA host
+      if (n <= 0) {                                                    // 3: well-known HA hostname
+        IPAddress hip = MDNS.queryHost("homeassistant");
+        if (hip != IPAddress(0, 0, 0, 0)) { ip = hip; pt = 1883; n = 1; }
+      }
       if (n > 0 && ip != IPAddress(0, 0, 0, 0)) {
         char host[24];
         snprintf(host, sizeof(host), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
-        Serial.printf("[mqtt] mDNS discovered broker %s:%u\n", host, pt ? pt : 1883);
+        telnet_log::logf("[mqtt] mDNS discovered broker %s:%u", host, pt ? pt : 1883);
         mqtt_cfg::save(host, pt ? pt : 1883, "", "");  // anonymous; add auth in Installer
       }
     }
@@ -865,8 +872,15 @@ void mqttTask(void*) {
         gDiscoveryDirty = false;
         subscribeAll();
         memset(gPubCache, 0, sizeof(gPubCache));  // full republish after reconnect
+#ifdef DETTSON_UI
+        telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
+#else
         Serial.println("[mqtt] connected");
+#endif
       }
+#ifdef DETTSON_UI
+      else telnet_log::logf("[mqtt] connect failed (state=%d)", gMqtt.state());
+#endif
     }
     gMqttConnected = gMqtt.connected();
 #ifdef DETTSON_UI
