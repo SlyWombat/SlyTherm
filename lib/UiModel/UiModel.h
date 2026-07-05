@@ -139,6 +139,9 @@ struct DisplayState {
   bool mqttOk = false;
   bool busOk  = false;
   bool degradedMode = false;       // DS18B20-only degraded mode banner
+
+  uint32_t busLastRxS = 0;         // CT-485: seconds clock of last decoded frame (0 = never)
+  uint32_t busFrames  = 0;         // CT-485: frames decoded OK (live only when RS-485 UART enabled)
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
@@ -221,6 +224,8 @@ class UiModel : public UiCommands {
   void pushAlarm(const char* text, uint16_t code);
   void clearAlarms();
   void setLinkHealth(bool wifi, bool mqtt, bool bus);
+  // CT-485 bus monitor (Diag). Rendered every tick, so no dirty bit needed.
+  void setBusDiag(uint32_t lastRxS, uint32_t frames) { state_.busLastRxS = lastRxS; state_.busFrames = frames; }
   void setDegradedMode(bool on);
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
 

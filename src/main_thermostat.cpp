@@ -1531,6 +1531,11 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
                                                    : ui::OutdoorSource::kNone);
   gUi.setGasModulationPct(out.gasHeatPct);
   gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive);
+  { uint32_t ctFrames = 0;
+#ifdef DETTSON_CT485_UART
+    ctFrames = gCtAcc.counters().framesOk;   // live only when the RS-485 UART is compiled in
+#endif
+    gUi.setBusDiag(gLastBusRxS, ctFrames); }
   gUi.setDegradedMode(fused.degraded);
   // Per-sensor rows for the Sensors screen + ambient "driving sensor".
   {

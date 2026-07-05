@@ -565,9 +565,13 @@ void renderMain(const DisplayState& s){ char b[128];
       actName(s.action),(double)s.fusedTempC,(int)s.sensorCount, s.outdoorValid?"":"-- ",(double)s.outdoorTempC,
       s.compressorLockoutRemainS>0?"locked out":"ready",(double)s.gasModulationPct, s.busOk?"connected (listen-only)":"--", modeName(s.mode));
     setTxt(wSysBody,sb); }
-  if(wDiagBody){ char d[440]; snprintf(d,sizeof(d),"ALARMS (%u)\n",(unsigned)s.alarmCount);
+  if(wDiagBody){ char d[560]; snprintf(d,sizeof(d),"ALARMS (%u)\n",(unsigned)s.alarmCount);
     if(s.alarmCount==0) strncat(d,"  none - all clear\n",sizeof(d)-strlen(d)-1);
     for(uint8_t i=0;i<s.alarmCount && i<4;i++){ char ln[120]; snprintf(ln,sizeof(ln),"  ! %s\n",friendlyAlarm(s.alarms[i].text)); strncat(d,ln,sizeof(d)-strlen(d)-1); }
+    char bus[160];
+    if(s.busFrames>0) snprintf(bus,sizeof(bus),"\nCT-485 BUS\n  %lu frames decoded   bus %s\n",(unsigned long)s.busFrames,s.busOk?"alive":"quiet");
+    else snprintf(bus,sizeof(bus),"\nCT-485 BUS (listen-only)\n  0 frames - wire RS-485 + enable UART to sniff\n");
+    strncat(d,bus,sizeof(d)-strlen(d)-1);
     char lk[110]; snprintf(lk,sizeof(lk),"\nLINKS\n  WiFi %s   MQTT %s   Bus %s",s.wifiOk?"up":"down",s.mqttOk?"up":"down",s.busOk?"up":"down");
     strncat(d,lk,sizeof(d)-strlen(d)-1); setTxt(wDiagBody,d); }
   if(wLockState){ bool unlocked=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; bool pin=gM->userPinSet(); U();
