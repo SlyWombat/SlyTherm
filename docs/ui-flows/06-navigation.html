@@ -1,0 +1,135 @@
+<title>SlyTherm nav — pull-down menu</title>
+<style>
+  :root{
+    --bg:#0B0F14; --card:#141B24; --raised:#1E2833; --border:#28333f;
+    --ink:#EAF0F6; --sec:#AEB9C4; --ter:#7A8895;
+    --ember:#FF7A18; --ember2:#FFB020; --cryo:#38BDF8; --cryo2:#7DD3FC; --ok:#37D39A;
+    --page:#0e1116; --pink:#EAF0F6;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --mono:ui-monospace,"Cascadia Code",Menlo,monospace;
+  }
+  @media(prefers-color-scheme:light){ :root{ --page:#eef1f5; --pink:#0f1720; } }
+  :root[data-theme="dark"]{ --page:#0e1116; --pink:#EAF0F6; }
+  :root[data-theme="light"]{ --page:#eef1f5; --pink:#0f1720; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--pink);font-family:var(--sans);line-height:1.5}
+  .wrap{max-width:1040px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ter);margin:0 0 8px}
+  h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em}
+  p.lead{color:var(--sec);max-width:68ch;margin:.2em 0 0}
+  .cap{font-family:var(--mono);font-size:12px;color:var(--ter);margin:0 0 8px;letter-spacing:.04em}
+  .cap b{color:var(--pink)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:22px;margin-top:22px}
+  .dev{aspect-ratio:800/480;background:#05070a;border-radius:13px;padding:9px;box-shadow:inset 0 0 0 1px #1b2430}
+  .scr{width:100%;height:100%;border-radius:6px;color:var(--ink);position:relative;overflow:hidden;
+      background:radial-gradient(120% 85% at 24% 44%, rgba(56,189,248,.12), transparent 55%), var(--bg)}
+  .pad{position:absolute;inset:0;display:flex;flex-direction:column;padding:12px 16px}
+  .top{display:flex;align-items:center}
+  .brand{display:inline-flex;align-items:center;gap:8px;color:var(--ink);font-weight:600;font-size:15px}
+  .brand .mk{width:26px;height:26px;flex:none}
+  .brand .car{color:var(--ter);font-size:13px;margin-left:1px}
+  .rgt{margin-left:auto;display:flex;gap:14px;color:var(--ter);font-size:12px;align-items:center}
+  .rgt .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:5px;vertical-align:middle}
+  .rgt b{color:var(--ink)}
+  .hero{flex:1;display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:8px}
+  .nl{font-size:11px;font-family:var(--mono);letter-spacing:.16em;color:var(--ter);margin-top:20px}
+  .nowT{font-size:96px;font-weight:250;letter-spacing:-3px;line-height:.92}
+  .nowT sup{font-size:32px;font-weight:300;vertical-align:top;top:.5em;position:relative}
+  .act{font-size:15px;color:var(--cryo2)}
+  .fol{margin-top:12px;color:var(--sec);font-size:13.5px}
+  .fol b{color:var(--ink)} .fol .d{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:6px}
+  .tgt{background:var(--card);border:1px solid rgba(56,189,248,.4);border-radius:16px;padding:14px;display:grid;justify-items:center;gap:8px}
+  .tgt .lab{font-size:11px;font-family:var(--mono);letter-spacing:.16em;color:var(--cryo2)}
+  .tgt .big{font-size:48px;font-weight:600;line-height:1}
+  .tgt .stp{display:flex;gap:12px} .tgt .b{width:54px;height:48px;border-radius:12px;background:var(--raised);display:grid;place-items:center;font-size:24px}
+  .modebar{display:flex;background:var(--card);border-radius:12px;padding:4px;margin-top:8px;width:440px;align-self:center}
+  .modebar div{flex:1;text-align:center;padding:10px 0;border-radius:9px;font-size:14px;color:var(--sec)}
+  .modebar div.on{background:var(--cryo);color:#06202b;font-weight:700}
+  .freed{border:1px dashed rgba(55,211,154,.5);border-radius:8px;color:var(--ok);font-size:11px;text-align:center;padding:3px;margin-top:8px}
+  /* dropdown */
+  .scrim{position:absolute;inset:0;background:rgba(3,5,8,.55)}
+  .menu{position:absolute;left:0;right:0;top:0;background:#0f151c;border-bottom:1px solid var(--border);border-radius:0 0 16px 16px;
+      padding:12px 16px 16px;box-shadow:0 18px 40px rgba(0,0,0,.5)}
+  .menu .mtop{display:flex;align-items:center;margin-bottom:10px}
+  .menu .car{color:var(--cryo2)}
+  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .tile{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 10px;display:flex;flex-direction:column;align-items:center;gap:7px;font-size:14px;color:var(--sec)}
+  .tile .ic{font-size:24px}
+  .tile.on{border-color:var(--cryo);background:linear-gradient(180deg,rgba(56,189,248,.12),var(--card));color:var(--ink)}
+  .footnote{margin-top:28px;color:var(--ter);font-family:var(--mono);font-size:12px;border-top:1px solid var(--border);padding-top:16px}
+  .rules{color:var(--sec);max-width:78ch} .rules li{margin:7px 0} .rules b{color:var(--pink)}
+</style>
+
+<div class="wrap">
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <linearGradient id="w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFB020"/><stop offset="1" stop-color="#FF6A12"/></linearGradient>
+    <linearGradient id="c" x1="1" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#0E93C4"/><stop offset="1" stop-color="#5CCBF6"/></linearGradient>
+    <clipPath id="f"><circle cx="60" cy="60" r="52"/></clipPath>
+    <g id="mk"><circle cx="60" cy="60" r="58" fill="#0A0E13"/>
+      <g clip-path="url(#f)"><path d="M0 0 H120 V44 C92 40 78 74 60 66 C42 58 28 30 0 52 Z" fill="url(#w)"/>
+        <path d="M0 52 C28 30 42 58 60 66 C78 74 92 40 120 44 V120 H0 Z" fill="url(#c)"/>
+        <path d="M0 52 C28 30 42 58 60 66 C78 74 92 40 120 44" fill="none" stroke="#0A0E13" stroke-width="3"/></g>
+      <circle cx="60" cy="60" r="55" fill="none" stroke="#39B2FF" stroke-width="3"/></g>
+  </defs></svg>
+
+  <p class="eyebrow">SlyTherm · wall UI · navigation</p>
+  <h1>Pull-down menu (from the logo)</h1>
+  <p class="lead">Drop the persistent bottom tab bar — tap the <b>logo/wordmark ▾</b> for a pull-down menu, and keep
+    swipe left/right between screens. Frees ~56 px of height for content, reads more premium. A caret signals the
+    logo is tappable. 800×480.</p>
+
+  <div class="grid">
+    <!-- 1 closed -->
+    <div>
+      <p class="cap"><b>1 · Menu closed</b> — no bottom bar, more room</p>
+      <div class="dev"><div class="scr"><div class="pad">
+        <div class="top">
+          <span class="brand"><svg class="mk" viewBox="0 0 120 120"><use href="#mk"/></svg>SlyTherm <span class="car">▾</span></span>
+          <span class="rgt"><span><span class="dot"></span>online</span><span>Outside <b>26°</b></span></span>
+        </div>
+        <div class="hero">
+          <div><div class="nl">NOW</div><div class="nowT">22.5<sup>°</sup></div>
+            <div class="act">❄ Cooling to 24°</div>
+            <div class="fol"><span class="d"></span>Reading <b>Living Room</b> · Present</div></div>
+          <div class="tgt"><span class="lab">COOL TO</span><span class="big">24.0°</span>
+            <span class="stp"><span class="b">−</span><span class="b">+</span></span></div>
+        </div>
+        <div class="modebar"><div>Off</div><div>Heat</div><div class="on">Cool</div><div>Auto</div></div>
+        <div class="freed">↕ the old bottom tab bar's ~56px is now content space</div>
+      </div></div></div>
+    </div>
+
+    <!-- 2 open -->
+    <div>
+      <p class="cap"><b>2 · Menu open</b> — tap logo → drops down; tap a tile or away to close</p>
+      <div class="dev"><div class="scr">
+        <div class="pad" style="filter:blur(.5px)">
+          <div class="top"><span class="brand"><svg class="mk" viewBox="0 0 120 120"><use href="#mk"/></svg>SlyTherm <span class="car">▾</span></span>
+            <span class="rgt"><span><span class="dot"></span>online</span></span></div>
+          <div class="hero"><div><div class="nl">NOW</div><div class="nowT" style="font-size:70px">22.5<sup>°</sup></div></div><div></div></div>
+        </div>
+        <div class="scrim"></div>
+        <div class="menu">
+          <div class="mtop"><span class="brand"><svg class="mk" viewBox="0 0 120 120"><use href="#mk"/></svg>SlyTherm <span class="car">▴</span></span></div>
+          <div class="tiles">
+            <div class="tile on"><span class="ic">🏠</span>Home</div>
+            <div class="tile"><span class="ic">⭐</span>Presets</div>
+            <div class="tile"><span class="ic">🌡️</span>Sensors</div>
+            <div class="tile"><span class="ic">📊</span>System</div>
+            <div class="tile"><span class="ic">⚙️</span>Settings</div>
+            <div class="tile"><span class="ic">🩺</span>Diagnostics</div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul class="rules">
+      <li><b>Trigger</b> — tap the logo/wordmark; the <b>▾ caret</b> makes it discoverable (▴ when open). Swipe left/right still moves between screens.</li>
+      <li><b>Menu</b> — drops from the top with 6 large touch tiles (icon + name), current screen highlighted; tap a tile to go there, tap the dimmed area to dismiss.</li>
+      <li><b>Payoff</b> — the always-on bottom bar is gone, so Home (and every screen) gets ~56 px more height — bigger hero, roomier cards, a more premium feel.</li>
+      <li>Optional: auto-close the menu after a few seconds of no touch, same as the ambient idle timer.</li>
+    </ul>
+  </div>
+</div>

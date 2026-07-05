@@ -10,6 +10,7 @@ jargon reaches the homeowner — #66).
 | `02-home-system-connect.html` | Home-system connection | mDNS auto-discovery, silent; manual under Installer→Advanced; **implemented (backend)** |
 | `04-home.html` | Home | **mode-aware** target (Heat/Cool→one, Auto→range, Off→none) + focal hero + logo mark (mark before wordmark) + presence rule + online/outdoor status |
 | `05-presets-system-diag.html` | Presets / System / Diag | Presets active+apply+edit; System status rows (no "(valid)"); Diag alarms drill-in + read-only CT-485 bus monitor + Links |
+| `06-navigation.html` | Navigation | **pull-down menu** from the logo (▾ caret + swipe); drops the bottom tab bar to free ~56px |
 | `03-sensors.html` | Sensors | plain-language chooser: use / follow-when-occupied / nudge; **"When no one's home"** default |
 
 **Presence rule** (Home "reading from" line): Present → Last entered X min ago
