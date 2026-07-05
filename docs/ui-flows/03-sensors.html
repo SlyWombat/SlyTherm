@@ -1,0 +1,132 @@
+<title>SlyTherm Sensors — flow</title>
+<style>
+  :root{
+    --bg:#0B0F14; --surf:#151C25; --raised:#1F2A36; --border:#2B3947;
+    --ink:#EAF0F6; --sec:#AEB9C4; --ter:#7A8895;
+    --cryo:#38BDF8; --ok:#37D39A; --warn:#F2C14E; --crit:#FF5D5D; --ember:#FF7A18;
+    --page:#0e1116; --pink:#EAF0F6;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --mono:ui-monospace,"Cascadia Code",Menlo,monospace;
+  }
+  @media(prefers-color-scheme:light){ :root{ --page:#eef1f5; --pink:#0f1720; } }
+  :root[data-theme="dark"]{ --page:#0e1116; --pink:#EAF0F6; }
+  :root[data-theme="light"]{ --page:#eef1f5; --pink:#0f1720; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--pink);font-family:var(--sans);line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ter);margin:0 0 8px}
+  h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em}
+  p.lead{color:var(--sec);max-width:68ch;margin:.2em 0 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:22px;margin-top:22px}
+  .cap{font-family:var(--mono);font-size:12px;color:var(--ter);margin:0 0 8px;letter-spacing:.04em}
+  .cap b{color:var(--pink)}
+  .dev{aspect-ratio:800/480;background:#05070a;border-radius:12px;padding:10px;box-shadow:inset 0 0 0 1px #1b2430}
+  .scr{width:100%;height:100%;background:var(--bg);border-radius:6px;color:var(--ink);
+    padding:14px 16px;display:flex;flex-direction:column;font-size:13px;position:relative;overflow:hidden}
+  .top{display:flex;align-items:center;justify-content:space-between}
+  .top h3{font-size:17px;margin:0;font-weight:700;color:var(--cryo)}
+  .x{color:var(--ter);font-size:13px;border:1px solid var(--border);border-radius:6px;padding:3px 10px}
+  .btn{background:var(--raised);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+  .btn.pri{background:var(--cryo);color:#06202b;font-weight:700}
+  .banner{margin-top:10px;background:var(--surf);border-radius:10px;padding:10px 14px;display:flex;align-items:baseline;gap:10px}
+  .banner .k{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--ter);text-transform:uppercase}
+  .banner .v{font-size:26px;font-weight:700} .banner .sub{color:var(--ter);font-size:12px;margin-left:auto;text-align:right}
+  .list{margin-top:10px;display:flex;flex-direction:column;gap:6px;overflow:auto}
+  .srow{display:flex;align-items:center;gap:12px;background:var(--surf);border-radius:9px;padding:9px 13px}
+  .srow.off{opacity:.5} .srow .nm{font-weight:600;min-width:118px}
+  .srow .tmp{font-family:var(--mono);font-size:16px;min-width:60px}
+  .srow .pr{font-size:11px;color:var(--ter);flex:1}
+  .srow .pr.here{color:var(--ok)} .srow .pr.warn{color:var(--warn)}
+  .tag{font-size:10px;font-family:var(--mono);padding:2px 7px;border-radius:20px;background:var(--raised);color:var(--cryo)}
+  .tag.warn{color:var(--warn)}
+  .sw{width:46px;height:26px;border-radius:13px;background:var(--border);position:relative;flex:none}
+  .sw.on{background:var(--cryo)} .sw.lock{background:var(--raised);opacity:.6}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff}
+  .sw.on::after{left:23px}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center}
+  .big{font-size:22px;font-weight:700} .muted{color:var(--sec)} .tert{color:var(--ter)} .ok{color:var(--ok)} .mono{font-family:var(--mono)}
+  .dot{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:22px;background:rgba(122,136,149,.15)}
+  .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--cryo);border-radius:50%;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+  .drow{display:flex;align-items:center;justify-content:space-between;background:var(--surf);border-radius:9px;padding:12px 14px;margin-top:9px}
+  .step{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;background:var(--raised);font-size:20px}
+  .off-v{font-family:var(--mono);font-size:20px;min-width:70px;text-align:center}
+  .bar{margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .footnote{margin-top:28px;color:var(--ter);font-family:var(--mono);font-size:12px;border-top:1px solid var(--border);padding-top:16px}
+  .rules{color:var(--sec);max-width:74ch} .rules li{margin:6px 0} .rules b{color:var(--pink)}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">SlyTherm · wall UI · setup → Sensors</p>
+  <h1>Sensors — flow (plain language)</h1>
+  <p class="lead">No "MQTT", no "Home Assistant", no "broker" — the homeowner just sees the rooms we found and chooses
+    what each should do. Connecting to the home system happens silently in the background (auto-discovery); the technical
+    address only lives under <b>Installer → Advanced</b> if that ever fails. Screens are 800×480.</p>
+
+  <div class="grid">
+    <!-- 0 Finding -->
+    <div>
+      <p class="cap"><b>0 · Finding sensors</b> — silent auto-connect, no jargon</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Sensors</h3><span class="x">✕</span></div>
+        <div class="center"><div class="spin"></div><div class="muted">Looking for sensors around your home…</div></div>
+      </div></div>
+    </div>
+
+    <!-- 1 Choose sensors main -->
+    <div>
+      <p class="cap"><b>1 · Sensors</b> — what's available + what you want it to do</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Sensors</h3><span class="x">Done</span></div>
+        <div class="banner"><span class="k">Now using</span><span class="v">21.4°</span><span class="sub">2 rooms · following the living room</span></div>
+        <div class="list">
+          <div class="srow"><span class="nm">Living room</span><span class="tmp">21.3°</span><span class="pr here">● someone here</span><span class="tag">following</span><span class="sw on"></span></div>
+          <div class="srow"><span class="nm">Bedroom</span><span class="tmp">20.9°</span><span class="pr here">● someone here</span><span class="sw on"></span></div>
+          <div class="srow off"><span class="nm">Office</span><span class="tmp">22.1°</span><span class="pr">empty · 3h</span><span class="sw"></span></div>
+          <div class="srow"><span class="nm">Garage</span><span class="tmp">18.2°</span><span class="pr warn">⚠ not responding</span><span class="tag warn">check it</span><span class="sw"></span></div>
+          <div class="srow"><span class="nm">This thermostat</span><span class="tmp">21.0°</span><span class="pr">built in</span><span class="sw on lock"></span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- 2 Sensor detail -->
+    <div>
+      <p class="cap"><b>2 · Room detail</b> — tap a room</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Living room</h3><span class="x">‹ Back</span></div>
+        <div class="banner"><span class="k">Reading</span><span class="v">21.3°</span><span class="sub">someone here · a few seconds ago</span></div>
+        <div class="drow"><span>Use this room's temperature</span><span class="sw on"></span></div>
+        <div class="drow"><span>Follow this room when someone's in it</span><span class="sw on"></span></div>
+        <div class="drow"><span>Nudge the reading if it's off</span>
+          <span style="display:flex;align-items:center;gap:12px"><span class="step">−</span><span class="off-v">+0.5°</span><span class="step">+</span></span></div>
+      </div></div>
+    </div>
+
+    <!-- 3 Empty -->
+    <div>
+      <p class="cap"><b>3 · Nothing found yet</b></p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Sensors</h3><span class="x">Done</span></div>
+        <div class="center">
+          <div class="dot">🌡️</div>
+          <div class="big">No room sensors found</div>
+          <div class="tert" style="max-width:50ch">This thermostat's own sensor is keeping things comfortable. When room
+            sensors are added to your home, they'll show up here to choose.</div>
+        </div>
+        <div class="bar"><span></span><span class="btn">Look again</span></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul class="rules">
+      <li><b>Plain words only.</b> "Rooms / sensors", "someone here", "following", "use this room", "nudge the reading" — never broker / roster / topic / MQTT / HA.</li>
+      <li><b>Lead with what it's doing:</b> "Now using 21.4° · 2 rooms · following the living room" — the temperature it's acting on and why.</li>
+      <li><b>Each room, one clear choice:</b> a switch to use it or not. Off rooms dim; a room that stops responding is flagged "check it" and dropped automatically.</li>
+      <li><b>This thermostat</b> (its own sensor) can't be switched off — the always-there fallback.</li>
+      <li><b>Room detail</b> adds "follow when occupied" and a temperature nudge (calibration), in words, not numbers-jargon.</li>
+      <li>Connecting to the home system is <b>silent + automatic</b>; the technical address hides under <b>Installer → Advanced</b>. Choices are saved automatically and shared with the rest of the system.</li>
+    </ul>
+  </div>
+</div>

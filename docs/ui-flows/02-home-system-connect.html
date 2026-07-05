@@ -1,0 +1,175 @@
+<title>SlyTherm Server / MQTT setup — flow</title>
+<style>
+  :root{
+    --bg:#0B0F14; --surf:#151C25; --raised:#1F2A36; --border:#2B3947;
+    --ink:#EAF0F6; --sec:#AEB9C4; --ter:#7A8895;
+    --cryo:#38BDF8; --ok:#37D39A; --warn:#F2C14E; --crit:#FF5D5D; --ember:#FF7A18;
+    --page:#0e1116; --pink:#EAF0F6;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --mono:ui-monospace,"Cascadia Code",Menlo,monospace;
+  }
+  @media(prefers-color-scheme:light){ :root{ --page:#eef1f5; --pink:#0f1720; } }
+  :root[data-theme="dark"]{ --page:#0e1116; --pink:#EAF0F6; }
+  :root[data-theme="light"]{ --page:#eef1f5; --pink:#0f1720; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--pink);font-family:var(--sans);line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ter);margin:0 0 8px}
+  h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em}
+  p.lead{color:var(--sec);max-width:68ch;margin:.2em 0 0}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 8px;font-family:var(--mono);font-size:12.5px;color:var(--ter)}
+  .flow b{color:var(--cryo);font-weight:600} .arrow{color:var(--cryo)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:22px;margin-top:22px}
+  .cap{font-family:var(--mono);font-size:12px;color:var(--ter);margin:0 0 8px;letter-spacing:.04em}
+  .cap b{color:var(--pink)}
+  .dev{aspect-ratio:800/480;background:#05070a;border-radius:12px;padding:10px;box-shadow:inset 0 0 0 1px #1b2430}
+  .scr{width:100%;height:100%;background:var(--bg);border-radius:6px;color:var(--ink);
+    padding:14px 16px;display:flex;flex-direction:column;font-size:13px;position:relative;overflow:hidden}
+  .top{display:flex;align-items:center;justify-content:space-between}
+  .top h3{font-size:17px;margin:0;font-weight:700;color:var(--cryo)}
+  .x{color:var(--ter);font-size:15px;border:1px solid var(--border);border-radius:6px;padding:2px 7px}
+  .btn{background:var(--raised);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+  .btn.pri{background:var(--cryo);color:#06202b;font-weight:700}
+  .btn.link{background:transparent;color:var(--sec);padding:8px 6px}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center}
+  .big{font-size:24px;font-weight:700}
+  .muted{color:var(--sec)} .tert{color:var(--ter)} .ok{color:var(--ok)} .crit{color:var(--crit)}
+  .mono{font-family:var(--mono)}
+  .dot{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:22px}
+  .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--cryo);border-radius:50%;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+  .bar{margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .list{margin-top:10px;display:flex;flex-direction:column;gap:6px;overflow:auto}
+  .item{display:flex;align-items:center;gap:10px;background:var(--surf);border-radius:8px;padding:10px 12px}
+  .item .nm{flex:1} .item .sub{color:var(--ter);font-size:11px}
+  .item.dashed{background:transparent;border:1px dashed var(--border)}
+  .fields{margin-top:12px;display:flex;flex-direction:column;gap:9px}
+  .frow{display:flex;gap:8px;align-items:center}
+  .lbl{width:92px;color:var(--ter);font-size:12px;text-align:right;flex:none}
+  .field{background:var(--surf);border:1px solid var(--border);border-radius:8px;padding:9px 11px;flex:1;font-family:var(--mono);color:var(--ink);font-size:13px}
+  .field.ph{color:var(--ter)} .field.narrow{flex:none;width:96px;text-align:center} .field.ro{opacity:.75}
+  .kb{margin-top:12px;display:grid;gap:5px}
+  .kb .kr{display:grid;grid-auto-flow:column;gap:5px;justify-content:center}
+  .key{background:var(--raised);border-radius:5px;padding:7px 0;text-align:center;font-size:12px;min-width:34px}
+  .key.num{min-width:60px}
+  .footnote{margin-top:28px;color:var(--ter);font-family:var(--mono);font-size:12px;border-top:1px solid var(--border);padding-top:16px}
+  .rules{color:var(--sec);max-width:74ch} .rules li{margin:6px 0} .rules b{color:var(--pink)}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">SlyTherm · wall UI · Settings → Server</p>
+  <h1>Home Assistant / MQTT setup</h1>
+  <p class="lead">Discovery-first: the wall unit finds your broker on the network by itself (mDNS / Zeroconf — the
+    <span class="mono">_mqtt._tcp</span> service, falling back to the <span class="mono">_home-assistant._tcp</span> host),
+    so a first-time user never has to know an IP. Manual entry stays as a fallback. Same design system + entry-is-Status
+    pattern as WiFi. Device screens are 800×480.</p>
+  <div class="flow"><b>Status</b> <span class="arrow">→</span> Find broker <span class="arrow">→</span> Discovering <span class="arrow">→</span> Broker list <span class="arrow">→</span> Confirm &amp; connect <span class="arrow">→</span> Connecting <span class="arrow">→</span> <b>Status</b></div>
+
+  <div class="grid">
+    <!-- 1b Status not set -->
+    <div>
+      <p class="cap"><b>1 · Status</b> — entry when not set up</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Home Assistant</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot" style="background:rgba(122,136,149,.15)">🏠</div>
+          <div class="big">Not connected</div>
+          <div class="tert">Find your Home Assistant broker to get live room sensors</div>
+        </div>
+        <div class="bar"><span class="btn link">Enter manually</span><span class="btn pri">Find broker</span></div>
+      </div></div>
+    </div>
+
+    <!-- 2 Discovering -->
+    <div>
+      <p class="cap"><b>2 · Discovering</b> — mDNS browse (with timeout)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Find broker</h3><span class="x">✕</span></div>
+        <div class="center"><div class="spin"></div><div class="muted">Looking for brokers on your network…</div></div>
+      </div></div>
+    </div>
+
+    <!-- 3 Broker list -->
+    <div>
+      <p class="cap"><b>3 · Broker list</b> — found via mDNS + manual fallback</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Choose your broker</h3><span class="btn">Rescan</span></div>
+        <div class="list">
+          <div class="item">🟢<span class="nm">Mosquitto<div class="sub mono">homeassistant.local · 192.168.10.20:1883</div></span></div>
+          <div class="item">🏠<span class="nm">Home Assistant<div class="sub mono">ha.local · 192.168.10.20 · try :1883</div></span></div>
+          <div class="item dashed"><span class="tert">＋</span><span class="nm muted">Enter manually…</span><span class="sub">host / IP</span></div>
+        </div>
+        <div class="bar"><span class="btn">Back</span><span></span></div>
+      </div></div>
+    </div>
+
+    <!-- 4 Confirm & connect -->
+    <div>
+      <p class="cap"><b>4 · Confirm &amp; connect</b> — prefilled from discovery; add auth only if needed</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Mosquitto</h3><span class="x">✕</span></div>
+        <div class="fields">
+          <div class="frow"><span class="lbl">Host</span><span class="field mono ro">192.168.10.20</span>
+            <span class="lbl" style="width:auto">Port</span><span class="field narrow mono ro">1883</span></div>
+          <div class="frow"><span class="lbl">Username</span><span class="field ph">optional</span>
+            <span class="lbl" style="width:auto">Password</span><span class="field ph">optional</span><span class="btn">show</span></div>
+        </div>
+        <div class="kb">
+          <div class="kr"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+          <div class="kr"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span><span class="key">⌫</span></div>
+          <div class="kr"><span class="key num">123</span><span class="key" style="min-width:150px">space</span><span class="key num">Cancel</span><span class="key num" style="background:var(--cryo);color:#06202b">Connect</span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- 5 Connecting -->
+    <div>
+      <p class="cap"><b>5 · Connecting</b> — with timeout</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Home Assistant</h3><span class="x">✕</span></div>
+        <div class="center"><div class="spin"></div><div class="muted">Connecting to Mosquitto…</div></div>
+      </div></div>
+    </div>
+
+    <!-- 6 Status connected -->
+    <div>
+      <p class="cap"><b>6 · Status</b> — connected (entry on later visits)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Home Assistant</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot" style="background:rgba(55,211,154,.15)">🏠</div>
+          <div class="big ok">Connected</div>
+          <div class="mono tert">192.168.10.20 : 1883</div>
+          <div class="tert" style="font-size:12px">receiving 3 room sensors</div>
+        </div>
+        <div class="bar"><span class="btn">Forget</span><span class="btn">Change broker</span></div>
+      </div></div>
+    </div>
+
+    <!-- 7 Result fail -->
+    <div>
+      <p class="cap"><b>7 · Result — can't reach broker</b> (never a dead end)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Home Assistant</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot crit" style="background:rgba(255,93,93,.15)">!</div>
+          <div class="big crit">Couldn’t connect</div>
+          <div class="tert">Wrong username/password, or the broker refused the connection</div>
+        </div>
+        <div class="bar"><span class="btn">Back</span><span class="btn pri">Try again</span></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul class="rules">
+      <li><b>Discovery-first</b> — <b>Find broker</b> browses mDNS (<span class="mono">_mqtt._tcp</span>; fallback <span class="mono">_home-assistant._tcp</span> host + default :1883). No IP needed on first run.</li>
+      <li>Found brokers list with name + host + <span class="mono">ip:port</span>; empty → "None found" + <b>Rescan</b> and <b>Enter manually…</b> (never a dead end).</li>
+      <li><b>Confirm &amp; connect</b> prefills host/port from discovery (editable for manual entry); auth is optional (blank = anonymous MQTT).</li>
+      <li><b>Save/Connect</b> persists to the device (NVS, survives reflash) and connects immediately — no recompile. Entry becomes <b>Status: Connected</b> thereafter.</li>
+      <li>Failure is explicit (auth vs unreachable) with <b>Try again</b> — never a silent spinner.</li>
+      <li>Naming: titled <b>Home Assistant</b> (what you connect to); fields are the MQTT broker. Say if you prefer "Server" or "MQTT".</li>
+    </ul>
+  </div>
+</div>

@@ -1,0 +1,199 @@
+<title>SlyTherm WiFi Setup — flow</title>
+<style>
+  :root{
+    --bg:#0B0F14; --surf:#151C25; --raised:#1F2A36; --border:#2B3947;
+    --ink:#EAF0F6; --sec:#AEB9C4; --ter:#7A8895;
+    --cryo:#38BDF8; --ok:#37D39A; --warn:#F2C14E; --crit:#FF5D5D; --ember:#FF7A18;
+    --page:#0e1116; --pink:#EAF0F6;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --mono:ui-monospace,"Cascadia Code",Menlo,monospace;
+  }
+  @media(prefers-color-scheme:light){ :root{ --page:#eef1f5; --pink:#0f1720; } }
+  :root[data-theme="dark"]{ --page:#0e1116; --pink:#EAF0F6; }
+  :root[data-theme="light"]{ --page:#eef1f5; --pink:#0f1720; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--pink);font-family:var(--sans);line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ter);margin:0 0 8px}
+  h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em}
+  p.lead{color:var(--sec);max-width:66ch;margin:.2em 0 0}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 8px;font-family:var(--mono);font-size:12.5px;color:var(--ter)}
+  .flow b{color:var(--cryo);font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:22px;margin-top:22px}
+  .state{}
+  .cap{font-family:var(--mono);font-size:12px;color:var(--ter);margin:0 0 8px;letter-spacing:.04em}
+  .cap b{color:var(--pink)}
+  /* device screen 800x480 */
+  .dev{aspect-ratio:800/480;background:#05070a;border-radius:12px;padding:10px;box-shadow:inset 0 0 0 1px #1b2430}
+  .scr{width:100%;height:100%;background:var(--bg);border-radius:6px;color:var(--ink);
+    padding:14px 16px;display:flex;flex-direction:column;font-size:13px;position:relative;overflow:hidden}
+  .top{display:flex;align-items:center;justify-content:space-between}
+  .top h3{font-size:17px;margin:0;font-weight:700}
+  .x{color:var(--ter);font-size:16px}
+  .btn{background:var(--raised);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+  .btn.pri{background:var(--cryo);color:#06202b;font-weight:700}
+  .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--sec)}
+  .row{display:flex;gap:8px}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center}
+  .big{font-size:26px;font-weight:700}
+  .muted{color:var(--sec)} .tert{color:var(--ter)} .ok{color:var(--ok)} .crit{color:var(--crit)}
+  .dot{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:22px}
+  .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--cryo);border-radius:50%;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+  .list{margin-top:10px;display:flex;flex-direction:column;gap:6px;overflow:auto}
+  .net{display:flex;align-items:center;gap:10px;background:var(--surf);border-radius:8px;padding:9px 12px}
+  .net .nm{flex:1}
+  .sig{font-family:var(--mono);color:var(--cryo);letter-spacing:-2px}
+  .lock{color:var(--ter)}
+  .bar{margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .field{background:var(--surf);border:1px solid var(--border);border-radius:8px;padding:10px 12px;flex:1;font-family:var(--mono);letter-spacing:2px;color:var(--ink)}
+  .kb{margin-top:auto;display:grid;gap:5px}
+  .kb .kr{display:grid;grid-auto-flow:column;gap:5px;justify-content:center}
+  .key{background:var(--raised);border-radius:5px;padding:7px 0;text-align:center;font-size:12px;min-width:34px}
+  .footnote{margin-top:28px;color:var(--ter);font-family:var(--mono);font-size:12px;border-top:1px solid var(--border);padding-top:16px}
+  .rules{color:var(--sec);max-width:70ch}
+  .rules li{margin:6px 0}
+  .arrow{color:var(--cryo)}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">SlyTherm · wall UI · Settings → WiFi</p>
+  <h1>WiFi setup — flow redesign</h1>
+  <p class="lead">A proper state machine — one screen per state, each with a clear primary action and a way back.
+    Entry is <b>Status</b> (reflects reality), not a bare list — which is what dead-ended the old screen into
+    "no networks / no button". Design-system tokens (docs/09); device screens are 800×480.</p>
+  <div class="flow"><b>Status</b> <span class="arrow">→</span> Scanning <span class="arrow">→</span> Network list <span class="arrow">→</span> Password <span class="arrow">→</span> Connecting <span class="arrow">→</span> Result <span class="arrow">→</span> <b>Status</b></div>
+
+  <div class="grid">
+    <!-- 1 Status connected -->
+    <div class="state">
+      <p class="cap"><b>1 · Status</b> — entry when connected</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot" style="background:rgba(55,211,154,.15)">📶</div>
+          <div class="big ok">Connected</div>
+          <div class="muted">ktown</div>
+          <div class="tert" style="font-family:var(--mono)">192.168.10.13 · −52 dBm</div>
+        </div>
+        <div class="bar"><span></span><div class="row"><span class="btn">Change network</span><span class="btn ghost">Forget</span></div></div>
+      </div></div>
+    </div>
+
+    <!-- 1b Status not connected -->
+    <div class="state">
+      <p class="cap"><b>1b · Status</b> — entry when not connected</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot" style="background:rgba(122,136,149,.15)">📶</div>
+          <div class="big">Not connected</div>
+        </div>
+        <div class="bar"><span></span><span class="btn pri">Connect</span></div>
+      </div></div>
+    </div>
+
+    <!-- 2 Scanning -->
+    <div class="state">
+      <p class="cap"><b>2 · Scanning</b></p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center"><div class="spin"></div><div class="muted">Scanning…</div></div>
+      </div></div>
+    </div>
+
+    <!-- 3 Network list -->
+    <div class="state">
+      <p class="cap"><b>3 · Network list</b> — one row per SSID (mesh APs merged, strongest signal)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Choose a network</h3><span class="btn ghost">Rescan</span></div>
+        <div class="list">
+          <div class="net"><span class="sig">▆</span><span class="nm">ktown</span><span class="lock">🔒</span></div>
+          <div class="net"><span class="sig">▄</span><span class="nm">ktown-guest</span><span class="lock">🔒</span></div>
+          <div class="net"><span class="sig">▃</span><span class="nm">shop-open</span><span class="tert">open</span></div>
+          <div class="net"><span class="sig">▂</span><span class="nm">neighbour5g</span><span class="lock">🔒</span></div>
+          <div class="net" style="border:1px dashed var(--border);background:transparent"><span class="tert">＋</span><span class="nm muted">Other network…</span><span class="tert">manual / hidden</span></div>
+        </div>
+        <div class="bar"><span class="btn ghost">Back</span><span></span></div>
+      </div></div>
+    </div>
+
+    <!-- 3b Other network (manual/hidden) -->
+    <div class="state">
+      <p class="cap"><b>3b · Other network</b> — manual / hidden SSID (the "advanced" path; no WPS)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>Other network</h3><span class="x">✕</span></div>
+        <div class="row" style="margin-top:8px;gap:8px"><span class="field" style="letter-spacing:0">network name (SSID)</span></div>
+        <div class="row" style="margin-top:8px;align-items:center"><span class="field">password</span><span class="btn ghost">show</span><span class="btn pri">Connect</span></div>
+        <div class="kb"><div class="kr"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+          <div class="kr"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span></div>
+          <div class="kr"><span class="key">⇧</span><span class="key">z</span><span class="key">x</span><span class="key">c</span><span class="key">v</span><span class="key">b</span><span class="key">n</span><span class="key">m</span><span class="key">⌫</span></div></div>
+      </div></div>
+    </div>
+
+    <!-- 4 Password -->
+    <div class="state">
+      <p class="cap"><b>4 · Password</b> — with on-screen keyboard + show toggle</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>ktown</h3><span class="x">✕</span></div>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <span class="field">••••••••</span><span class="btn ghost">show</span><span class="btn pri">Connect</span>
+        </div>
+        <div class="kb">
+          <div class="kr"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+          <div class="kr"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span></div>
+          <div class="kr"><span class="key">⇧</span><span class="key">z</span><span class="key">x</span><span class="key">c</span><span class="key">v</span><span class="key">b</span><span class="key">n</span><span class="key">m</span><span class="key">⌫</span></div>
+          <div class="kr"><span class="key">123</span><span class="key" style="min-width:150px">space</span><span class="key">Cancel</span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- 5 Connecting -->
+    <div class="state">
+      <p class="cap"><b>5 · Connecting</b> — with timeout</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center"><div class="spin"></div><div class="muted">Connecting to ktown…</div></div>
+      </div></div>
+    </div>
+
+    <!-- 6 Result success -->
+    <div class="state">
+      <p class="cap"><b>6 · Result — success</b> → returns to Status</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot ok" style="background:rgba(55,211,154,.15)">✓</div>
+          <div class="big ok">Connected to ktown</div>
+          <div class="tert" style="font-family:var(--mono)">192.168.10.13</div>
+        </div>
+        <div class="bar"><span></span><span class="btn pri">Done</span></div>
+      </div></div>
+    </div>
+
+    <!-- 6b Result failure -->
+    <div class="state">
+      <p class="cap"><b>6b · Result — failure</b> (never a dead end)</p>
+      <div class="dev"><div class="scr">
+        <div class="top"><h3>WiFi</h3><span class="x">✕</span></div>
+        <div class="center">
+          <div class="dot crit" style="background:rgba(255,93,93,.15)">!</div>
+          <div class="big crit">Couldn’t connect</div>
+          <div class="tert">Check the password for ktown and try again</div>
+        </div>
+        <div class="bar"><span class="btn ghost">Back</span><span class="btn pri">Try again</span></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul class="rules">
+      <li><b>Entry = Status</b> — re-entering when connected shows "Connected · IP", not a list. The not-connected action is <b>Connect</b> (scanning is internal).</li>
+      <li><b>One row per network</b> — mesh / duplicate APs merged by SSID, strongest signal wins.</li>
+      <li>Empty list → "No networks found" <b>plus Rescan</b> (never a dead end); <b>Other network…</b> handles hidden / manual SSIDs.</li>
+      <li>Password: SSID shown, show-password toggle, keyboard-OK = Connect, Cancel → list. Connecting times out → failure + Try again.</li>
+      <li><b>No WPS</b> (deprecated; Ecobee/Nest don't use it) — the advanced path is manual SSID entry. Out of scope: captive portal, enterprise/802.1X.</li>
+    </ul>
+  </div>
+</div>
