@@ -80,6 +80,7 @@
 #include "RelaySequencer.h"
 #include "SafetySupervisor.h"
 #include "SensorFusion.h"
+#include "SleepState.h"
 #include "UiModel.h"
 
 #ifdef SLYTHERM_UI
@@ -200,6 +201,8 @@ struct Pending {
   // handler (hasSeen=false when the timestamp is unknown / clock unsynced).
   struct PresenceSample { uint8_t idx; bool occupied; uint32_t lastSeenS; bool hasSeen; };
   PresenceSample presence[16]; size_t presenceCount = 0;
+  // #90: HA sleep override (retained slytherm/cmd/sleep: on/off/auto).
+  bool hasSleepOverride = false; SleepOverride sleepOverride = SleepOverride::kAuto;
   bool anyInbound = false;  // any accepted MQTT traffic (setpoint-staleness clock)
 };
 Pending gPending;
@@ -221,6 +224,7 @@ struct Snapshot {
   uint32_t compMinOffRemainS = 0;
   bool compLockedOut = false;
   char changeReason[24] = "none";
+  bool asleep = false;  // #90: night Sleep state (slytherm/state/sleep)
   bool healthProblem = false;
   char lastError[safety::kAlarmTextLen] = {};
   hm::LockState lockState = hm::LockState::kUnlocked;
@@ -257,6 +261,12 @@ bool gFirstRun = false;   // #82: no saved Wi-Fi -> boot the Welcome onboarding 
 // ============================================================================
 Preferences gPrefs;
 SensorFusion        gFusion;
+// #90 night Sleep state: window/idle/override logic (lib/SleepState) + the
+// reversible sleep-preset glue. Control-task-only; touch arrives via the
+// gUiTouchPing flag below.
+SleepState          gSleep;
+SleepPresetLink     gSleepLink;
+volatile bool       gUiTouchPing = false;  // UI task -> control task touch note
 OutdoorTempSource   gOat;
 ModeStateMachine*   gModeSm   = nullptr;
 DualFuelArbiter*    gDualFuel = nullptr;
@@ -677,6 +687,17 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, cfg::kOatTopic) == 0) {
     auto p = hm::parseSetpoint(buf, cfg::kOatIngestMinC, cfg::kOatIngestMaxC);
     if (p.ok) { gPending.hasOat = true; gPending.oatC = p.value; } else accepted = false;
+  } else if (strcmp(topic, "slytherm/cmd/sleep") == 0) {
+    // #90 HA sleep override (retain-friendly): "on" forces the Sleep state
+    // (e.g. a bedroom sensor / HA sleep mode), "off" forces awake, "auto"
+    // returns control to the night window.
+    if (strcmp(buf, "on") == 0 || strcmp(buf, "ON") == 0 || strcmp(buf, "1") == 0)
+      { gPending.hasSleepOverride = true; gPending.sleepOverride = SleepOverride::kForceAsleep; }
+    else if (strcmp(buf, "off") == 0 || strcmp(buf, "OFF") == 0 || strcmp(buf, "0") == 0)
+      { gPending.hasSleepOverride = true; gPending.sleepOverride = SleepOverride::kForceAwake; }
+    else if (strcmp(buf, "auto") == 0)
+      { gPending.hasSleepOverride = true; gPending.sleepOverride = SleepOverride::kAuto; }
+    else accepted = false;
   } else {
     accepted = false;
   }
@@ -692,6 +713,11 @@ bool pubRetained(const std::string& topic, const std::string& payload) {
 // 12/24h clock toggle (#69): flip + persist; the control task reads gClock24.
 extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
 extern "C" bool uiClock24() { return gClock24; }
+
+// #90: press-edge touch note from the UI task's GT911 callback. A bare flag
+// (no timestamp) so the cross-task handoff is race-free; the control task
+// stamps it with its own clock via gSleep.noteTouch().
+extern "C" void uiNoteTouch() { gUiTouchPing = true; }
 
 // #80 safe-UI recovery: clear the reduced-UI latch + the reset-loop history and
 // reboot into the full UI. Called from the wall UI's "Restore full screen"
@@ -811,7 +837,7 @@ void subscribeAll() {
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
-      "slytherm/cmd/sensor/+/offset"};
+      "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sleep"};
   for (const char* t : topics) gMqtt.subscribe(t);
 }
 
@@ -820,7 +846,7 @@ enum PubIdx : uint8_t {
   PUB_TEMP, PUB_SP, PUB_LOW, PUB_HIGH, PUB_MODE, PUB_FAN, PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
-  PUB_LASTERR,
+  PUB_LASTERR, PUB_SLEEP,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -885,6 +911,8 @@ void publishSnapshot(bool force) {
            s.healthProblem ? payload::kOn : payload::kOff, force);
   pubState(PUB_LASTERR, topic::kStateLastError,
            s.lastError[0] ? s.lastError : "none", force);
+  // #90: night Sleep state for HA visibility/automations.
+  pubState(PUB_SLEEP, "slytherm/state/sleep", s.asleep ? "asleep" : "awake", force);
 #ifdef SLYTHERM_ACTUATOR_RELAY
   pubState(PUB_RELAYS, "slytherm/state/relays", s.relaysJson, force);
 #endif
@@ -1274,6 +1302,7 @@ void consumeCommands(uint32_t nowS) {
   if (p.hasLow) gModeSm->setHeatSetpoint(p.lowC);    // #91: HA write, no hold
   if (p.hasHigh) gModeSm->setCoolSetpoint(p.highC);  // #91: HA write, no hold
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
+  if (p.hasSleepOverride) gSleep.setOverride(p.sleepOverride);  // #90 HA hook
   if (p.hasHold) {
     if (p.hold.clear) gModeSm->clearHold();
     else gModeSm->startHold(p.hold.type, nowS);
@@ -1439,6 +1468,7 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
 
   s.modulationPct = out.gasHeatPct;
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
+  s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 
   // Fusion JSON (docs/06 topic map).
   char parts[96] = "";
@@ -1540,6 +1570,29 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   bf.setpointPresent = gSetpointsValidated;
   bf.configCrcOk = gConfigOk;
   gSup->updateBootGate(bf, nowS);
+
+  // ---- Night Sleep state (issue #90; model in lib/SleepState/SleepState.h) ----
+  // Presence with the away countdown FROZEN while asleep: raw #88 presence
+  // first, then re-evaluate over a window widened by the sleep overlap so a
+  // motionless night never decays to Away and the 3 h logic resumes from
+  // where it paused on wake. Evaluated before the mode SM so a sleep-preset
+  // edge lands in this same cycle.
+  if (gUiTouchPing) { gUiTouchPing = false; gSleep.noteTouch(nowS); }
+  PresenceState pres = gFusion.presence(nowS);
+  { const uint32_t credit = gSleep.awayCreditS(pres.lastSeenAgeS, nowS);
+    if (credit > 0) pres = gFusion.presenceWithin(kPresenceAwayS + credit, nowS); }
+  { int hour = -1; struct tm ti;
+    const bool clockOk = getLocalTime(&ti, 0);
+    if (clockOk) hour = ti.tm_hour;
+    const bool wasAsleep = gSleep.asleep();
+    const bool asleep =
+        gSleep.update(clockOk, hour, pres.present, pres.anyReporting, nowS);
+    if (asleep != wasAsleep) {
+      gSleepLink.onEdge(asleep, *gModeSm, nowS);  // apply/restore the sleep preset
+      Serial.printf("[sleep] %s (hour=%d present=%d)\n",
+                    asleep ? "asleep" : "awake", hour, (int)pres.present);
+    }
+  }
 
   // ---- Mode state machine -> effective call ----
   const bool swapOk = compressorProvenIdle(nowS);
@@ -1748,19 +1801,19 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     }
     gUi.setSensorRows(rows, rn);
   }
-  // #88: presence line — sticky home/away from HA's REPORTED last_seen (3 h
-  // across all presence sensors), decoupled from the motion window + temp
-  // staleness. valid=anyReporting so with no presence sensor the UI falls back
-  // to the temp-health text ("Local sensor only" / "No room sensor reporting").
+  // #88/#90: presence line — sticky home/away from HA's REPORTED last_seen
+  // (3 h across all presence sensors), decoupled from the motion window + temp
+  // staleness; `pres` computed above with the Sleep-state away freeze applied.
+  // valid=anyReporting so with no presence sensor the UI falls back to the
+  // temp-health text ("Local sensor only" / "No room sensor reporting").
   {
-    const PresenceState pres = gFusion.presence(nowS);
     char room[kSensorNameLen] = "";
     if (pres.present && pres.dominantId != 0xFF && pres.dominantId < kFusionSlots) {
       const SensorEntry& e = gSensorTable[pres.dominantId];
       strlcpy(room, e.disp[0] ? e.disp : e.name, sizeof(room));
     }
     gUi.setPresence(pres.anyReporting, pres.present, pres.anyReporting, room,
-                    pres.lastSeenAgeS);
+                    pres.lastSeenAgeS, gSleep.asleep());
   }
   safety::syncAlarmsToUi(gSup->alarms(), gUi);
   uiUnlock();
