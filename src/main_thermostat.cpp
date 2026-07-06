@@ -242,6 +242,7 @@ std::string   gRosterPubJson;          // guarded by gCmdMux
 volatile bool gMqttConnected = false;
 volatile bool gWifiConnected = false;
 bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS "clk24"
+bool gReducedUi = false;  // #80: boot the minimal safe UI (reset-loop latch); NVS "rui"
 
 // ============================================================================
 // Modules (constructed in setup() once the persisted clock is known)
@@ -651,6 +652,20 @@ bool pubRetained(const std::string& topic, const std::string& payload) {
 // 12/24h clock toggle (#69): flip + persist; the control task reads gClock24.
 extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
 extern "C" bool uiClock24() { return gClock24; }
+
+// #80 safe-UI recovery: clear the reduced-UI latch + the reset-loop history and
+// reboot into the full UI. Called from the wall UI's "Restore full screen"
+// button (the deliberate manual clear). Control-side no-demand latch is cleared
+// too, so a fresh boot starts clean instead of immediately re-latching.
+extern "C" void uiClearReducedMode() {
+  // Writes gPrefs from the UI task (the control task also writes it); benign —
+  // we esp_restart() 50 ms later, so the outcome is identical either way.
+  gPrefs.putBool("rui", false);
+  ResetLoopBlob z{};  // latched=0, count=0, times zeroed
+  gPrefs.putBytes("rl", &z, sizeof(z));
+  delay(50);
+  esp_restart();
+}
 
 // Sensor participation toggle (#68): flip inRoster for the named room, re-fuse,
 // and republish the retained roster so it persists (broker echoes it back).
@@ -1691,7 +1706,7 @@ void controlTask(void*) {
 // Wall-UI task (core 0). Renders gUi (filled by the control task) and routes
 // touch into it — display-only, demand authority stays in the control task.
 void uiTask(void*) {
-  slytherm_ui::begin(&gUi, gUiMux);
+  slytherm_ui::begin(&gUi, gUiMux, gReducedUi);
   for (;;) {
     slytherm_ui::service();
     vTaskDelay(pdMS_TO_TICKS(5));
@@ -1767,6 +1782,15 @@ void setup() {
     if (outBlob.latched)
       Serial.println("[boot] RESET-LOOP LATCHED: no-demand until manual clear (docs/04 §2)");
   }
+
+  // ---- Reduced safe-UI latch (issue #80) ----
+  // A reset loop (often a crash in an optional UI widget) latches a persistent
+  // "reduced UI" flag: the next boot builds a MINIMAL known-good screen instead
+  // of re-running the code that crashed. It survives until the user taps
+  // "Restore full screen" (uiClearReducedMode), so a cosmetic bug can't
+  // boot-loop the panel. Control/safety already fail to no-demand (above).
+  gReducedUi = gPrefs.getBool("rui", false);
+  if (gSup->resetLoop().latched()) { gReducedUi = true; gPrefs.putBool("rui", true); }
 
   // ---- CompressorGuard restore (full hold-off if blob missing/corrupt) ----
   {

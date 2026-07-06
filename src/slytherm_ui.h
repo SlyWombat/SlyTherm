@@ -16,7 +16,12 @@ namespace slytherm_ui {
 
 // Bring up the panel + touch + LVGL and build the screens. Call once from the
 // UI task before service(). `model` and `mux` outlive the UI.
-void begin(dettson::ui::UiModel* model, SemaphoreHandle_t mux);
+//
+// reducedUi (issue #80): when the boot detected a reset-loop latch, build a
+// MINIMAL safe screen (plain temp + mode + alarms, no chart/gradient/LISTEN/
+// nav) instead of re-running the full UI that may have crashed. The panel stays
+// usable; a "Restore full screen" button clears the NVS flag and reboots.
+void begin(dettson::ui::UiModel* model, SemaphoreHandle_t mux, bool reducedUi = false);
 
 // One service iteration (call ~5 ms): LVGL tick + timer, idle/ambient state,
 // and render the latest model snapshot. Runs on the UI task only.

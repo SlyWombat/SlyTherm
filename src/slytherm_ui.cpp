@@ -29,6 +29,7 @@ extern "C" void uiSniffStop();
 extern "C" bool uiSniffActive();
 extern "C" uint32_t uiSniffFrames();
 extern "C" int uiSniffLines(char out[10][56]);     // newest-first; returns count
+extern "C" void uiClearReducedMode();              // main_thermostat.cpp: clear the #80 safe-UI latch + reboot
 LV_FONT_DECLARE(font_now80);                 // 128px Montserrat-Thin subset (0-9 . ° -) for the hero (font_now80.c)
 LV_FONT_DECLARE(font_set48);                 // 48px Montserrat-Bold subset (0-9 . ° -) for setpoint values (font_set48.c)
 
@@ -76,6 +77,11 @@ namespace {
 #define COL_DIM_CRY  0x26647F
 
 constexpr uint32_t kIdleMs = 5u * 60u * 1000u;  // 5 min -> ambient (docs/09 §8)
+
+// Reduced safe-UI (issue #80): built instead of the full UI after a reset-loop
+// latch, so a crash in an optional widget can't boot-loop the panel.
+bool gReduced=false;
+lv_obj_t *scrSafe=nullptr,*wSafeTemp=nullptr,*wSafeMode=nullptr,*wSafeAlarm=nullptr;
 
 // ---- shared model + mutex ----
 UiModel*          gM   = nullptr;
@@ -828,10 +834,28 @@ void sysGraphSample(const DisplayState& s){ if(!gSysChart) return;
     else snprintf(g,sizeof(g),"set %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC);
     setTxt(wSysGraphLbl,g); } }
 
+// ---- reduced safe-UI (issue #80) ----
+void onSafeRestore(lv_event_t*){ uiClearReducedMode(); }  // clears the NVS latch + reboots into the full UI
+void buildSafeUi(){ scrSafe=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrSafe,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrSafe,0,0); lv_obj_clear_flag(scrSafe,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*t=lv_label_create(scrSafe); lv_label_set_text(t,"SAFE MODE"); eyebrow(t); lv_obj_set_style_text_color(t,lv_color_hex(COL_WARN),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,26,24);
+  wSafeTemp=lv_label_create(scrSafe); lv_obj_set_style_text_font(wSafeTemp,&font_now80,0); lv_obj_set_style_text_color(wSafeTemp,lv_color_hex(COL_INK),0); lv_obj_align(wSafeTemp,LV_ALIGN_TOP_LEFT,20,54);
+  wSafeMode=lv_label_create(scrSafe); lv_obj_set_style_text_font(wSafeMode,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(wSafeMode,lv_color_hex(COL_MUTED),0); lv_obj_align(wSafeMode,LV_ALIGN_TOP_LEFT,26,204);
+  wSafeAlarm=lv_label_create(scrSafe); lv_obj_set_style_text_font(wSafeAlarm,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(wSafeAlarm,lv_color_hex(COL_CRIT),0); lv_obj_align(wSafeAlarm,LV_ALIGN_TOP_LEFT,26,252); lv_label_set_text(wSafeAlarm,"");
+  lv_obj_t*sub=lv_label_create(scrSafe); lv_label_set_text(sub,"Recovered from a repeated restart. Optional screen features are off to keep the panel stable - heating/cooling control is unaffected.");
+  lv_obj_set_style_text_color(sub,lv_color_hex(COL_TEXT3),0); lv_obj_set_width(sub,520); lv_label_set_long_mode(sub,LV_LABEL_LONG_WRAP); lv_obj_align(sub,LV_ALIGN_TOP_LEFT,26,300);
+  lv_obj_t*b=lv_btn_create(scrSafe); lv_obj_set_size(b,300,60); lv_obj_align(b,LV_ALIGN_BOTTOM_RIGHT,-16,-16);
+  lv_obj_set_style_bg_color(b,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(b,onSafeRestore,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,"Restore full screen"); lv_obj_set_style_text_color(l,lv_color_hex(0x06202B),0); lv_obj_center(l);
+  lv_scr_load(scrSafe); }
+void renderSafe(const DisplayState& s){ char b[64];
+  if(wSafeTemp){ snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.fusedTempC); setTxt(wSafeTemp, s.fusedTempValid?b:"--.-\xC2\xB0"); }
+  if(wSafeMode){ snprintf(b,sizeof(b),"Mode: %s",modeName(s.mode)); setTxt(wSafeMode,b); }
+  if(wSafeAlarm) setTxt(wSafeAlarm, s.alarmCount>0?friendlyAlarm(s.alarms[0].text):"All clear"); }
+
 }  // namespace
 
-void begin(UiModel* model, SemaphoreHandle_t mux){
-  gM=model; gMux=mux;
+void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi){
+  gM=model; gMux=mux; gReduced=reducedUi;
   Wire.begin(kSda,kScl); Wire.setClock(400000);
   ch422M(0x01); ch422O(kBitTpRst|kBitLcdRst); delay(20);
   gfx.init(); gfx.setColorDepth(16); gfx.fillScreen(0);
@@ -842,8 +866,8 @@ void begin(UiModel* model, SemaphoreHandle_t mux){
   lv_disp_draw_buf_init(&drawBuf,buf1,nullptr,800*40);
   lv_disp_drv_init(&dispDrv); dispDrv.hor_res=800; dispDrv.ver_res=480; dispDrv.flush_cb=flushCb; dispDrv.draw_buf=&drawBuf; lv_disp_drv_register(&dispDrv);
   lv_indev_drv_init(&indDrv); indDrv.type=LV_INDEV_TYPE_POINTER; indDrv.read_cb=touchCb; lv_indev_drv_register(&indDrv);
-  buildUi();
-  Serial.println("[ui] SlyTherm wall UI up");
+  if(gReduced){ buildSafeUi(); Serial.println("[ui] SAFE MODE - reduced UI (reset-loop latch, #80)"); }
+  else { buildUi(); Serial.println("[ui] SlyTherm wall UI up"); }
 }
 
 void service(){
@@ -851,6 +875,7 @@ void service(){
   // snapshot the model under the mutex, render outside the lock
   static uint32_t lastRender=0;
   if(now-lastRender>=250){ lastRender=now;
+    if(gReduced){ DisplayState s; L(); s=gM->state(); U(); renderSafe(s); screenshotPoll(); lv_timer_handler(); return; }  // #80: minimal safe screen only
     if(gSniffOpen){ renderSniff(); screenshotPoll(); lv_timer_handler(); return; }  // dedicated LISTEN screen: no ambient/main render
     DisplayState s; L(); s=gM->state(); U();
     if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
