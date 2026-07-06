@@ -122,6 +122,7 @@ void touchCb(lv_indev_drv_t*,lv_indev_data_t*dt){ uint16_t x,y;
 // ---- screens ----
 lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
 bool gAmbient=false;
+bool gWelcomeActive=false;  // #82: first-run onboarding gate (no saved WiFi)
 uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift ring (#70)
 // main-screen widgets
 lv_obj_t *wTemp,*wDeg=nullptr,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wClock,*wSysBody,*wDiagBody,*wLockState;
@@ -232,7 +233,8 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,270);
   wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_TOP_LEFT,26,302);
   // hold pill (#81): tap to choose 2h/4h/until-next/forever or resume the schedule
-  gHoldBtn=lv_btn_create(tab); lv_obj_set_size(gHoldBtn,258,38); lv_obj_align(gHoldBtn,LV_ALIGN_TOP_LEFT,26,330);
+  // pinned under the "Reading..." line so it clears the centered mode bar below (#fix: was overprinting)
+  gHoldBtn=lv_btn_create(tab); lv_obj_set_size(gHoldBtn,258,28); lv_obj_align_to(gHoldBtn,wFollow,LV_ALIGN_OUT_BOTTOM_LEFT,0,6);
   lv_obj_set_style_bg_color(gHoldBtn,lv_color_hex(COL_RAISED),0); lv_obj_set_style_shadow_width(gHoldBtn,0,0); lv_obj_set_style_radius(gHoldBtn,10,0);
   lv_obj_add_event_cb(gHoldBtn,holdEvt,LV_EVENT_CLICKED,nullptr);
   gHoldLbl=lv_label_create(gHoldBtn); lv_label_set_text(gHoldLbl,"Set a hold"); lv_obj_set_style_text_font(gHoldLbl,&lv_font_montserrat_16,0); lv_obj_center(gHoldLbl);
@@ -420,7 +422,8 @@ void doConnect(){ if(gWs==WifiState::Other){ const char*ss=lv_textarea_get_text(
   else wifi_prov::requestConnect(gSelSsid,lv_textarea_get_text(taPass));
   wifiGoto(WifiState::Connecting); }
 void onConnect(lv_event_t*){ doConnect(); }
-void onDone(lv_event_t*){ wifiGoto(WifiState::Status); }
+void onDone(lv_event_t*){ gWifiOpen=false; lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);   // #74/#82: finish -> Home
+  gWelcomeActive=false; lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF); }
 void onTryAgain(lv_event_t*){ wifiGoto(gSelSsid[0]?WifiState::Password:WifiState::List); }
 void onShowPw(lv_event_t*){ if(taPass) lv_textarea_set_password_mode(taPass,!lv_textarea_get_password_mode(taPass)); }
 void onTaFocus(lv_event_t*e){ if(kbd) lv_keyboard_set_textarea(kbd,(lv_obj_t*)lv_event_get_target(e)); }
@@ -680,12 +683,12 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
 // [1]=value, [2]=minus, [3]=plus. Re-aligns them so nothing piles up at 62px.
 void layoutCard(lv_obj_t*c,lv_obj_t*val,bool big,uint32_t rail){ if(!c||!val) return;
   lv_obj_t*eb=lv_obj_get_child(c,0),*mn=lv_obj_get_child(c,2),*pl=lv_obj_get_child(c,3);
-  if(big){ lv_obj_set_size(c,340,170);
+  if(big){ lv_obj_set_size(c,360,204);   // larger box for single Heat/Cool
     lv_obj_set_style_border_side(c,LV_BORDER_SIDE_FULL,0); lv_obj_set_style_border_width(c,1,0); lv_obj_set_style_border_opa(c,LV_OPA_40,0); lv_obj_set_style_border_color(c,lv_color_hex(rail),0);
-    if(eb) lv_obj_align(eb,LV_ALIGN_TOP_MID,0,10);
-    lv_obj_set_style_text_font(val,&font_set48,0); lv_obj_align(val,LV_ALIGN_TOP_MID,0,34);
-    if(mn){ lv_obj_set_size(mn,64,64); lv_obj_align(mn,LV_ALIGN_BOTTOM_MID,-76,-8); }
-    if(pl){ lv_obj_set_size(pl,64,64); lv_obj_align(pl,LV_ALIGN_BOTTOM_MID,76,-8); } }
+    if(eb){ lv_obj_set_style_text_font(eb,&lv_font_montserrat_28,0); lv_obj_align(eb,LV_ALIGN_TOP_MID,0,16); }   // 28px eyebrow (same as Auto)
+    lv_obj_set_style_text_font(val,&font_set48,0); lv_obj_align(val,LV_ALIGN_TOP_MID,0,58);   // more space under the label
+    if(mn){ lv_obj_set_size(mn,68,68); lv_obj_align(mn,LV_ALIGN_BOTTOM_MID,-82,-14); }
+    if(pl){ lv_obj_set_size(pl,68,68); lv_obj_align(pl,LV_ALIGN_BOTTOM_MID,82,-14); } }
   else { lv_obj_set_size(c,340,150);   // Auto: big value on the LEFT, - + to the RIGHT (space between), gap between the two cards
     lv_obj_set_style_border_side(c,LV_BORDER_SIDE_LEFT,0); lv_obj_set_style_border_width(c,3,0); lv_obj_set_style_border_opa(c,LV_OPA_COVER,0); lv_obj_set_style_border_color(c,lv_color_hex(rail),0);
     if(eb){ lv_obj_set_style_text_font(eb,&lv_font_montserrat_28,0); lv_obj_align(eb,LV_ALIGN_TOP_LEFT,18,12); }   // "HEAT"/"COOL" (no TO), bigger
@@ -726,7 +729,8 @@ void renderMain(const DisplayState& s){ char b[128];
     setTxt(gHoldLbl,hb); const bool held=s.holdType!=HoldType::kNone;
     lv_obj_set_style_text_color(gHoldLbl,lv_color_hex(held?COL_INK:COL_TEXT3),0);
     lv_obj_set_style_border_color(gHoldBtn,lv_color_hex(held?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gHoldBtn,held?2:1,0);
-    if(s.mode==UserMode::kOff) lv_obj_add_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); }
+    // #74: only show the pill when there's an ACTIVE hold (never at boot/default); hidden when off
+    if(s.mode==UserMode::kOff || !held) lv_obj_add_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.coolSetpointC); setTxt(wCoolSp,b);
   lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);
