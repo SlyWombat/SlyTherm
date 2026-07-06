@@ -114,6 +114,15 @@
 #define THERMOSTAT_MQTT_PASS ""
 #endif
 
+// Local indoor sensor (SensorFusion slot 0). Default OFF (issue #73): this
+// wall unit fuses ONLY the MQTT/HA room sensors — no on-board DS18B20 is
+// installed, so slot 0 is not registered, not published, and drops off the
+// Sensors screen. Build with -DDETTSON_LOCAL_SENSOR to compile the local slot
+// back in for other hardware; a physical DS18B20 (-DDETTSON_DS18B20) implies it.
+#if defined(DETTSON_DS18B20) && !defined(DETTSON_LOCAL_SENSOR)
+#define DETTSON_LOCAL_SENSOR
+#endif
+
 #ifdef DETTSON_DS18B20
 #include <DallasTemperature.h>
 #include <OneWire.h>
@@ -483,7 +492,9 @@ uint8_t findOrAddSensor(const char* name) {  // gCmdMux held; 0 = not found/full
 }
 
 uint8_t findSensor(const char* name) {  // gCmdMux held
+#ifdef DETTSON_LOCAL_SENSOR
   if (strcmp(name, hm::kLocalSensorId) == 0) return 0;
+#endif
   for (size_t i = 1; i < kFusionSlots; ++i)
     if (gSensorTable[i].used && strncmp(gSensorTable[i].name, name, kSensorNameLen) == 0)
       return static_cast<uint8_t>(i);
@@ -719,8 +730,10 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("sensor", "outdoor_source"), outdoorSourceDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "fusion"), fusionDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "changeover_reason"), changeoverReasonDiscoveryJson());
+#ifdef DETTSON_LOCAL_SENSOR
   pubRetained(discoveryTopic("number", std::string("sensor_") + kLocalSensorId + "_offset"),
               sensorOffsetDiscoveryJson(kLocalSensorId));
+#endif
   for (size_t i = 1; i < kFusionSlots; ++i) {
     if (!sensorUsed[i]) continue;
     std::string id(sensorNames[i]);
@@ -1368,10 +1381,12 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   }
   size_t pubIdx = 0;
   for (size_t i = 0; i < kFusionSlots && pubIdx < kFusionSlots; ++i) {
-    if (!gSensorTable[i].used && i != 0) continue;
+    // Only registered slots (issue #73: with no local sensor, slot 0 is unused
+    // and no "local" row/entity is published).
+    if (!gSensorTable[i].used) continue;
     Snapshot::SensorPub& sp = s.sensors[pubIdx++];
     sp.used = true;
-    strlcpy(sp.name, i == 0 ? hm::kLocalSensorId : gSensorTable[i].name, sizeof(sp.name));
+    strlcpy(sp.name, gSensorTable[i].name, sizeof(sp.name));
     const SensorStatus st = gFusion.status(static_cast<uint8_t>(i), nowS);
     sp.ageS = st.ageS == UINT32_MAX ? 0 : st.ageS;
     sp.participating = st.live;
@@ -1811,10 +1826,12 @@ void setup() {
   }
 
   // ---- Sensors ----
+#ifdef DETTSON_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;
   strlcpy(gSensorTable[0].name, hm::kLocalSensorId, kSensorNameLen);
   gSensorTable[0].inRoster = true;
+#endif
 #ifdef DETTSON_DS18B20
   if (cfg::kOneWirePin >= 0) {
     gOneWire = new OneWire(static_cast<uint8_t>(cfg::kOneWirePin));

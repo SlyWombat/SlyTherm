@@ -641,7 +641,8 @@ void renderMain(const DisplayState& s){ char b[128];
     else if(recent && bestAge<3600u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu min ago",recent->name,(unsigned long)(bestAge/60u));
     else if(recent && bestAge<10800u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu hr ago",recent->name,(unsigned long)((bestAge+1800u)/3600u));
     else if(nHealthy>0) snprintf(b,sizeof(b),"Nobody home \xE2\x80\xA2 averaging %d rooms",nHealthy);
-    else strcpy(b,"Local sensor only");
+    else if(s.degradedMode) strcpy(b,"Local sensor only");   // only when a local slot exists (#73)
+    else strcpy(b,"No room sensor reporting");                // no local fallback: fails to no-demand
     setTxt(wFollow,b); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.coolSetpointC); setTxt(wCoolSp,b);
@@ -715,7 +716,8 @@ void renderAmbient(const DisplayState& s){ char b[80];
     else if(recent && bestAge<3600u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu min ago",recent->name,(unsigned long)(bestAge/60u));
     else if(recent && bestAge<10800u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu hr ago",recent->name,(unsigned long)((bestAge+1800u)/3600u));
     else if(nHealthy>0) snprintf(b,sizeof(b),"Nobody home \xE2\x80\xA2 averaging %d rooms",nHealthy);
-    else strcpy(b,"Local sensor only");
+    else if(s.degradedMode) strcpy(b,"Local sensor only");   // only when a local slot exists (#73)
+    else strcpy(b,"No room sensor reporting");                // no local fallback: fails to no-demand
     setTxt(aName,b); }
   if(s.alarmCount>0){ lv_obj_clear_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); setTxt(aAlarm, s.alarms[0].text[0]?friendlyAlarm(s.alarms[0].text):"alarm"); }
   else lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
