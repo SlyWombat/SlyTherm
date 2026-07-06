@@ -79,8 +79,10 @@ namespace {
 constexpr uint32_t kIdleMs = 5u * 60u * 1000u;  // 5 min -> ambient (docs/09 §8)
 // #86: the panel backlight is CH422G bit kBitBl — ON/OFF only (no PWM pin on the
 // 4.3B), so we can't analog-dim. Instead: darker ambient theme at 5 min, and a
-// deep screensaver that fully BLANKS the backlight after a longer idle.
-constexpr uint32_t kDeepIdleMs = 30u * 60u * 1000u;  // 30 min -> blank backlight
+// NIGHT-ONLY deep screensaver that fully BLANKS the backlight overnight.
+// #86a: only blank between 00:00-06:00 local after this idle; outside that window
+// the ambient screen stays fully lit forever (never blank during the day).
+constexpr uint32_t kNightBlankIdleMs = 15u * 60u * 1000u;  // 15 min idle -> night blank
 
 // Reduced safe-UI (issue #80): built instead of the full UI after a reset-loop
 // latch, so a crash in an optional widget can't boot-loop the panel.
@@ -397,22 +399,49 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,""); }
 
 // ---- ambient (idle) screen ----
-// Burn-in guard (#70/#86): drift the WHOLE ambient hero across the full 800x480
-// on the ~15-min cadence, not just a few px around one spot. We step the block
-// origin through fractional positions between clamped X/Y bounds so the widest
-// element (the presence line) always stays fully on-screen.
-void ambientShift(uint8_t idx){
-  // Base layout offsets (block top-left ~ x18,y38). Conservative block box so
-  // even a long "Reading <name> * Last entered NN min ago" line can't clip.
-  constexpr int bx0=18, by0=38, bw=500, bh=250, mrg=8;
-  int Xmin=mrg-bx0, Xmax=800-mrg-bw-bx0;   // keep left>=mrg and right<=800-mrg
-  int Ymin=mrg-by0, Ymax=480-mrg-bh-by0;
-  if(Xmax<Xmin)Xmax=Xmin; if(Ymax<Ymin)Ymax=Ymin;   // content bigger than area -> pin
-  // fractional grid (tenths) sweeping left<->right and top<->bottom, bounce-ish
-  static const uint8_t fx[]={0,10,10,5,0,3,10,5}, fy[]={0,0,10,5,10,3,5,8};
-  int i=idx%8; int X=Xmin+(Xmax-Xmin)*fx[i]/10, Y=Ymin+(Ymax-Ymin)*fy[i]/10;
-  if(aNow)lv_obj_align(aNow,LV_ALIGN_TOP_LEFT,26+X,38+Y); if(aTemp)lv_obj_align(aTemp,LV_ALIGN_TOP_LEFT,18+X,72+Y);
-  if(aTarget)lv_obj_align(aTarget,LV_ALIGN_TOP_LEFT,26+X,220+Y); if(aName)lv_obj_align(aName,LV_ALIGN_TOP_LEFT,26+X,254+Y); }
+// Burn-in guard (#70/#86b/#86c): the WHOLE ambient hero does a smooth ping-pong
+// "walk" across the panel — one step per drift, right to the right clamp, then
+// reverse and walk back left, bouncing at the edges, with a gentle diagonal Y
+// drift so it uses the vertical space too. NO teleporting between corners.
+// The clamp is computed from the ACTUAL rendered label geometry every drift, so
+// nothing ever clips regardless of room-name length or temperature width.
+constexpr int      kAmbSteps   = 6;                 // steps across each direction
+constexpr uint32_t kAmbShiftMs = 15u * 60u * 1000u; // drift cadence; a full
+// left->right->left cycle takes 2*kAmbSteps*kAmbShiftMs (= 12 * 15 min = 3 h).
+void ambientShift(int step){
+  if(!aTemp) return;
+  constexpr int kMargin=8;
+  // Base top-left offsets of each label — MUST match buildAmbient() below.
+  struct LblBase{ lv_obj_t* o; int bx; int by; };
+  const LblBase L[4]={ {aNow,26,38}, {aTemp,18,72}, {aTarget,26,220}, {aName,26,254} };
+  // #86c: resolve real widths/heights for the CURRENT text, then measure the
+  // block's right/bottom extent (at zero shift) and its leftmost/topmost base.
+  lv_obj_update_layout(scrAmb);
+  int rightExtent=0, bottomExtent=0, minBaseX=INT32_MAX, minBaseY=INT32_MAX;
+  for(const auto& e:L){ if(!e.o) continue;
+    int w=lv_obj_get_width(e.o), h=lv_obj_get_height(e.o);
+    if(e.bx<minBaseX) minBaseX=e.bx;
+    if(e.by<minBaseY) minBaseY=e.by;
+    if(e.bx+w>rightExtent) rightExtent=e.bx+w;
+    if(e.by+h>bottomExtent) bottomExtent=e.by+h; }
+  if(minBaseX==INT32_MAX){ minBaseX=18; minBaseY=38; }  // no labels -> defaults
+  // Walk window: shift X in [Xmin,Xmax] keeps left>=margin and right<=800-margin;
+  // shift Y in [Ymin,Ymax] keeps top>=margin and bottom<=480-margin. If the block
+  // is wider/taller than the usable area, pin to the top-left margin (never clip
+  // the left/top edge, never go negative past the margin).
+  int Xmin=kMargin-minBaseX, Xmax=(800-kMargin)-rightExtent;
+  int Ymin=kMargin-minBaseY, Ymax=(480-kMargin)-bottomExtent;
+  if(Xmax<Xmin) Xmax=Xmin; if(Ymax<Ymin) Ymax=Ymin;
+  // Triangle wave over the step counter -> smooth ping-pong 0..kAmbSteps..0.
+  const int span=kAmbSteps>0?kAmbSteps:1, period=2*span;
+  int m=((step%period)+period)%period;          // 0..period-1 (safe for any step)
+  int pos=(m<=span)?m:(period-m);               // 0 at left, span at right, bounce
+  int X=Xmin+(Xmax-Xmin)*pos/span;
+  int Y=Ymin+(Ymax-Ymin)*pos/span;             // diagonal ping-pong uses vertical space
+  if(aNow)   lv_obj_align(aNow,   LV_ALIGN_TOP_LEFT,26+X,38+Y);
+  if(aTemp)  lv_obj_align(aTemp,  LV_ALIGN_TOP_LEFT,18+X,72+Y);
+  if(aTarget)lv_obj_align(aTarget,LV_ALIGN_TOP_LEFT,26+X,220+Y);
+  if(aName)  lv_obj_align(aName,  LV_ALIGN_TOP_LEFT,26+X,254+Y); }
 void ambWake(lv_event_t*){ gAmbient=false; gAmbShiftIdx=0; ambientShift(0);
   if(gBlanked){ ch422O(gCh|kBitBl); gBlanked=false; }   // #86: restore backlight on touch-wake
   lv_scr_load(scrMain); }
@@ -942,10 +971,18 @@ void service(){
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; gBlanked=false; lv_scr_load(scrAmb); gAmbShiftIdx=0; gAmbShiftMs=now; ambientShift(0); }
-    if(gAmbient && now-gAmbShiftMs>=900000u){ gAmbShiftMs=now; ambientShift(++gAmbShiftIdx); }
-    // #86: deep screensaver — after a longer idle, fully blank the backlight (latched
-    // so it's issued once); touch reaches the GT911 with the light off, ambWake restores.
-    if(gAmbient && !gBlanked && lv_disp_get_inactive_time(NULL)>kDeepIdleMs){ gBlanked=true; ch422O(gCh&~kBitBl); }
+    if(gAmbient && now-gAmbShiftMs>=kAmbShiftMs){ gAmbShiftMs=now; ambientShift(++gAmbShiftIdx); }
+    // #86a: NIGHT-ONLY deep screensaver. Between 00:00-06:00 local, after
+    // kNightBlankIdleMs idle, fully blank the backlight (latched, issued once);
+    // touch still reaches the GT911 with the light off and ambWake restores.
+    // Outside 00:00-06:00 we NEVER blank (ambient stays lit). getLocalTime FAIL
+    // -> hour unknown -> fail SAFE: don't blank, and restore if already blanked.
+    { int hour=-1; struct tm ti; if(getLocalTime(&ti,0)) hour=ti.tm_hour;
+      const bool night=(hour>=0 && hour<6);
+      if(gAmbient && !gBlanked && night && lv_disp_get_inactive_time(NULL)>kNightBlankIdleMs){
+        gBlanked=true; ch422O(gCh&~kBitBl); }
+      else if(gBlanked && !night){ ch422O(gCh|kBitBl); gBlanked=false; }  // rolled past 06:00 (or clock lost) -> restore
+    }
     if(gAmbient){ if(!gBlanked) renderAmbient(s); }   // skip drawing while blanked (invisible)
     else { renderMain(s); renderWifi(); renderServer(); }
     static uint32_t lastSnap=0;
