@@ -84,6 +84,7 @@
 #ifdef DETTSON_UI
 #include <ESPmDNS.h>      // mDNS broker auto-discovery (silent home-system connect)
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
+#include <esp_ota_ops.h>  // running-partition app hash, to clear the reset-loop latch on a new flash
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
 #include "telnet_log.h"   // WiFi-accessible debug log (port 23)
@@ -1752,6 +1753,17 @@ void setup() {
   if (cfg::kWdtPetPin >= 0) { pinMode(cfg::kWdtPetPin, OUTPUT); digitalWrite(cfg::kWdtPetPin, LOW); }
 
   gPrefs.begin(cfg::kNvsNamespace, false);
+  // A freshly-flashed firmware clears the reset-loop + safe-UI latch (a new build is
+  // presumed to fix whatever crashed). Compare the running app hash to the stored one.
+  { esp_app_desc_t d{}; const esp_partition_t* run = esp_ota_get_running_partition();
+    if (run && esp_ota_get_partition_description(run, &d) == ESP_OK) {
+      uint8_t saved[8] = {0}; gPrefs.getBytes("fwid", saved, sizeof(saved));
+      if (memcmp(d.app_elf_sha256, saved, 8) != 0) {
+        gPrefs.putBytes("fwid", (const void*)d.app_elf_sha256, 8);
+        gPrefs.putBool("rui", false);
+        ResetLoopBlob z{}; gPrefs.putBytes("rl", &z, sizeof(z));
+        Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch");
+      } } }
   gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
   // Monotonic clock: resume from the persisted base (never backwards).
