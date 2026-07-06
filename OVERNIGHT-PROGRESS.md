@@ -91,3 +91,45 @@ Build/verify: final combined thermostat_s3 build **SUCCESS** (12m49, RAM 71.0%,
 Flash 40.9%) — validates #82 + #79 together (items 1 & 2 built individually).
 NOT flashed — owner will flash. On-glass checks wanted: Welcome screen layout &
 logo scale, Presets grid with a live roster, hold-pill placement.
+
+## Session 2026-07-06 (overnight) — #84, #85, #86 + Welcome tofu fix
+Owner rule: all edits first, ONE final build. Result below. NOT flashed.
+
+- **#84 System graph position** — DONE (`f0a96a0`). Chart box top moved to y=48 so
+  it aligns with wSysBody's first line ("Now running:"); "Last 12 h" caption above
+  it (y=24); trend label follows under the chart (y=322). Right-aligned, clear of
+  the top bar. (Same commit also fixes the #82 Welcome headline tofu — see below.)
+- **Welcome headline tofu** (owner mid-session ask, folded into `f0a96a0`). The
+  "Welcome to SlyTherm" headline used font_set48 (a digits/./deg/- SUBSET with no
+  letters) → every letter was a missing-glyph box. Switched to lv_font_montserrat_28
+  (full alphabet). Subtitle + button already used montserrat; no other letter-bearing
+  Welcome label used a subset font.
+- **#85 Friendly sensor display name** — DONE (`7c246f0`). Roster JSON gains optional
+  "name" decoupled from "id" (wire/topic segment unchanged). HaMqtt: SensorRosterEntry.name
+  + parse. main_thermostat: SensorEntry.disp, filled in handleSensorRoster, used for
+  SensorRow.name (fallback to id when absent). UiModel kSensorNameLen 16→24 for headroom.
+  ha/packages/slytherm_sensors.yaml: name: per room + published in roster JSON.
+  test_ha_mqtt: asserts name parses / absent→empty. Backward compatible.
+  NOTE: Sensors-screen row format is still `%-11s` on the name (line ~796 slytherm_ui);
+  "Living Room" fits exactly (11) — longer names eat column spacing. Left as-is (row
+  width is tight); flag for on-glass judgement.
+- **#86 Screensaver dim + drift** — DONE (`52c70af`). Backlight is CH422G bit kBitBl,
+  ON/OFF ONLY (no PWM pin in the 4.3B LGFX bring-up) → analog dimming impossible.
+  Path taken: (1) darker ambient theme — big temp no longer bright-white, uses dimmed
+  heat/cool greys or COL_TEXT3; (2) deep screensaver — after 30 min idle fully BLANK
+  the backlight (latched, restored on touch via ambWake); (3) full-screen drift —
+  ambientShift now steps the whole hero block through a fractional grid spanning the
+  usable 800×480, clamped by a conservative block box so the widest presence line
+  never clips (was ±few-px around the far-left spot).
+
+### Final build
+thermostat_s3 **SUCCESS** (10m07, RAM 71.1% / 233032 B, Flash 40.9% / 1367721 B).
+NOT flashed — owner flashes.
+
+### Needs owner's eyes on-glass
+- #86 backlight: confirmed ON/OFF-only path (dim theme + 30-min deep-blank). Verify the
+  dim ambient palette is still readable and the temp visibly travels across the screen
+  over the 15-min cadence; confirm a touch wakes from the fully-blanked deep screensaver.
+- #84: chart top lines up with "Now running" and caption sits above.
+- #82 Welcome headline now renders as real letters.
+- #85: with the HA bridge sending name:, the panel shows "Living Room" etc.
