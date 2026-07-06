@@ -126,6 +126,7 @@ char gRowName[7][16]={};
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[3];  // UI v2 Home/Presets
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
+lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 struct PresetDef{ const char* name; float heat; float cool; };
 const PresetDef kPresetDefs[3]={{"Home",21.0f,24.0f},{"Away",17.0f,28.0f},{"Sleep",19.0f,23.0f}};
@@ -334,16 +335,25 @@ void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
 void openWifi(lv_event_t*);    // defined below (before buildUi)
 void openServer(lv_event_t*);  // defined below (before buildUi)
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
-  wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,60);
-  struct B{const char*t; lv_event_cb_t cb;} bs[4]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt},{"12/24h",clkEvt}};
-  for(int i=0;i<4;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,150,60); lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*170,120);
+  wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,50);
+  // Lock actions (12/24h moved to its own labelled row below, #77)
+  struct B{const char*t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
+  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,150,54); lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*158,86);
     lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
-  lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,60); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,200);
+  // Clock: 12-hour / 24-hour on its own labelled row (#77)
+  { lv_obj_t*cl=lv_label_create(tab); lv_label_set_text(cl,"Clock:"); lv_obj_set_style_text_color(cl,lv_color_hex(COL_MUTED),0); lv_obj_align(cl,LV_ALIGN_TOP_LEFT,8,168);
+    lv_obj_t*cb=lv_btn_create(tab); lv_obj_set_size(cb,180,54); lv_obj_align(cb,LV_ALIGN_TOP_LEFT,110,152);
+    lv_obj_set_style_bg_color(cb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(cb,clkEvt,LV_EVENT_CLICKED,nullptr);
+    gClkLbl=lv_label_create(cb); lv_label_set_text(gClkLbl,"12-hour"); lv_obj_center(gClkLbl); }
+  // WiFi + Home system: consistent green-when-working status word to the right (#77)
+  lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,56); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,228);
   lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
   lv_obj_t*wl=lv_label_create(wb); lv_label_set_text(wl,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(wl,lv_color_hex(0x06202B),0); lv_obj_center(wl);
-  lv_obj_t*sb=lv_btn_create(tab); lv_obj_set_size(sb,220,60); lv_obj_align(sb,LV_ALIGN_TOP_LEFT,240,200);
+  wSetWifi=lv_label_create(tab); lv_obj_set_style_text_font(wSetWifi,&lv_font_montserrat_20,0); lv_obj_align(wSetWifi,LV_ALIGN_TOP_LEFT,240,244); lv_label_set_text(wSetWifi,"");
+  lv_obj_t*sb=lv_btn_create(tab); lv_obj_set_size(sb,220,56); lv_obj_align(sb,LV_ALIGN_TOP_LEFT,4,300);
   lv_obj_set_style_bg_color(sb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(sb,openServer,LV_EVENT_CLICKED,nullptr);
-  lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl); }
+  lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl);
+  wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,""); }
 
 // ---- ambient (idle) screen ----
 // Burn-in guard (#70): drift the whole ambient hero by a few px every 15 min.
@@ -745,7 +755,14 @@ void renderMain(const DisplayState& s){ char b[128];
     strncat(d,lk,sizeof(d)-strlen(d)-1); setTxt(wDiagBody,d); }
   if(wLockState){ bool unlocked=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; bool pin=gM->userPinSet(); U();
     snprintf(b,sizeof(b),"Lock: %s    PIN: %s",unlocked?"unlocked":"LOCKED",pin?"set":"none");
-    setTxt(wLockState,b); lv_obj_set_style_text_color(wLockState,lv_color_hex(unlocked?COL_OK:COL_WARN),0); } }
+    setTxt(wLockState,b); lv_obj_set_style_text_color(wLockState,lv_color_hex(unlocked?COL_OK:COL_WARN),0); }
+  // #77: Settings clock toggle label + green-when-working WiFi/Home-system status words
+  if(gClkLbl) setTxt(gClkLbl, uiClock24()?"24-hour":"12-hour");
+  if(wSetWifi){ setTxt(wSetWifi, s.wifiOk?"Connected":"Offline");
+    lv_obj_set_style_text_color(wSetWifi,lv_color_hex(s.wifiOk?COL_OK:COL_CRIT),0); }
+  if(wSetHome){ const bool setup=mqtt_cfg::hostSet();
+    setTxt(wSetHome, s.mqttOk?"Connected":(setup?"Offline":"Not set up"));
+    lv_obj_set_style_text_color(wSetHome,lv_color_hex(s.mqttOk?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0); } }
 
 void renderAmbient(const DisplayState& s){ char b[80];
   // NOW temp — the same fused control temp the Home hero shows (not the raw dominant sensor)
