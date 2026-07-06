@@ -297,8 +297,9 @@ void buildSystem(lv_obj_t*tab){ header(tab,"System");
   wSysBody=lv_label_create(tab); lv_obj_set_style_text_color(wSysBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wSysBody,"");
   // 12 h trend graph (#76): actual (fused) vs heat/cool setpoints, right ~1/3.
   for(int i=0;i<kGraphPts;i++){ gRingA[i]=LV_CHART_POINT_NONE; gRingH[i]=LV_CHART_POINT_NONE; gRingC[i]=LV_CHART_POINT_NONE; }
-  lv_obj_t*gt=lv_label_create(tab); lv_label_set_text(gt,"Last 12 h"); eyebrow(gt); lv_obj_set_style_text_color(gt,lv_color_hex(COL_TEXT3),0); lv_obj_align(gt,LV_ALIGN_TOP_RIGHT,-8,44);
-  gSysChart=lv_chart_create(tab); lv_obj_set_size(gSysChart,316,270); lv_obj_align(gSysChart,LV_ALIGN_TOP_RIGHT,-6,72);
+  lv_obj_t*gt=lv_label_create(tab); lv_label_set_text(gt,"Last 12 h"); eyebrow(gt); lv_obj_set_style_text_color(gt,lv_color_hex(COL_TEXT3),0); lv_obj_align(gt,LV_ALIGN_TOP_RIGHT,-8,24);
+  // #84: chart box top == wSysBody's first line ("Now running:", y=48); caption sits above it.
+  gSysChart=lv_chart_create(tab); lv_obj_set_size(gSysChart,316,270); lv_obj_align(gSysChart,LV_ALIGN_TOP_RIGHT,-6,48);
   lv_obj_set_style_bg_color(gSysChart,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_width(gSysChart,0,0); lv_obj_set_style_radius(gSysChart,10,0);
   lv_obj_set_style_pad_all(gSysChart,6,0); lv_obj_set_style_line_color(gSysChart,lv_color_hex(COL_BORDER),LV_PART_MAIN);
   lv_obj_set_style_width(gSysChart,0,LV_PART_INDICATOR); lv_obj_set_style_height(gSysChart,0,LV_PART_INDICATOR);  // no point markers, just lines
@@ -308,7 +309,7 @@ void buildSystem(lv_obj_t*tab){ header(tab,"System");
   gSerHeat=lv_chart_add_series(gSysChart,lv_color_hex(COL_EMBER),LV_CHART_AXIS_PRIMARY_Y);
   gSerCool=lv_chart_add_series(gSysChart,lv_color_hex(COL_CRYO),LV_CHART_AXIS_PRIMARY_Y);
   lv_chart_set_ext_y_array(gSysChart,gSerActual,gRingA); lv_chart_set_ext_y_array(gSysChart,gSerHeat,gRingH); lv_chart_set_ext_y_array(gSysChart,gSerCool,gRingC);
-  wSysGraphLbl=lv_label_create(tab); lv_obj_set_style_text_font(wSysGraphLbl,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wSysGraphLbl,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysGraphLbl,LV_ALIGN_TOP_RIGHT,-8,348); lv_label_set_text(wSysGraphLbl,""); }
+  wSysGraphLbl=lv_label_create(tab); lv_obj_set_style_text_font(wSysGraphLbl,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wSysGraphLbl,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysGraphLbl,LV_ALIGN_TOP_RIGHT,-8,322); lv_label_set_text(wSysGraphLbl,""); }
 void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wDiagBody,"");
   mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300); }
@@ -415,7 +416,7 @@ void onGetStarted(lv_event_t*){ lv_scr_load(scrMain); openWifi(nullptr); }  // g
 void buildWelcome(){ scrWelcome=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrWelcome,lv_color_hex(COL_BG),0);
   lv_obj_set_style_pad_all(scrWelcome,0,0); lv_obj_clear_flag(scrWelcome,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t*mk=lv_img_create(scrWelcome); lv_img_set_src(mk,&slymark_img); lv_img_set_zoom(mk,700); lv_obj_align(mk,LV_ALIGN_TOP_MID,0,70);  // ~2.7x logo mark
-  lv_obj_t*h=lv_label_create(scrWelcome); lv_label_set_text(h,"Welcome to SlyTherm"); lv_obj_set_style_text_font(h,&font_set48,0);
+  lv_obj_t*h=lv_label_create(scrWelcome); lv_label_set_text(h,"Welcome to SlyTherm"); lv_obj_set_style_text_font(h,&lv_font_montserrat_28,0);  // full-alphabet face; font_set48 is a digits-only subset (tofu on letters)
   lv_obj_set_style_text_color(h,lv_color_hex(COL_INK),0); lv_obj_align(h,LV_ALIGN_CENTER,0,0);
   lv_obj_t*sub=lv_label_create(scrWelcome); lv_label_set_text(sub,"Let's get your thermostat online.");
   lv_obj_set_style_text_font(sub,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(sub,lv_color_hex(COL_MUTED),0); lv_obj_align(sub,LV_ALIGN_CENTER,0,44);
