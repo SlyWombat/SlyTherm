@@ -5,7 +5,7 @@
 # The thermostat fuses temperatures it receives on
 #   slytherm/sensors/<id>/state   {"temp": <°C>[, "occ": <bool>]}   non-retained, heartbeat
 # and only uses sensors listed in the retained roster
-#   slytherm/config/sensors       {"sensors":[{"id":"living","max_age_s":300,"offset":0.0}]}
+#   slytherm/config/sensors       {"sensors":[{"id":"living","name":"Living Room","max_age_s":300,"offset":0.0}]}
 #
 # Prereqs: HA's MQTT integration points at the same broker as the thermostat
 # (see ha/README.md → "Live sensors"). Then EDIT the `slytherm_rooms` list below
@@ -28,23 +28,27 @@ automation:
         payload: online
     variables:
       # ===================== EDIT ME: your rooms =====================
-      # id        short id shown on the wall unit + used in the MQTT topic
+      # id        topic-safe short id — the MQTT topic segment (wire), stays fixed
+      # name      (optional) friendly label shown on the wall unit; falls back to id
       # temp      an HA sensor entity reading °C
       # occ       (optional) a binary_sensor that is 'on' when occupied
       # max_age_s drop from fusion if no update within this many seconds
       # offset    (optional) calibration offset °C applied by the thermostat
       rooms: &slytherm_rooms
         - id: living
+          name: Living Room
           temp: sensor.living_room_temperature
           occ: binary_sensor.living_room_occupancy
           max_age_s: 300
           offset: 0.0
         - id: bedroom
+          name: Bedroom
           temp: sensor.bedroom_temperature
           occ: binary_sensor.bedroom_occupancy
           max_age_s: 300
           offset: 0.0
         # - id: office
+        #   name: Office
         #   temp: sensor.office_temperature
         #   max_age_s: 300
       # ===============================================================
@@ -56,7 +60,9 @@ automation:
           payload: >-
             {"sensors":[
             {%- for r in rooms -%}
-            {"id":"{{ r.id }}","max_age_s":{{ r.max_age_s | default(300) }}
+            {"id":"{{ r.id }}"
+            {%- if r.name is defined %},"name":"{{ r.name }}"{% endif -%}
+            ,"max_age_s":{{ r.max_age_s | default(300) }}
             {%- if r.offset is defined %},"offset":{{ r.offset }}{% endif -%}
             }{{ "," if not loop.last }}
             {%- endfor -%}

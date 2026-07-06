@@ -383,6 +383,8 @@ bool parseSensorRosterJson(const char* json, std::vector<SensorRosterEntry>& out
     bool valid = true;
     const char* n = findValue(entry.c_str(), "id");
     if (n == nullptr || !stringToken(n, se.id)) valid = false;
+    const char* dn = findValue(entry.c_str(), "name");  // #85: optional display label
+    if (dn != nullptr) stringToken(dn, se.name);         // absent/malformed -> empty (caller falls back to id)
     float v = 0.0f;
     const char* m = findValue(entry.c_str(), "max_age_s");
     if (m != nullptr && numberToken(m, v) && v > 0.0f) {

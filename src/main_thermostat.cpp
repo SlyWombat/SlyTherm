@@ -165,7 +165,8 @@ constexpr size_t kSensorNameLen = 24;
 
 struct SensorEntry {
   bool used = false;
-  char name[kSensorNameLen] = {};
+  char name[kSensorNameLen] = {};   // topic id / wire segment (unchanged)
+  char disp[kSensorNameLen] = {};   // #85: friendly display label; empty -> fall back to name
   bool inRoster = false;
   bool hasMaxAge = false;
   uint32_t maxAgeS = kSensorMaxAgeS;
@@ -517,6 +518,7 @@ void handleSensorRoster(const char* json) {
     s.hasMaxAge = e.hasMaxAge;
     if (e.hasMaxAge) s.maxAgeS = e.maxAgeS;
     s.offsetC = e.offsetC;
+    strlcpy(s.disp, e.name.c_str(), sizeof(s.disp));  // #85: friendly label ("" when roster omits "name")
   }
   gPending.sensorRosterDirty = true;
   gPending.anyInbound = true;
@@ -1690,7 +1692,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       if (!gSensorTable[i].used) continue;
       const SensorStatus stt = gFusion.status(static_cast<uint8_t>(i), nowS);
       ui::SensorRow& r = rows[rn++];
-      strlcpy(r.name, gSensorTable[i].name, sizeof(r.name));
+      const char* disp = gSensorTable[i].disp[0] ? gSensorTable[i].disp : gSensorTable[i].name;  // #85: friendly name, fallback to id
+      strlcpy(r.name, disp, sizeof(r.name));
       r.tempC = stt.tempC;
       r.occupied = stt.occupied;
       r.ageS = (stt.ageS == 0xFFFFFFFFu) ? 0 : stt.ageS;

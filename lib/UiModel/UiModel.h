@@ -72,7 +72,7 @@ constexpr uint8_t kEquipFan    = 1u << 4;
 
 // ---------- Capacities (fixed; no heap) ----------
 constexpr size_t kMaxSensorRows  = 8;
-constexpr size_t kSensorNameLen  = 16;
+constexpr size_t kSensorNameLen  = 24;  // #85: fits friendly display names ("Living Room") not just topic ids
 constexpr size_t kUiPresetNameLen = 16;  // display copy of a preset name (#74)
 constexpr size_t kMaxAlarms      = 8;
 constexpr size_t kAlarmTextLen   = 40;

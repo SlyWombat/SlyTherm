@@ -472,14 +472,16 @@ static void test_parse_sensor_offset_bounds() {
 static void test_sensor_roster_json_with_and_without_offset() {
   std::vector<SensorRosterEntry> out;
   TEST_ASSERT_TRUE(parseSensorRosterJson(
-      "{\"sensors\":[{\"id\":\"kitchen\",\"max_age_s\":600,\"offset\":-1.5},"
+      "{\"sensors\":[{\"id\":\"kitchen\",\"name\":\"Kitchen\",\"max_age_s\":600,\"offset\":-1.5},"
       "{\"id\":\"hall\"}]}", out));
   TEST_ASSERT_EQUAL(2, out.size());
   TEST_ASSERT_EQUAL_STRING("kitchen", out[0].id.c_str());
+  TEST_ASSERT_EQUAL_STRING("Kitchen", out[0].name.c_str());  // #85: friendly display name
   TEST_ASSERT_TRUE(out[0].hasMaxAge);
   TEST_ASSERT_EQUAL_UINT32(600, out[0].maxAgeS);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, -1.5f, out[0].offsetC);
   TEST_ASSERT_EQUAL_STRING("hall", out[1].id.c_str());
+  TEST_ASSERT_EQUAL_STRING("", out[1].name.c_str());  // #85: absent name -> empty (caller falls back to id)
   TEST_ASSERT_FALSE(out[1].hasMaxAge);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, out[1].offsetC);  // default 0
 

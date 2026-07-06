@@ -256,6 +256,7 @@ constexpr size_t kSensorRosterMax = 16;  // SensorFusion participant-mask width
 
 struct SensorRosterEntry {
   std::string id;
+  std::string name;       // #85: optional free-form display label; empty -> caller falls back to id
   bool hasMaxAge = false;
   uint32_t maxAgeS = 0;   // valid when hasMaxAge; SensorFusion clamps to 180-900
   float offsetC = 0.0f;   // optional "offset": default 0, clamped ±kSensorOffsetMaxC
