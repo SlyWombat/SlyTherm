@@ -16,10 +16,11 @@ namespace thermostat {
 // ---------- Pins (ESP32-DevKitC bench rig; -1 = not wired -> no-op) ----------
 // CT-485 UART2 (used only under -DDETTSON_CT485_UART; matches the sniffer rig
 // RX pin so the same transceiver wiring serves both firmwares).
-constexpr int kCt485RxPin = 16;
-constexpr int kCt485TxPin = 17;
-constexpr int kCt485DePin = 4;    // DE/RE (tied); LOW = receive. Hardware also
-                                  //  pulls it down — boot-silent (docs/04 §2)
+// Waveshare ESP32-S3-Touch-LCD-4.3B onboard isolated RS-485 (auto-direction,
+// no DE line) is on GPIO43(RX)/GPIO44(TX); DE = -1 -> no direction pin (#71).
+constexpr int kCt485RxPin = 43;
+constexpr int kCt485TxPin = 44;
+constexpr int kCt485DePin = -1;   // -1 = auto-direction transceiver, no DE/RE
 
 // External hardware watchdog pet line (TPL5010/MAX6369 class, docs/04 §3).
 // -1 = not fitted (bench): petExternalWdt() verdicts are logged only.

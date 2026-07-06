@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cmath>
+#include <cstring>
 #include "DettsonConfig.h"
 
 namespace dettson {
@@ -142,6 +143,8 @@ struct DisplayState {
 
   uint32_t busLastRxS = 0;         // CT-485: seconds clock of last decoded frame (0 = never)
   uint32_t busFrames  = 0;         // CT-485: frames decoded OK (live only when RS-485 UART enabled)
+
+  char clockStr[24] = "";          // NTP day/time for the top bar ("" until NTP syncs)
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
@@ -226,6 +229,7 @@ class UiModel : public UiCommands {
   void setLinkHealth(bool wifi, bool mqtt, bool bus);
   // CT-485 bus monitor (Diag). Rendered every tick, so no dirty bit needed.
   void setBusDiag(uint32_t lastRxS, uint32_t frames) { state_.busLastRxS = lastRxS; state_.busFrames = frames; }
+  void setClock(const char* s) { strncpy(state_.clockStr, s, sizeof(state_.clockStr) - 1); state_.clockStr[sizeof(state_.clockStr) - 1] = 0; }
   void setDegradedMode(bool on);
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
 

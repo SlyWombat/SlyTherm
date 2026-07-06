@@ -227,9 +227,12 @@ Snapshot gSnap;
 char gPresetNames[kMaxPresets][kPresetNameMaxLen + 1] = {};
 size_t gPresetNameCount = 0;
 volatile bool gDiscoveryDirty = false;
+volatile bool gRosterPubReq = false;   // UI sensor-toggle -> mqttTask republishes the rebuilt roster
+std::string   gRosterPubJson;          // guarded by gCmdMux
 
 volatile bool gMqttConnected = false;
 volatile bool gWifiConnected = false;
+bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS "clk24"
 
 // ============================================================================
 // Modules (constructed in setup() once the persisted clock is known)
@@ -630,6 +633,59 @@ bool pubRetained(const std::string& topic, const std::string& payload) {
   return gMqtt.publish(topic.c_str(), payload.c_str(), true);
 }
 
+// ---- Wall-UI hooks (called from the LVGL UI task) --------------------------
+// 12/24h clock toggle (#69): flip + persist; the control task reads gClock24.
+extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
+extern "C" bool uiClock24() { return gClock24; }
+
+// Sensor participation toggle (#68): flip inRoster for the named room, re-fuse,
+// and republish the retained roster so it persists (broker echoes it back).
+extern "C" void uiToggleSensor(const char* name) {
+  if (!name || !name[0]) return;
+  xSemaphoreTake(gCmdMux, portMAX_DELAY);
+  uint8_t idx = findSensor(name);
+  if (idx == 0 || idx == 0xFF || idx >= kFusionSlots || !gSensorTable[idx].used) { xSemaphoreGive(gCmdMux); return; }
+  gSensorTable[idx].inRoster = !gSensorTable[idx].inRoster;
+  gPending.sensorRosterDirty = true;
+  gPending.anyInbound = true;
+  gDiscoveryDirty = true;
+  std::string js = "{\"sensors\":["; bool first = true; char ob[16];
+  for (size_t i = 1; i < kFusionSlots; ++i) {
+    if (!gSensorTable[i].used || !gSensorTable[i].inRoster) continue;
+    snprintf(ob, sizeof(ob), "%.1f", (double)gSensorTable[i].offsetC);
+    js += first ? "" : ",";  first = false;
+    js += "{\"id\":\"" + hm::jsonEscape(gSensorTable[i].name) + "\",\"max_age_s\":" +
+          std::to_string(gSensorTable[i].hasMaxAge ? gSensorTable[i].maxAgeS : 300u) +
+          ",\"offset\":" + ob + "}";
+  }
+  js += "]}";
+  gRosterPubJson = js; gRosterPubReq = true;   // defer publish to mqttTask (PubSubClient not thread-safe)
+  xSemaphoreGive(gCmdMux);
+}
+
+// RS-485 LISTEN capture (#71). Single-writer (ct485Task) -> single-reader (UI
+// task) volatiles + a tiny newest-first ring; benign races are fine for a
+// diagnostic. The telnet stream (:23) is the real capture artifact — its
+// preview line runs wide (up to 16 payload bytes); the on-screen ring is
+// truncated to 56 chars. sniffFrame() (writer) lives with the ct485Task below.
+volatile bool gSniffActive = false;
+volatile uint32_t gSniffFrames = 0;
+struct SniffLine { char s[56]; };
+SniffLine gSniffRing[10] = {};
+volatile uint8_t gSniffHead = 0;   // next write slot (0..9), wraps at 10
+
+// Hooks: the UI task flips gSniffActive and reads the volatiles/ring above.
+extern "C" void uiSniffStart() { gSniffActive = true; }
+extern "C" void uiSniffStop()  { gSniffActive = false; }
+extern "C" bool uiSniffActive() { return gSniffActive; }
+extern "C" uint32_t uiSniffFrames() { return gSniffFrames; }
+extern "C" int uiSniffLines(char out[10][56]) {  // newest-first; returns count
+  uint32_t total = gSniffFrames; int cnt = total > 10 ? 10 : (int)total;
+  int head = gSniffHead;  // next write slot -> newest is head-1
+  for (int i = 0; i < cnt; ++i) strlcpy(out[i], gSniffRing[(head - 1 - i + 100) % 10].s, 56);
+  return cnt;
+}
+
 void publishDiscovery() {
   using namespace hm;
   // Climate entity: preset_modes rebuilt from the configured roster.
@@ -853,6 +909,8 @@ void mqttTask(void*) {
     }
     const bool haveMqttNow = haveMqtt;
 #endif
+    static bool sNtpUp = false;  // one-shot NTP once WiFi is up (Eastern default, #69)
+    if (gWifiConnected && !sNtpUp) { sNtpUp = true; configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov"); }
     if (gWifiConnected && haveMqttNow && !gMqtt.connected() &&
         nowMs - lastMqttTryMs >= cfg::kMqttReconnectMs) {
       lastMqttTryMs = nowMs;
@@ -890,6 +948,9 @@ void mqttTask(void*) {
     if (gMqttConnected) {
       gMqtt.loop();
       if (gDiscoveryDirty) { gDiscoveryDirty = false; publishDiscovery(); }
+      if (gRosterPubReq) {  // UI sensor-toggle staged a roster; publish it here (mqttTask owns gMqtt)
+        xSemaphoreTake(gCmdMux, portMAX_DELAY); std::string j = gRosterPubJson; gRosterPubReq = false; xSemaphoreGive(gCmdMux);
+        pubRetained(hm::topic::kConfigSensors, j); }
       static uint32_t lastSnapMs = 0;
       const bool heartbeat = nowMs - lastHeartbeatMs >= cfg::kStateHeartbeatS * 1000u;
       if (heartbeat) lastHeartbeatMs = nowMs;
@@ -915,10 +976,28 @@ uint32_t gCtLastByteUs = 0;
 bool gCtInProgress = false;
 #endif
 
+#ifdef DETTSON_CT485_UART
+void sniffFrame(const ct485::Frame& f) {
+  if (!gSniffActive) return;
+  gSniffFrames = gSniffFrames + 1;
+  char line[96];
+  int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u",
+                   (unsigned long)millis(), f.src, f.dst, f.msgType, f.payloadLen);
+  int nb = f.payloadLen; if (nb > 16) nb = 16;
+  for (int i = 0; i < nb && n < (int)sizeof(line) - 3; ++i)
+    n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
+  telnet_log::logf("[ct485] %s", line);
+  strlcpy(gSniffRing[gSniffHead].s, line, sizeof(gSniffRing[0].s));
+  gSniffHead = (gSniffHead + 1) % 10;
+}
+#endif
+
 void ct485Task(void*) {
 #ifdef DETTSON_CT485_UART
-  pinMode(cfg::kCt485DePin, OUTPUT);
-  digitalWrite(cfg::kCt485DePin, LOW);  // receive; hardware pulldown agrees
+  if (cfg::kCt485DePin >= 0) {           // auto-direction transceivers have no DE (#71)
+    pinMode(cfg::kCt485DePin, OUTPUT);
+    digitalWrite(cfg::kCt485DePin, LOW);  // receive; hardware pulldown agrees
+  }
   Serial2.setRxBufferSize(2048);
   Serial2.begin(ct485::kBaudDefault, SERIAL_8N1, cfg::kCt485RxPin, cfg::kCt485TxPin);
   gCtLastByteUs = micros();
@@ -941,6 +1020,7 @@ void ct485Task(void*) {
         if (ct485::decode(gCtAcc.frame(), gCtAcc.frameLen(), f)) {
           gCt->onFrame(f, nowMs);
           gLastBusRxS = nowSeconds();
+          sniffFrame(f);
         }
       }
     }
@@ -952,6 +1032,7 @@ void ct485Task(void*) {
         if (ct485::decode(gCtAcc.frame(), gCtAcc.frameLen(), f)) {
           gCt->onFrame(f, nowMs);
           gLastBusRxS = nowSeconds();
+          sniffFrame(f);
         }
       }
     }
@@ -1531,6 +1612,13 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
                                                    : ui::OutdoorSource::kNone);
   gUi.setGasModulationPct(out.gasHeatPct);
   gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive);
+  { struct tm ti; char cb[24] = "";  // top-bar clock (#69); blank until NTP syncs
+    if (getLocalTime(&ti, 0)) {
+      if (gClock24) strftime(cb, sizeof(cb), "%a %H:%M", &ti);
+      else { char day[8]; strftime(day, sizeof(day), "%a", &ti); int h = ti.tm_hour % 12; if (h == 0) h = 12;
+        snprintf(cb, sizeof(cb), "%s %d:%02d%s", day, h, ti.tm_min, ti.tm_hour < 12 ? "am" : "pm"); }
+    }
+    gUi.setClock(cb); }
   { uint32_t ctFrames = 0;
 #ifdef DETTSON_CT485_UART
     ctFrames = gCtAcc.counters().framesOk;   // live only when the RS-485 UART is compiled in
@@ -1623,6 +1711,7 @@ void setup() {
   if (cfg::kWdtPetPin >= 0) { pinMode(cfg::kWdtPetPin, OUTPUT); digitalWrite(cfg::kWdtPetPin, LOW); }
 
   gPrefs.begin(cfg::kNvsNamespace, false);
+  gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
   // Monotonic clock: resume from the persisted base (never backwards).
   gClockBaseS = gPrefs.getUInt("clk", 0) + 1;
