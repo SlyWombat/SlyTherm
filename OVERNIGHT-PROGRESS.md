@@ -191,3 +191,45 @@ NOT flashed — owner flashes.
 - #84: chart top lines up with "Now running" and caption sits above.
 - #82 Welcome headline now renders as real letters.
 - #85: with the HA bridge sending name:, the panel shows "Living Room" etc.
+
+## 2026-07-06 — #89 Sensors columns, #78 Vacation hold, #83 docs pass
+
+- **#89 Sensors page: aligned columns — DONE (38e7f1b).** Rebuilt each room row
+  from one inline `%-11s` string into separate fixed-x `lv_label` columns:
+  **Room** (montserrat_20, `LV_LABEL_LONG_DOT` ellipsize so long friendly names
+  can't push other columns) | **Temp** (own column, right-aligned "22.2°") |
+  **Status** (single word: stale > Following > In use > Away[ Nh], amber when
+  stale) | **On/Off** toggle pinned right. Added a ROOM/TEMP/STATUS caption row.
+  OWNER-EYES: verify columns line up on the flashed panel and long names clip.
+
+- **#78 On-device Vacation hold — DONE (6c09dfe), date-picker PARTIAL.** Vacation
+  sheet opens from the Presets page: steppers for Starts (Today / in N days),
+  Length (nights), Eco heat, Eco cool + Start/Cancel (eco keeps cool >= heat+1).
+  New kSetVacation/kClearVacation intents + requestVacation()/cancelVacation()
+  (lock-gated) + setVacation() banner echo + DisplayState.vacationActive/Banner.
+  Control: VacationState persisted as one NVS blob ("vac"), anchored to local
+  midnight (calendar-aligned), re-anchors once NTP syncs if set cold. Each cycle
+  before the mode SM, evaluateVacation() forces the eco setpoints in-window
+  (overrides schedule + presence), captures prior setpoints on entry and restores
+  them on auto-resume at the end date; Home shows a "Vacation until <date>" pill.
+  Boot restore keeps absolute epochs so a reboot never extends the window.
+  PARTIAL: date entry is duration-based (days-out + nights), not a full calendar
+  picker (per the issue's fallback). DEFERRED: HA bidirectional retained-config
+  sync (dettson/slytherm config/vacation) — shipped on-device + NVS only.
+  OWNER-EYES: verify the vacation sheet + Home banner + auto-resume on the panel.
+
+- **#83 Docs branding + screens + facts + PDFs — DONE (1303358).** build.py
+  PRODUCT/MODEL/DRAFT -> SlyTherm / ST-1 (Dettson dual-fuel edition) / v0.4;
+  both manuals now use the rich title-page cover with the SlyTherm logo
+  (theme/slytherm-mark.png). Rebranded every DT-1/ElectricRV/"Dettson/Gree"
+  ref (grep-clean). Rewrote the Home callout table to the CURRENT UI (was a
+  stale "setpoint dial"); documented current Sensors columns, Ambient, Welcome,
+  Safe mode, and a new on-device Vacation section. Validated facts: onboard
+  isolated RS-485 A/B on GPIO43/44 (UART0), retained roster `name` field, new
+  retained slytherm/sensors/<id>/presence topic; climate.slytherm_hvac + topics
+  confirmed. Rebuilt USER_MANUAL.pdf + INSTALLATION_MANUAL.pdf.
+  DEFERRED: screenshots NOT recaptured — the #89/#78 UI is not flashed yet;
+  a post-flash recapture via tools/slyshot.py is still owed.
+
+- **Firmware build:** `thermostat_s3 SUCCESS` (both #89 + #78 compiled together,
+  one build at the end). Not flashed.
