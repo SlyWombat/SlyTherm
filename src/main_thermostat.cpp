@@ -1260,8 +1260,10 @@ void consumeCommands(uint32_t nowS) {
         gModeSm->setMode(static_cast<UserMode>(intent.mode), nowS);
         break;
       case ui::IntentType::kSetPreset: {
-        const char* names[] = {"home", "away", "sleep"};
-        gModeSm->applyPreset(names[static_cast<uint8_t>(intent.preset) % 3], nowS);
+        // #74: preset is carried as a roster INDEX (UI cards map 1:1 to the live
+        // roster), resolved to a name against the authoritative roster.
+        const PresetDef* d = gModeSm->presetAt(static_cast<uint8_t>(intent.preset));
+        if (d) gModeSm->applyPreset(d->name, nowS);
         break;
       }
       case ui::IntentType::kAckAlarms:
@@ -1667,6 +1669,17 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     gUi.setBusDiag(gLastBusRxS, ctFrames); }
   gUi.setDegradedMode(fused.degraded);
   gUi.setHoldStatus(gModeSm->activeHoldType(), gModeSm->holdRemainingS(nowS));  // hold chooser (#81)
+  // Live preset roster -> UI (#74): real names + setpoints from the authoritative
+  // ModeStateMachine roster (retained dettson/config/presets or boot defaults).
+  { ui::DisplayState::PresetView pv[kMaxPresets]; uint8_t pn = 0;
+    const size_t pc = gModeSm->presetCount();
+    for (size_t i = 0; i < pc && pn < kMaxPresets; ++i) {
+      const PresetDef* d = gModeSm->presetAt(i);
+      if (!d) continue;
+      strlcpy(pv[pn].name, d->name, sizeof(pv[pn].name));
+      pv[pn].heatC = d->heatC; pv[pn].coolC = d->coolC; ++pn;
+    }
+    gUi.setPresets(pv, pn); }
   // Per-sensor rows for the Sensors screen + ambient "driving sensor".
   {
     ui::SensorRow rows[ui::kMaxSensorRows];

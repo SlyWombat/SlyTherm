@@ -121,6 +121,8 @@ class ModeStateMachine {
   size_t setPresetRoster(const PresetDef* defs, size_t count);
   size_t presetCount() const { return rosterCount_; }
   const PresetDef* presetByName(const char* name) const;
+  // Index accessor for the live roster (issue #74: UI mirrors names + setpoints).
+  const PresetDef* presetAt(size_t i) const { return i < rosterCount_ ? &roster_[i] : nullptr; }
 
   // Applies a roster preset's setpoint pair (deadband rules per header).
   // Hold interaction: timed/indefinite hold -> blocked; until-next-preset

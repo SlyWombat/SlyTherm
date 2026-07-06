@@ -73,6 +73,7 @@ constexpr uint8_t kEquipFan    = 1u << 4;
 // ---------- Capacities (fixed; no heap) ----------
 constexpr size_t kMaxSensorRows  = 8;
 constexpr size_t kSensorNameLen  = 16;
+constexpr size_t kUiPresetNameLen = 16;  // display copy of a preset name (#74)
 constexpr size_t kMaxAlarms      = 8;
 constexpr size_t kAlarmTextLen   = 40;
 constexpr size_t kIntentQueueCap = 8;
@@ -135,6 +136,13 @@ struct DisplayState {
   // Active hold (issue #81): type + seconds remaining (timed holds only, else 0).
   HoldType holdType    = HoldType::kNone;
   uint32_t holdRemainS = 0;
+
+  // Live preset roster (issue #74): mirrors the control-task/ModeStateMachine
+  // roster so the Presets screen renders real names + setpoints, not the
+  // compile-time defaults. Filled every tick; no dirty bit.
+  struct PresetView { char name[kUiPresetNameLen] = {}; float heatC = 0.0f; float coolC = 0.0f; };
+  PresetView presets[kMaxPresets] = {};
+  uint8_t    presetCount = 0;
 
   Alarm   alarms[kMaxAlarms] = {};
   uint8_t alarmCount    = 0;
@@ -243,6 +251,12 @@ class UiModel : public UiCommands {
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
   // Active hold echo (issue #81); rendered every tick, so no dirty bit needed.
   void setHoldStatus(HoldType t, uint32_t remainS) { state_.holdType = t; state_.holdRemainS = remainS; }
+  // Live preset roster echo (issue #74); rendered every tick, so no dirty bit.
+  void setPresets(const DisplayState::PresetView* p, uint8_t n) {
+    if (n > kMaxPresets) n = kMaxPresets;
+    for (uint8_t i = 0; i < n; ++i) state_.presets[i] = p[i];
+    state_.presetCount = n;
+  }
 
   // --- UiCommands (screen event handlers call these) ---
   void adjustSetpoint(SetpointSide side, float deltaC) override;

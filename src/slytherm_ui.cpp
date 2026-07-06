@@ -130,7 +130,8 @@ lv_obj_t *gHomeTab=nullptr;  // Home tab page — parent of the hero, for the mo
 // Sensors screen: interactive per-room rows (#68)
 struct SensorRowUi{ lv_obj_t*row,*info,*btn,*btnlbl; }; SensorRowUi gSensorRows[7]={};
 char gRowName[7][16]={};
-lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[3];  // UI v2 Home/Presets
+lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
+lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
 lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
@@ -141,8 +142,6 @@ lv_chart_series_t *gSerActual=nullptr,*gSerHeat=nullptr,*gSerCool=nullptr;
 lv_coord_t gRingA[kGraphPts],gRingH[kGraphPts],gRingC[kGraphPts];  // actual / heat-set / cool-set
 uint32_t gGraphLastMs=0;
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
-struct PresetDef{ const char* name; float heat; float cool; };
-const PresetDef kPresetDefs[3]={{"Home",21.0f,24.0f},{"Away",17.0f,28.0f},{"Sleep",19.0f,23.0f}};
 // #66: map an internal alarm string to homeowner-friendly text (wall UI + shared idea for HA).
 const char* friendlyAlarm(const char* raw){
   if(!raw||!raw[0]) return "Attention needed";
@@ -204,9 +203,9 @@ void spEvt(lv_event_t*e){ const lv_event_code_t c=lv_event_get_code(e);
   L(); gM->adjustSetpoint(side,step); U(); }
 void modeEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } UserMode m=(UserMode)(intptr_t)lv_event_get_user_data(e); L(); gM->setMode(m); U(); }
 int gPresetSel=-1; uint32_t gPresetSelMs=0;   // #75: optimistic active-card highlight until the setpoints round-trip
-void presetEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } Preset p=(Preset)(intptr_t)lv_event_get_user_data(e);
-  gPresetSel=(int)p; gPresetSelMs=millis();     // move the highlight NOW, before the control task echoes the setpoints back
-  L(); gM->setPreset(p); U(); }
+void presetEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } int idx=(int)(intptr_t)lv_event_get_user_data(e);  // #74: card == roster index
+  gPresetSel=idx; gPresetSelMs=millis();     // move the highlight NOW, before the control task echoes the setpoints back
+  L(); gM->setPreset((Preset)idx); U(); }
 
 lv_obj_t* card(lv_obj_t*p){ lv_obj_t*c=lv_obj_create(p); lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0);
   lv_obj_set_style_border_width(c,0,0); lv_obj_set_style_radius(c,14,0); lv_obj_clear_flag(c,LV_OBJ_FLAG_SCROLLABLE); return c; }
@@ -263,16 +262,23 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
     lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_center(l); modeBtns[i]=b; } }
 
+// #74: build up to kMaxPresets cards once (3-wide grid); renderMain fills the
+// name/values from the LIVE roster (DisplayState.presets) and shows/hides by
+// presetCount. Card index == roster index == the value passed to presetEvt.
+// TODO(#74 deferred): on-device EDIT of a preset (long-press -> stepper ->
+// stage retained dettson/config/presets via mqttTask). Displaying the live
+// roster is done; editing is PARTIAL.
 void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Presets");
-  Preset pv[3]={Preset::kHome,Preset::kAway,Preset::kSleep};
-  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,236,150); lv_obj_align(b,LV_ALIGN_TOP_LEFT,6+i*256,52);
+  for(int i=0;i<(int)kMaxPresets;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,236,116);
+    lv_obj_align(b,LV_ALIGN_TOP_LEFT,6+(i%3)*256,52+(i/3)*128);
     lv_obj_set_style_bg_color(b,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(b,lv_color_hex(COL_BORDER),0); lv_obj_set_style_border_width(b,1,0);  // #fix2: dim hairline, not wireframe
     lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);  // #75: immediate press feedback on touch-down
     lv_obj_set_style_border_color(b,lv_color_hex(COL_OK),LV_STATE_PRESSED); lv_obj_set_style_border_width(b,2,LV_STATE_PRESSED);
-    lv_obj_add_event_cb(b,presetEvt,LV_EVENT_CLICKED,(void*)(intptr_t)pv[i]); gPresetBtns[i]=b;
-    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,kPresetDefs[i].name); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,6);
-    lv_obj_t*s=lv_label_create(b); lv_label_set_text_fmt(s,"heat %.0f\xC2\xB0   cool %.0f\xC2\xB0",(double)kPresetDefs[i].heat,(double)kPresetDefs[i].cool); lv_obj_set_style_text_color(s,lv_color_hex(COL_MUTED),0); lv_obj_align(s,LV_ALIGN_CENTER,0,6);
-    lv_obj_t*h=lv_label_create(b); lv_label_set_text(h,"tap to apply"); lv_obj_set_style_text_color(h,lv_color_hex(COL_TEXT3),0); lv_obj_align(h,LV_ALIGN_BOTTOM_MID,0,-6); } }
+    lv_obj_add_event_cb(b,presetEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i); gPresetBtns[i]=b;
+    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,""); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,8); gPresetName[i]=l;
+    lv_obj_t*s=lv_label_create(b); lv_label_set_text(s,""); lv_obj_set_style_text_color(s,lv_color_hex(COL_MUTED),0); lv_obj_align(s,LV_ALIGN_CENTER,0,6); gPresetVal[i]=s;
+    lv_obj_t*h=lv_label_create(b); lv_label_set_text(h,"tap to apply"); lv_obj_set_style_text_color(h,lv_color_hex(COL_TEXT3),0); lv_obj_align(h,LV_ALIGN_BOTTOM_MID,0,-6);
+    lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN); } }
 
 void sensorToggleEvt(lv_event_t*e){ int i=(int)(intptr_t)lv_event_get_user_data(e); if(i<0||i>=7) return;
   if(uiLocked()){ promptUnlock(); return; } if(gRowName[i][0]) uiToggleSensor(gRowName[i]); }
@@ -755,11 +761,15 @@ void renderMain(const DisplayState& s){ char b[128];
     else { lv_obj_set_style_bg_opa(modeBtns[i],LV_OPA_TRANSP,0); lv_obj_set_style_bg_grad_dir(modeBtns[i],LV_GRAD_DIR_NONE,0);
       if(sl) lv_obj_set_style_text_color(sl,lv_color_hex(COL_MUTED),0); } }
   { const bool optHeld=gPresetSel>=0 && millis()-gPresetSelMs<4000u;   // #75: optimistic highlight rides until the echo lands
-    for(int i=0;i<3;i++){ if(!gPresetBtns[i]) continue;
-      bool match=fabsf(s.heatSetpointC-kPresetDefs[i].heat)<0.3f && fabsf(s.coolSetpointC-kPresetDefs[i].cool)<0.3f;
+    for(int i=0;i<(int)kMaxPresets;i++){ if(!gPresetBtns[i]) continue;
+      if(i>=(int)s.presetCount){ lv_obj_add_flag(gPresetBtns[i],LV_OBJ_FLAG_HIDDEN); continue; }   // #74: only show live presets
+      setTxt(gPresetName[i], s.presets[i].name);   // #74: name + values from the LIVE roster
+      char pvv[40]; snprintf(pvv,sizeof(pvv),"heat %.0f\xC2\xB0   cool %.0f\xC2\xB0",(double)s.presets[i].heatC,(double)s.presets[i].coolC); setTxt(gPresetVal[i],pvv);
+      bool match=fabsf(s.heatSetpointC-s.presets[i].heatC)<0.3f && fabsf(s.coolSetpointC-s.presets[i].coolC)<0.3f;
       if(match && gPresetSel==i) gPresetSel=-1;   // setpoints caught up -> drop the optimistic latch, keep the match
       bool act=match || (optHeld && gPresetSel==i);
-      lv_obj_set_style_border_color(gPresetBtns[i],lv_color_hex(act?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gPresetBtns[i],act?2:1,0); } }
+      lv_obj_set_style_border_color(gPresetBtns[i],lv_color_hex(act?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gPresetBtns[i],act?2:1,0);
+      lv_obj_clear_flag(gPresetBtns[i],LV_OBJ_FLAG_HIDDEN); } }
   for(int i=0;i<7;i++){ SensorRowUi&ro=gSensorRows[i]; if(!ro.row) continue;
     if(i<(int)s.sensorCount){ const SensorRow&r=s.sensors[i];
       strlcpy(gRowName[i],r.name,sizeof(gRowName[i]));
