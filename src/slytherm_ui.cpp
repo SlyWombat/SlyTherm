@@ -127,6 +127,12 @@ lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[3];  // U
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
 lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
+// System 12 h trend graph (#76): ~5-min RAM ring, 144 pts (temps x10 as lv_coord_t).
+constexpr int kGraphPts=144;
+lv_obj_t *gSysChart=nullptr,*wSysGraphLbl=nullptr;
+lv_chart_series_t *gSerActual=nullptr,*gSerHeat=nullptr,*gSerCool=nullptr;
+lv_coord_t gRingA[kGraphPts],gRingH[kGraphPts],gRingC[kGraphPts];  // actual / heat-set / cool-set
+uint32_t gGraphLastMs=0;
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 struct PresetDef{ const char* name; float heat; float cool; };
 const PresetDef kPresetDefs[3]={{"Home",21.0f,24.0f},{"Away",17.0f,28.0f},{"Sleep",19.0f,23.0f}};
@@ -273,7 +279,21 @@ void buildSensors(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); 
     lv_obj_t*bl=lv_label_create(b); lv_label_set_text(bl,"--"); lv_obj_center(bl);
     gSensorRows[i]={r,info,b,bl}; gRowName[i][0]=0; lv_obj_add_flag(r,LV_OBJ_FLAG_HIDDEN); } }
 void buildSystem(lv_obj_t*tab){ header(tab,"System");
-  wSysBody=lv_label_create(tab); lv_obj_set_style_text_color(wSysBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wSysBody,""); }
+  wSysBody=lv_label_create(tab); lv_obj_set_style_text_color(wSysBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wSysBody,"");
+  // 12 h trend graph (#76): actual (fused) vs heat/cool setpoints, right ~1/3.
+  for(int i=0;i<kGraphPts;i++){ gRingA[i]=LV_CHART_POINT_NONE; gRingH[i]=LV_CHART_POINT_NONE; gRingC[i]=LV_CHART_POINT_NONE; }
+  lv_obj_t*gt=lv_label_create(tab); lv_label_set_text(gt,"Last 12 h"); eyebrow(gt); lv_obj_set_style_text_color(gt,lv_color_hex(COL_TEXT3),0); lv_obj_align(gt,LV_ALIGN_TOP_RIGHT,-8,44);
+  gSysChart=lv_chart_create(tab); lv_obj_set_size(gSysChart,316,270); lv_obj_align(gSysChart,LV_ALIGN_TOP_RIGHT,-6,72);
+  lv_obj_set_style_bg_color(gSysChart,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_width(gSysChart,0,0); lv_obj_set_style_radius(gSysChart,10,0);
+  lv_obj_set_style_pad_all(gSysChart,6,0); lv_obj_set_style_line_color(gSysChart,lv_color_hex(COL_BORDER),LV_PART_MAIN);
+  lv_obj_set_style_width(gSysChart,0,LV_PART_INDICATOR); lv_obj_set_style_height(gSysChart,0,LV_PART_INDICATOR);  // no point markers, just lines
+  lv_chart_set_type(gSysChart,LV_CHART_TYPE_LINE); lv_chart_set_point_count(gSysChart,kGraphPts);
+  lv_chart_set_div_line_count(gSysChart,4,0); lv_chart_set_range(gSysChart,LV_CHART_AXIS_PRIMARY_Y,150,300);  // 15.0..30.0 until data arrives
+  gSerActual=lv_chart_add_series(gSysChart,lv_color_hex(COL_INK),LV_CHART_AXIS_PRIMARY_Y);
+  gSerHeat=lv_chart_add_series(gSysChart,lv_color_hex(COL_EMBER),LV_CHART_AXIS_PRIMARY_Y);
+  gSerCool=lv_chart_add_series(gSysChart,lv_color_hex(COL_CRYO),LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_ext_y_array(gSysChart,gSerActual,gRingA); lv_chart_set_ext_y_array(gSysChart,gSerHeat,gRingH); lv_chart_set_ext_y_array(gSysChart,gSerCool,gRingC);
+  wSysGraphLbl=lv_label_create(tab); lv_obj_set_style_text_font(wSysGraphLbl,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wSysGraphLbl,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysGraphLbl,LV_ALIGN_TOP_RIGHT,-8,348); lv_label_set_text(wSysGraphLbl,""); }
 void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wDiagBody,"");
   mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300); }
@@ -789,6 +809,25 @@ void renderAmbient(const DisplayState& s){ char b[80];
   if(s.alarmCount>0){ lv_obj_clear_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); setTxt(aAlarm, s.alarms[0].text[0]?friendlyAlarm(s.alarms[0].text):"alarm"); }
   else lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
 
+// #76: push one 12 h-graph sample (~5 min cadence). Rings shift left so the
+// newest point is always last (no visual wrap); Y auto-ranges around the data.
+void sysGraphSample(const DisplayState& s){ if(!gSysChart) return;
+  lv_coord_t* rs[3]={gRingA,gRingH,gRingC};
+  for(int k=0;k<3;k++) memmove(rs[k],rs[k]+1,sizeof(lv_coord_t)*(kGraphPts-1));
+  gRingA[kGraphPts-1]= s.fusedTempValid ? (lv_coord_t)lroundf(s.fusedTempC*10.0f) : LV_CHART_POINT_NONE;
+  const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto;
+  gRingH[kGraphPts-1]= sh ? (lv_coord_t)lroundf(s.heatSetpointC*10.0f) : LV_CHART_POINT_NONE;
+  gRingC[kGraphPts-1]= sc ? (lv_coord_t)lroundf(s.coolSetpointC*10.0f) : LV_CHART_POINT_NONE;
+  lv_coord_t lo=32767,hi=-32768;
+  for(int k=0;k<3;k++) for(int i=0;i<kGraphPts;i++){ lv_coord_t v=rs[k][i]; if(v==LV_CHART_POINT_NONE) continue; if(v<lo)lo=v; if(v>hi)hi=v; }
+  if(hi>=lo){ lo-=20; hi+=20; if(hi-lo<40){ lv_coord_t mid=(lv_coord_t)((lo+hi)/2); lo=(lv_coord_t)(mid-40); hi=(lv_coord_t)(mid+40); }  // >=2 deg padding, >=4 deg span
+    lv_chart_set_range(gSysChart,LV_CHART_AXIS_PRIMARY_Y,lo,hi); }
+  lv_chart_refresh(gSysChart);
+  if(wSysGraphLbl){ char g[64];
+    if(s.fusedTempValid) snprintf(g,sizeof(g),"now %.1f\xC2\xB0   set %.0f-%.0f\xC2\xB0",(double)s.fusedTempC,(double)s.heatSetpointC,(double)s.coolSetpointC);
+    else snprintf(g,sizeof(g),"set %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC);
+    setTxt(wSysGraphLbl,g); } }
+
 }  // namespace
 
 void begin(UiModel* model, SemaphoreHandle_t mux){
@@ -814,6 +853,7 @@ void service(){
   if(now-lastRender>=250){ lastRender=now;
     if(gSniffOpen){ renderSniff(); screenshotPoll(); lv_timer_handler(); return; }  // dedicated LISTEN screen: no ambient/main render
     DisplayState s; L(); s=gM->state(); U();
+    if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; lv_scr_load(scrAmb); gAmbShiftIdx=0; gAmbShiftMs=now; ambientShift(0); }
