@@ -136,7 +136,14 @@ uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift 
 lv_obj_t *wTemp,*wDeg=nullptr,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wClock,*wSysBody,*wDiagBody,*wLockState;
 lv_obj_t *gHomeTab=nullptr;  // Home tab page — parent of the hero, for the mode-tinted bg gradient (#fix5)
 // Sensors screen: interactive per-room rows (#68)
-struct SensorRowUi{ lv_obj_t*row,*info,*btn,*btnlbl; }; SensorRowUi gSensorRows[7]={};
+struct SensorRowUi{ lv_obj_t*row,*name,*temp,*pres,*btn,*btnlbl; }; SensorRowUi gSensorRows[7]={};
+// #89 column geometry (x within the 760-wide row): Name | Temperature | Presence | toggle
+#define SR_NAME_X   12
+#define SR_NAME_W   244
+#define SR_TEMP_X   262
+#define SR_TEMP_W   90
+#define SR_PRES_X   372
+#define SR_PRES_W   260
 char gRowName[7][16]={};
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
 lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
@@ -290,16 +297,35 @@ void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); 
 
 void sensorToggleEvt(lv_event_t*e){ int i=(int)(intptr_t)lv_event_get_user_data(e); if(i<0||i>=7) return;
   if(uiLocked()){ promptUnlock(); return; } if(gRowName[i][0]) uiToggleSensor(gRowName[i]); }
+// #89 tiny column-header caption at a fixed x within the sensors tab
+static void srHeader(lv_obj_t*tab,const char*t,int x,int w,lv_text_align_t al){
+  lv_obj_t*l=lv_label_create(tab); lv_label_set_text(l,t); lv_obj_set_style_text_font(l,&lv_font_montserrat_16,0);
+  lv_obj_set_style_text_color(l,lv_color_hex(COL_TEXT3),0); lv_obj_set_width(l,w); lv_obj_set_style_text_align(l,al,0);
+  lv_obj_align(l,LV_ALIGN_TOP_LEFT,4+x,40); }
 void buildSensors(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Room sensors");
-  for(int i=0;i<7;i++){ lv_obj_t*r=lv_obj_create(tab); lv_obj_set_size(r,760,44); lv_obj_align(r,LV_ALIGN_TOP_LEFT,4,48+i*50);
+  // #89: column captions so the aligned Name / Temp / Presence columns read as a table
+  srHeader(tab,"ROOM",SR_NAME_X,SR_NAME_W,LV_TEXT_ALIGN_LEFT);
+  srHeader(tab,"TEMP",SR_TEMP_X,SR_TEMP_W,LV_TEXT_ALIGN_RIGHT);
+  srHeader(tab,"STATUS",SR_PRES_X,SR_PRES_W,LV_TEXT_ALIGN_LEFT);
+  for(int i=0;i<7;i++){ lv_obj_t*r=lv_obj_create(tab); lv_obj_set_size(r,760,44); lv_obj_align(r,LV_ALIGN_TOP_LEFT,4,64+i*50);
     lv_obj_set_style_bg_color(r,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_width(r,0,0); lv_obj_set_style_radius(r,8,0);
     lv_obj_set_style_pad_all(r,0,0); lv_obj_clear_flag(r,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t*info=lv_label_create(r); lv_obj_set_style_text_color(info,lv_color_hex(COL_INK),0);
-    lv_obj_set_style_text_font(info,&lv_font_montserrat_20,0); lv_obj_align(info,LV_ALIGN_LEFT_MID,10,0);
+    // Name — left, fixed column, ellipsize on overflow so it can't push the other columns (#89)
+    lv_obj_t*nm=lv_label_create(r); lv_obj_set_style_text_color(nm,lv_color_hex(COL_INK),0);
+    lv_obj_set_style_text_font(nm,&lv_font_montserrat_20,0); lv_obj_set_width(nm,SR_NAME_W);
+    lv_label_set_long_mode(nm,LV_LABEL_LONG_DOT); lv_obj_align(nm,LV_ALIGN_LEFT_MID,SR_NAME_X,0);
+    // Temperature — own column, right-aligned so the degree digits stack
+    lv_obj_t*tp=lv_label_create(r); lv_obj_set_style_text_color(tp,lv_color_hex(COL_INK),0);
+    lv_obj_set_style_text_font(tp,&lv_font_montserrat_20,0); lv_obj_set_width(tp,SR_TEMP_W);
+    lv_obj_set_style_text_align(tp,LV_TEXT_ALIGN_RIGHT,0); lv_obj_align(tp,LV_ALIGN_LEFT_MID,SR_TEMP_X,0);
+    // Presence / status — own column
+    lv_obj_t*pr=lv_label_create(r); lv_obj_set_style_text_color(pr,lv_color_hex(COL_MUTED),0);
+    lv_obj_set_style_text_font(pr,&lv_font_montserrat_16,0); lv_obj_set_width(pr,SR_PRES_W);
+    lv_label_set_long_mode(pr,LV_LABEL_LONG_DOT); lv_obj_align(pr,LV_ALIGN_LEFT_MID,SR_PRES_X,0);
     lv_obj_t*b=lv_btn_create(r); lv_obj_set_size(b,92,36); lv_obj_align(b,LV_ALIGN_RIGHT_MID,-8,0);
     lv_obj_add_event_cb(b,sensorToggleEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
     lv_obj_t*bl=lv_label_create(b); lv_label_set_text(bl,"--"); lv_obj_center(bl);
-    gSensorRows[i]={r,info,b,bl}; gRowName[i][0]=0; lv_obj_add_flag(r,LV_OBJ_FLAG_HIDDEN); } }
+    gSensorRows[i]={r,nm,tp,pr,b,bl}; gRowName[i][0]=0; lv_obj_add_flag(r,LV_OBJ_FLAG_HIDDEN); } }
 void buildSystem(lv_obj_t*tab){ header(tab,"System");
   wSysBody=lv_label_create(tab); lv_obj_set_style_text_color(wSysBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wSysBody,"");
   // 12 h trend graph (#76): actual (fused) vs heat/cool setpoints, right ~1/3.
@@ -862,9 +888,18 @@ void renderMain(const DisplayState& s){ char b[128];
   for(int i=0;i<7;i++){ SensorRowUi&ro=gSensorRows[i]; if(!ro.row) continue;
     if(i<(int)s.sensorCount){ const SensorRow&r=s.sensors[i];
       strlcpy(gRowName[i],r.name,sizeof(gRowName[i]));
-      const char* pres = r.occupied?"here":(r.lastOccAgeS==0xFFFFFFFFu?"-":(r.lastOccAgeS<3600u?"<1h":">1h"));
-      const char* use = !r.healthy?"check it":(r.participating?(r.dominant?"following":"in use"):"off");
-      char row[80]; snprintf(row,sizeof(row),"%-11s %5.1f\xC2\xB0  %-4s  %s", r.name,(double)r.tempC,pres,use); setTxt(ro.info,row);
+      setTxt(ro.name, r.name);
+      char tb[16]; snprintf(tb,sizeof(tb),"%.1f\xC2\xB0",(double)r.tempC); setTxt(ro.temp,tb);
+      // #89 single status word: stale > Following (drives demand) > In use (occupied) > Away[ Nh]
+      char st[24];
+      if(!r.healthy) strcpy(st,"stale");
+      else if(r.dominant) strcpy(st,"Following");
+      else if(r.occupied) strcpy(st,"In use");
+      else if(r.lastOccAgeS==0xFFFFFFFFu) strcpy(st,"Away");
+      else if(r.lastOccAgeS<3600u) strcpy(st,"Away <1h");
+      else snprintf(st,sizeof(st),"Away %luh",(unsigned long)(r.lastOccAgeS/3600u));
+      setTxt(ro.pres,st);
+      lv_obj_set_style_text_color(ro.pres,lv_color_hex(!r.healthy?COL_WARN:COL_MUTED),0);
       setTxt(ro.btnlbl, r.participating?"On":"Off"); lv_obj_set_style_bg_color(ro.btn,lv_color_hex(r.participating?COL_OK:COL_RAISED),0);
       lv_obj_clear_flag(ro.row,LV_OBJ_FLAG_HIDDEN); }
     else { gRowName[i][0]=0; lv_obj_add_flag(ro.row,LV_OBJ_FLAG_HIDDEN); } }
