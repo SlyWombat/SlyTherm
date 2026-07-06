@@ -163,3 +163,15 @@ leaves the safety task, the demand-refresh discipline, and the watchdog
 chain untouched; a whole-chip hang lands on the external watchdog as above.
 The worst credible UI-load failure is a delayed demand refresh — which
 degrades toward *no demand*, the safe direction.
+
+**Reduced safe-UI (crash-loop containment).** A non-critical rendering fault
+must degrade, not boot-loop the panel. When the reset-loop lockout latches
+(7.3: ≥ 3 abnormal resets in 30 min — the control side is already at
+no-demand), the next boot builds a **minimal known-good screen** — plain
+temperature, mode, and alarms, with the trend graph, mode-tint gradient, and
+RS-485 LISTEN capture switched off — instead of re-running the UI that
+crashed. The reduced state is latched in NVS and **persists until manually
+cleared** by the on-screen **"Restore full screen"** button, which clears both
+the reduced-UI flag and the reset-loop history and reboots (a software reset,
+which does not itself re-latch). This is a UI-resilience layer only; control
+and safety already failed to no-demand on the same latch.

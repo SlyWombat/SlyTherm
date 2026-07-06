@@ -10,6 +10,13 @@ Assistant app. This section explains what each message means and what to do.
 > happening". The dangerous-condition protections live inside the furnace
 > and heat pump themselves and are always active.
 
+Alerts that describe a passing condition — a room sensor gone quiet, the
+Wi-Fi or app link dropping, the outdoor temperature briefly unknown — **clear
+themselves automatically** the moment the condition recovers (a sensor
+reports again, the link reconnects). You do not have to acknowledge them.
+A handful of serious faults stay listed until acknowledged so a brief problem
+you didn't see isn't lost.
+
 ## "Waiting" states (normal — not faults)
 
 | What you see | What it means | What to do |
@@ -25,7 +32,7 @@ Assistant app. This section explains what each message means and what to do.
 | Alert / symptom | What it means | What to do |
 | --- | --- | --- |
 | **Sensor "name" offline / excluded** | That room sensor stopped reporting (likely a dead battery) or disagreed wildly with the others. The system continues on the remaining sensors. | Check the sensor's battery and placement; see the Sensors page for details. |
-| **Backup sensor mode** (persistent banner) | *All* remote sensors are unavailable; the thermostat is running on its built-in backup sensor. Heating is limited to a safe modest range (~16–18 °C) and **cooling is disabled**. | Restore the sensors: check sensor batteries, then whether Home Assistant and your network are running. If it persists, call your installer. |
+| **No room temperature — heating/cooling paused** (persistent banner) | *All* room sensors are unavailable and this wall unit has no sensor of its own, so there is no temperature to control to. The thermostat safely pauses all heating and cooling. | Restore the sensors: check sensor batteries, then whether Home Assistant and your network are running (this alert usually points at the network or bridge). If it persists, call your installer. |
 | **Heat pump locked out — outdoor temperature** | It is colder outside than the compressor's safe limit (default −20 °C). Gas heat carries the load automatically. | Nothing — normal cold-weather behaviour. |
 | **Heating switched to gas — heat pump couldn't keep up** | The heat pump ran flat out but the room kept drooping, so gas took over. | Nothing — this is the dual-fuel design working. Frequent occurrences in mild weather are worth mentioning to your installer. |
 | **Gas heating stopped — ran 4 hours without progress** | A safety limit: gas heat ran continuously for 4 hours without gaining on the setpoint, so the thermostat dropped the call and alerted you. | Look for open windows/doors, a clogged filter, or an extreme-weather day. Clear/acknowledge and let it retry; if it recurs, call a professional. |
@@ -33,7 +40,7 @@ Assistant app. This section explains what each message means and what to do.
 | **Wi-Fi / App icon grey** | Network or Home Assistant connection lost. Temperature control continues locally; after 30 minutes the fallback comfort range (heat 18 / cool 27 °C) applies until reconnection. | Check your router and the Home Assistant computer. The wall screen keeps full control meanwhile. |
 | **Furnace link lost** | The thermostat cannot talk to the furnace over its communication wiring. Heating requests cannot be delivered. | Power-cycling your router won't help — this is the wired link. If it doesn't clear within minutes, call your installer. In winter treat this as urgent (heat is unavailable). |
 | **No heat — system in safe state** (escalating) | The thermostat hit a fault it could not resolve and stopped all requests. The alert repeats and escalates because an unheated home in winter risks frozen pipes. | Call your installer or HVAC service promptly. Your installer prepared a backup-thermostat changeover for exactly this case. |
-| **System restarted repeatedly — locked safe** | The controller restarted several times in a short period and locked itself in the no-demand state until manually cleared. | Call your installer. Do not repeatedly power-cycle it yourself. |
+| **System restarted repeatedly — locked safe** (SAFE MODE screen) | The controller restarted several times in a short period and locked itself in the no-demand state. To stay usable it also boots a **simplified screen** — just the temperature, mode, and alerts, with the graph and other extras switched off — instead of risking another restart. | Heating/cooling stays paused until cleared. Tap **"Restore full screen"** on that screen to return to the normal display and clear the lock; if it happens again, call your installer. Do not repeatedly power-cycle it yourself. |
 | **Blank screen** | The thermostat has no power. It is powered from the furnace, so the furnace likely has no power either. | Check the furnace's switch and breaker. If power is on and the screen stays dark, call your installer. |
 | Room comfortable but a far room is cold/hot | The thermostat controls to its sensor average; rooms without sensors (or with closed doors/vents) drift. | Add a sensor to that room, or check vents and doors. |
 | Vents blow cool-ish air in heat-pump heating | Heat pump supply air (often 30–40 °C) feels cooler than gas-furnace air, especially on your hand — but it is still heating. | Nothing, if the room holds temperature. |

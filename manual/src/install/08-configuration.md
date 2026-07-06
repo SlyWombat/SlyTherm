@@ -127,8 +127,20 @@ below). The compressor is never run on an unknown outdoor temperature.
 | Network-stale fallback, heat-to | `kFallbackHeatSetpointC` | **18 °C** | Dual-bounded with the cool-to value; mode = last user mode; never escalates to OFF |
 | Network-stale fallback, cool-to | `kFallbackCoolSetpointC` | **27 °C** | 27–28 °C acceptable |
 | Network staleness threshold | `kMqttStaleS` | **1800 s** (30 min) | No MQTT command/heartbeat traffic for this long → fallback profile |
-| Degraded-mode heat floor | `kDegradedHeatFloorC` / `kDegradedHeatCeilC` | **16–18 °C** | Local-fallback-sensor-only mode: bounded heat, **cooling disabled** (or ≥ 29 °C ceiling), demand capped, persistent alarm |
+| Degraded-mode heat floor | `kDegradedHeatFloorC` / `kDegradedHeatCeilC` | **16–18 °C** | Local-fallback-sensor-only mode (only when a local sensor is fitted — see below): bounded heat, **cooling disabled** (or ≥ 29 °C ceiling), demand capped, persistent alarm |
 | Indoor cooling lockout | `kCoolingIndoorLockoutC` | **18 °C** | Never cool when indoor temperature is below this |
+
+> **No local sensor on this wall unit (default build).** The on-board
+> DS18B20 / local fallback slot is compiled **off** (`DETTSON_LOCAL_SENSOR`
+> default off; `-DDETTSON_DS18B20` not built). The room temperature comes
+> **only** from the MQTT/HA room sensors. Consequences: the **degraded /
+> local-fallback mode** above and the **fallback-sensor disagreement alarm**
+> and **built-in-fallback offset** in §8.7 **do not apply** to this build;
+> and **all room sensors stale → fail to no-demand** (0 on every channel +
+> alarm) — there is no local heat-floor backstop. The wall unit's temperature
+> availability depends entirely on the MQTT bridge + Wi-Fi (see the User
+> Manual, *Remote sensors*, and docs/04 §4). The local paths remain
+> **compiled-in behind the flag** for other hardware.
 
 ## 8.10 Wall-screen lock
 

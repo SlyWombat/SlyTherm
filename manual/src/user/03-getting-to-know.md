@@ -2,7 +2,9 @@
 
 The thermostat is a 4.3-inch colour touchscreen mounted on the wall where
 your old thermostat was. Everything you need day to day is on the **Home**
-screen; three more pages (Sensors, Diagnostics, Settings) are a tap away.
+screen; five more pages (Presets, Sensors, System, Settings, Diagnostics)
+are a tap away — tap the SlyTherm logo in the top-left to drop down the page
+menu, or swipe left/right.
 
 ## The home screen
 
@@ -19,25 +21,40 @@ screen; three more pages (Sensors, Diagnostics, Settings) are a tap away.
 | 7 | **Outdoor temperature** | The outside temperature the thermostat is using, with its source (heating equipment, outdoor sensor, or weather service). |
 | 8 | **Running now** | Which equipment is active: gas heat (with its current output, 40–100 %), heat pump heat, cooling, fan, or defrost. |
 | 9 | **Compressor protection countdown** | When the heat pump is resting between runs, a countdown shows when it may start again. Hidden when not relevant. This is normal protection, not a fault. |
-| 10 | **Alert banner** | The most recent alert, in plain language. Hidden when there is nothing to report. Also shows the "backup sensor mode" notice when applicable. |
+| 10 | **Alert banner** | The most recent alert, in plain language. Hidden when there is nothing to report. Shows the "no room temperature" notice if every room sensor is lost. |
 | 11 | **Connection icons** | Status of **Wi-Fi**, the link to your **Home Assistant app**, and the link to the **furnace**. Green = good. The thermostat keeps controlling temperature even when Wi-Fi or the app link is down. |
-| 12 | **Page tabs** | Switch between Home, Sensors, Diagnostics, and Settings. |
+| 12 | **Hold pill** | Shows the active hold and its time remaining ("Hold 1:59", "Hold until next schedule", "Hold until you change it"). Tap it to choose a hold length or to **Resume schedule** (see *Everyday use*). Reads "Set a hold" when nothing is held. |
+| 13 | **Page menu** | Tap the logo (top-left) for the page menu — Home, Presets, Sensors, System, Settings, Diagnostics — or swipe. |
 
 ## The other pages
 
+- **Presets** — the comfort presets (Home, Away, Sleep, and any your
+  household has added) as cards. Tap one to apply it; the active preset is
+  outlined. Same as the preset row on Home, with a bit more room.
+
 - **Sensors** — a table of every room sensor: its name, temperature, whether
   the room is occupied, how fresh the reading is, whether it is currently
-  included in the room average, and its health. Useful for checking a sensor
-  battery or seeing why a room is being ignored.
+  included in the room average, and its health. Tap a sensor's button to
+  include or exclude it. Useful for checking a sensor battery or seeing why a
+  room is being ignored.
+
+- **System** — a plain-language summary of what the equipment is doing right
+  now (running equipment, the room average, outdoor temperature, compressor
+  status, gas output), plus a **12-hour trend graph** on the right showing the
+  room temperature against your heat and cool setpoints — handy for seeing at
+  a glance how the house held overnight. The graph starts filling in after the
+  thermostat has been running a while and resets on a power cycle.
+
+- **Settings** — set and lock a **PIN** (see *Everyday use*), choose the clock
+  format (**12-hour / 24-hour**), and open **Wi-Fi setup** and **Home system**
+  (Home Assistant link). Each of those two shows a status word that turns
+  **green when it is connected and working**. Detailed tuning (schedules,
+  balance point, sensor options) is done in the Home Assistant app, not on the
+  wall.
 
 - **Diagnostics** — the alert history plus connection health (Wi-Fi, app
   link, furnace link), the compressor countdown, and the furnace's current
   output. This is the page a service technician will ask you to read out.
-
-- **Settings** — mostly informational on the wall unit: the active minimum
-  gap between heat and cool setpoints, and software version information.
-  Detailed tuning (schedules, balance point, sensor options) is done in the
-  Home Assistant app, not on the wall.
 
 ## Things worth knowing
 

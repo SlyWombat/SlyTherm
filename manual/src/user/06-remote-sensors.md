@@ -33,8 +33,14 @@ bridged to the thermostat. Your installer sets up the bridge and the sensor
 roster. (Ecobee's own wireless sensors are **not** compatible — they use a
 proprietary radio protocol that only Ecobee thermostats can receive.)
 
-The thermostat also has its own built-in wired backup sensor, which
-cross-checks the room average and takes over if every remote sensor fails.
+**Where the room temperature comes from.** On this wall unit the room
+temperature comes **entirely from your Home Assistant / MQTT room sensors** —
+there is no temperature sensor built into the wall thermostat itself. That
+keeps the reading in the rooms you live in rather than at the hallway wall,
+but it also means the thermostat depends on Home Assistant and your network
+to know the temperature. If every room sensor stops reporting, the thermostat
+has no temperature to control to and safely **pauses heating and cooling**
+(see below) — it never guesses.
 
 ## Where to put sensors
 
@@ -71,16 +77,13 @@ data:
 - **A sensor joins or leaves the average**: the effective temperature glides
   to the new value rather than jumping, so you won't get a sudden burst of
   heating or cooling because a battery died.
-- **All remote sensors lost**: the thermostat falls back to its built-in
-  backup sensor and enters **backup sensor mode** — heating is limited to a
-  modest range (it keeps the home safe, around 16–18 °C, rather than
-  precisely comfortable), **cooling is disabled**, and a persistent alert
-  reminds you to fix the sensors. This is intentional: the backup sensor
-  sits near the equipment, not in your living space, so the thermostat
-  refuses to chase comfort with it.
-- **Even the backup sensor fails**: the thermostat stops all heating and
-  cooling requests and raises an alert — it will never run equipment on
-  data it can't trust.
+- **All room sensors lost**: with no sensor built into the wall unit, the
+  thermostat has no temperature to control to. It **stops all heating and
+  cooling requests** (the safe direction — it never runs equipment on data
+  it can't trust) and raises a persistent alert reminding you to restore the
+  sensors. This depends on the Home Assistant bridge and your network being
+  up, so this alert usually points at those. (Your equipment's own built-in
+  safety limits stay active regardless.)
 
 Routine care: replace sensor batteries when the Sensors page (or Home
 Assistant) shows them low — typically once a year or two for Zigbee sensors.
