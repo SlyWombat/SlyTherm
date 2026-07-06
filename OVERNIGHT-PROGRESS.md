@@ -1,5 +1,63 @@
 # Overnight progress — SlyTherm
 
+## 2026-07-06 session — #86 rework + #87 + #88
+
+Items #86a/b/c, #87, #88. Each committed separately; single hardware build at the end.
+
+- **#86a Night-only deep-blank** — DONE (`0bf79ae`). Backlight now blanks ONLY
+  00:00-06:00 local after 15 min idle (`kNightBlankIdleMs`). Outside that window
+  ambient stays fully lit and never blanks. `getLocalTime` failure fails SAFE
+  (never blank; restore if blanked); clock rolling past 06:00 restores the light.
+  Dropped the old all-day 30-min `kDeepIdleMs` blank.
+- **#86b Smooth walk drift** — DONE (`0bf79ae`). `ambientShift` rewritten to a
+  smooth one-step ping-pong "walk" (`kAmbSteps=6` each way) with a gentle diagonal
+  Y drift — no teleporting between grid corners. Cadence `kAmbShiftMs` (15 min);
+  full L→R→L cycle = 3 h.
+- **#86c Bulletproof measured clamp** — DONE (`0bf79ae`). Walk clamp computed from
+  ACTUAL rendered label geometry every drift (`lv_obj_update_layout` +
+  `lv_obj_get_width/height`): right/bottom extents over the 4 labels bound the walk
+  to `[Xmin,Xmax]/[Ymin,Ymax]`. Content wider/taller than the usable area pins to
+  the top-left margin (never negative). Recomputed per drift → no clip for any
+  room-name length / temp width.
+- **#86 wake polish** — DONE (`762ce52`, coordinator follow-up). Wake no longer
+  flashes a blank temperature: load Home → repaint with latest model → `lv_refr_now`
+  → THEN backlight on. Same for night-window auto-restore (repaint ambient first)
+  and non-blanked touch-wake.
+- **#87 Hold pill after flash** — DONE (`266b458`). New-firmware latch-clear block
+  now also `putUChar("hold",0)` + resets `gShadow.hold`, so a fresh flash boots with
+  no hold pill; a normal same-firmware power-cycle still restores a legit hold.
+- **#88 Sticky presence + HA last_seen 3-h away** — DONE (`c8e194e`). Presence no
+  longer decays with the motion window. New per-sensor last_seen ledger in
+  SensorFusion (`updatePresence` / `presence()` / `presenceWithin`, `kPresenceAwayS
+  =3h`, `PresenceState`), decoupled from motion window + temp `maxAgeS`, factored
+  for a future night "sleep" state. `parsePresenceJson` (full-precision integer
+  last_seen). main_thermostat subscribes `slytherm/sensors/+/presence`, converts
+  HA unix last_seen → monotonic via wall clock (occupied-with-no-clock = seen-now →
+  Present at boot), feeds the ledger, fills `DisplayState.presence`. UI:
+  `fillPresenceLine` (Home + ambient) shows Present / Nobody home, falling back to
+  the legacy temp-source text only when no presence sensor reports. HA bridge
+  publishes RETAINED presence per room (start / online / 1-min heartbeat) so
+  boot/reconnect seeds it. 7 new SensorFusion tests + 1 parser test.
+
+### Final build + tests
+- `pio test -e native` (test_sensor_fusion + test_ha_mqtt): **62/62 PASSED**.
+- `thermostat_s3`: **SUCCESS** (pre-polish build 10m38; polish rebuild below). NOT flashed.
+
+### Needs owner's eyes on-glass
+- **#86b walk feel/timing** — confirm the hero visibly walks (not teleports) and the
+  3-h L→R→L cadence feels right; diagonal Y should use vertical space.
+- **#86c can't-clip** — try a long room name and a 3-digit/negative temp; nothing
+  should clip at any drift position.
+- **#86a night blank** — verify blank only happens overnight (00:00-06:00) and a
+  touch wakes it; wake shows the temperature immediately (no blank flash).
+- **#88 present/away + HA seed** — with people home + HA presence on, Home shows
+  "Reading <room> · Present" and does NOT decay to "Nobody home"; after 3 h with no
+  presence it flips to "Nobody home"; a reboot with people home shows Present
+  immediately (retained seed). Requires the updated `ha/packages/slytherm_sensors.yaml`
+  loaded in HA (adds the retained presence automation).
+
+---
+
 Session started 2026-07-05 (overnight). Owner away until morning.
 Build: `export PLATFORMIO_BUILD_DIR=/tmp/pio-ts3; /usr/bin/python3 -m platformio run -e thermostat_s3`.
 
