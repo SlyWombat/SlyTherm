@@ -189,7 +189,10 @@ void spEvt(lv_event_t*e){ const lv_event_code_t c=lv_event_get_code(e);
   float step=base; if(c==LV_EVENT_LONG_PRESSED_REPEAT && ++gHoldReps>12) step=base*2.0f;
   L(); gM->adjustSetpoint(side,step); U(); }
 void modeEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } UserMode m=(UserMode)(intptr_t)lv_event_get_user_data(e); L(); gM->setMode(m); U(); }
-void presetEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } Preset p=(Preset)(intptr_t)lv_event_get_user_data(e); L(); gM->setPreset(p); U(); }
+int gPresetSel=-1; uint32_t gPresetSelMs=0;   // #75: optimistic active-card highlight until the setpoints round-trip
+void presetEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } Preset p=(Preset)(intptr_t)lv_event_get_user_data(e);
+  gPresetSel=(int)p; gPresetSelMs=millis();     // move the highlight NOW, before the control task echoes the setpoints back
+  L(); gM->setPreset(p); U(); }
 
 lv_obj_t* card(lv_obj_t*p){ lv_obj_t*c=lv_obj_create(p); lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0);
   lv_obj_set_style_border_width(c,0,0); lv_obj_set_style_radius(c,14,0); lv_obj_clear_flag(c,LV_OBJ_FLAG_SCROLLABLE); return c; }
@@ -249,6 +252,8 @@ void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); 
   Preset pv[3]={Preset::kHome,Preset::kAway,Preset::kSleep};
   for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,236,150); lv_obj_align(b,LV_ALIGN_TOP_LEFT,6+i*256,52);
     lv_obj_set_style_bg_color(b,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(b,lv_color_hex(COL_BORDER),0); lv_obj_set_style_border_width(b,1,0);  // #fix2: dim hairline, not wireframe
+    lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);  // #75: immediate press feedback on touch-down
+    lv_obj_set_style_border_color(b,lv_color_hex(COL_OK),LV_STATE_PRESSED); lv_obj_set_style_border_width(b,2,LV_STATE_PRESSED);
     lv_obj_add_event_cb(b,presetEvt,LV_EVENT_CLICKED,(void*)(intptr_t)pv[i]); gPresetBtns[i]=b;
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,kPresetDefs[i].name); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,6);
     lv_obj_t*s=lv_label_create(b); lv_label_set_text_fmt(s,"heat %.0f\xC2\xB0   cool %.0f\xC2\xB0",(double)kPresetDefs[i].heat,(double)kPresetDefs[i].cool); lv_obj_set_style_text_color(s,lv_color_hex(COL_MUTED),0); lv_obj_align(s,LV_ALIGN_CENTER,0,6);
@@ -709,9 +714,12 @@ void renderMain(const DisplayState& s){ char b[128];
       if(sl) lv_obj_set_style_text_color(sl,lv_color_hex(0x06202B),0); }
     else { lv_obj_set_style_bg_opa(modeBtns[i],LV_OPA_TRANSP,0); lv_obj_set_style_bg_grad_dir(modeBtns[i],LV_GRAD_DIR_NONE,0);
       if(sl) lv_obj_set_style_text_color(sl,lv_color_hex(COL_MUTED),0); } }
-  for(int i=0;i<3;i++){ if(!gPresetBtns[i]) continue;
-    bool act=fabsf(s.heatSetpointC-kPresetDefs[i].heat)<0.3f && fabsf(s.coolSetpointC-kPresetDefs[i].cool)<0.3f;
-    lv_obj_set_style_border_color(gPresetBtns[i],lv_color_hex(act?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gPresetBtns[i],act?2:1,0); }
+  { const bool optHeld=gPresetSel>=0 && millis()-gPresetSelMs<4000u;   // #75: optimistic highlight rides until the echo lands
+    for(int i=0;i<3;i++){ if(!gPresetBtns[i]) continue;
+      bool match=fabsf(s.heatSetpointC-kPresetDefs[i].heat)<0.3f && fabsf(s.coolSetpointC-kPresetDefs[i].cool)<0.3f;
+      if(match && gPresetSel==i) gPresetSel=-1;   // setpoints caught up -> drop the optimistic latch, keep the match
+      bool act=match || (optHeld && gPresetSel==i);
+      lv_obj_set_style_border_color(gPresetBtns[i],lv_color_hex(act?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gPresetBtns[i],act?2:1,0); } }
   for(int i=0;i<7;i++){ SensorRowUi&ro=gSensorRows[i]; if(!ro.row) continue;
     if(i<(int)s.sensorCount){ const SensorRow&r=s.sensors[i];
       strlcpy(gRowName[i],r.name,sizeof(gRowName[i]));
