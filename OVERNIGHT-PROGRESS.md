@@ -46,3 +46,48 @@ Every issue compiled to `thermostat_s3 SUCCESS`. Native suites green
 (safety 28/28 incl. new #72 tests; ui_model/ha_mqtt/mode_sm 104/104).
 On-glass UI layout of the new hold chooser sheet, System chart, and safe
 screen still wants an eyes-on pass (safe screen IS confirmed rendering).
+
+---
+
+## Session 2026-07-06 (overnight) — batch: UI fixes + #74 + #82 + #79
+
+Build discipline note: `pkill -f platformio` self-matches the launching shell in
+this harness (kills its own process); omit it. Foreground `sleep` is fine in a
+plain command; the earlier instant-fails were the pkill, not sleep.
+
+1. **UI batch (WiFi Done->Home, hold pill)** — DONE (`72967b9`). thermostat_s3
+   SUCCESS (11m30, RAM 70.9% Flash 40.9%). WiFi "Done" closes the overlay and
+   loads the Home tab; hold pill shows ONLY on an active hold (activeHoldType !=
+   none), hidden at boot/default and Off; pill re-pinned under the "Reading..."
+   line so it no longer overprints the mode bar. Includes the pre-existing
+   larger Heat/Cool layoutCard + -DLV_SPRINTF_USE_FLOAT=1.
+2. **#74 presets read the LIVE roster** — DONE (`7feabd3`). thermostat_s3
+   SUCCESS (10m46). DisplayState gains a PresetView roster + setPresets();
+   ModeStateMachine::presetAt(i); control task fills it each tick; buildPresets
+   builds up to kMaxPresets cards (3-wide grid, hidden until populated);
+   renderMain fills name + heat/cool from the live roster and highlights vs the
+   live values; preset apply now carries a roster INDEX resolved to a name.
+   PARTIAL: on-device EDIT of preset temps deferred (TODO in buildPresets) —
+   displaying the live roster (the must-have) is done.
+3. **#82 first-run Welcome onboarding** — DONE (`2c6cf6f`), in the final batched
+   build. wifi_prov::hasSavedCredentials(); setup() computes gFirstRun before
+   uiTask (race-free); standalone scrWelcome (big logo + "Let's Get Started" ->
+   WiFi); service() auto-transitions to Home on connect and reloads Welcome if
+   the user backs out of WiFi setup (never a bare screen). Configured units boot
+   straight to Home.
+4. **#79 rebrand Dettson -> SlyTherm** — DONE (`95c1a9c`), final batched build.
+   Topic prefix via ONE constant (SLYTHERM_TOPIC_PREFIX / topic::kTopicPrefix);
+   all firmware topic literals, HA discovery ids/names, -DDETTSON_* -> -DSLYTHERM_*
+   flags (grep DETTSON_ == 0 repo-wide), ha/packages+blueprints renamed + content,
+   docs/manual/web/README, and host tests. Migration note in docs/06. KEPT:
+   dettson:: namespace, DettsonConfig lib, NVS namespace "dettson" (avoids
+   orphaning persisted settings), the CT-485 sniffer dev tool, and Dettson
+   furnace prose (Chinook/Alize/C105-MV/R02P034).
+
+Per the owner's mid-session efficiency change, #82 + #79 were batched into ONE
+final compile (items 1 and 2 were each already compiled before that change).
+
+Build/verify: final combined thermostat_s3 build **SUCCESS** (12m49, RAM 71.0%,
+Flash 40.9%) — validates #82 + #79 together (items 1 & 2 built individually).
+NOT flashed — owner will flash. On-glass checks wanted: Welcome screen layout &
+logo scale, Presets grid with a live roster, hold-pill placement.
