@@ -206,7 +206,8 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   // hero aligned to the setpoint card: NOW sits just below the card top; the big temp is
   // top-justified with the card's value (mockup 04-home: hero + card center-aligned as a pair)
   lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); eyebrow(nl); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,26,98);
-  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,26,102);
+  wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,26,110);
+  lv_obj_align_to(nl,wTemp,LV_ALIGN_OUT_TOP_LEFT,2,6);  // NOW positioned RELATIVE to the temp (its bottom just above the digit line box — never overwrites)
   wDeg=lv_label_create(tab); lv_label_set_text(wDeg,"\xC2\xB0"); lv_obj_set_style_text_font(wDeg,&lv_font_montserrat_48,0); lv_obj_set_style_text_color(wDeg,lv_color_hex(COL_INK),0); lv_obj_align_to(wDeg,wTemp,LV_ALIGN_OUT_RIGHT_TOP,2,12);  // ° superscript (re-aligned each render — digits change width)
   wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0); lv_obj_set_style_bg_opa(wAction,LV_OPA_TRANSP,0);
   lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,270);
@@ -214,12 +215,12 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   // heat + cool cards (right), big target font, shown per mode
   gHeatCard=card(tab); lv_obj_set_size(gHeatCard,340,170); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gHeatCard,0,0);
   lv_obj_set_style_border_color(gHeatCard,lv_color_hex(COL_EMBER),0); lv_obj_set_style_border_width(gHeatCard,1,0); lv_obj_set_style_border_opa(gHeatCard,LV_OPA_40,0);
-  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT TO"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
+  { lv_obj_t*l=lv_label_create(gHeatCard); lv_label_set_text(l,"HEAT"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_EMBER),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
   wHeatSp=lv_label_create(gHeatCard); lv_obj_set_style_text_font(wHeatSp,&font_set48,0); lv_obj_align(wHeatSp,LV_ALIGN_TOP_MID,0,34);
   spBtn(gHeatCard,"-",-1,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gHeatCard,"+",1,LV_ALIGN_BOTTOM_MID,76,-8);
   gCoolCard=card(tab); lv_obj_set_size(gCoolCard,340,170); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gCoolCard,0,0);
   lv_obj_set_style_border_color(gCoolCard,lv_color_hex(COL_CRYO),0); lv_obj_set_style_border_width(gCoolCard,1,0); lv_obj_set_style_border_opa(gCoolCard,LV_OPA_40,0);
-  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL TO"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
+  { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
   wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&font_set48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,34);
   spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_MID,76,-8);
   wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\npick a mode to set a temperature");
@@ -613,12 +614,12 @@ void layoutCard(lv_obj_t*c,lv_obj_t*val,bool big,uint32_t rail){ if(!c||!val) re
     lv_obj_set_style_text_font(val,&font_set48,0); lv_obj_align(val,LV_ALIGN_TOP_MID,0,34);
     if(mn){ lv_obj_set_size(mn,64,64); lv_obj_align(mn,LV_ALIGN_BOTTOM_MID,-76,-8); }
     if(pl){ lv_obj_set_size(pl,64,64); lv_obj_align(pl,LV_ALIGN_BOTTOM_MID,76,-8); } }
-  else { lv_obj_set_size(c,340,168);   // Auto: two FULL-size cards (same big value + steppers as single), left color-rail
+  else { lv_obj_set_size(c,340,150);   // Auto: big value on the LEFT, - + to the RIGHT (space between), gap between the two cards
     lv_obj_set_style_border_side(c,LV_BORDER_SIDE_LEFT,0); lv_obj_set_style_border_width(c,3,0); lv_obj_set_style_border_opa(c,LV_OPA_COVER,0); lv_obj_set_style_border_color(c,lv_color_hex(rail),0);
-    if(eb) lv_obj_align(eb,LV_ALIGN_TOP_MID,0,8);
-    lv_obj_set_style_text_font(val,&font_set48,0); lv_obj_align(val,LV_ALIGN_TOP_MID,0,30);
-    if(mn){ lv_obj_set_size(mn,64,64); lv_obj_align(mn,LV_ALIGN_BOTTOM_MID,-88,-6); }   // big steppers, wide gap between - and +
-    if(pl){ lv_obj_set_size(pl,64,64); lv_obj_align(pl,LV_ALIGN_BOTTOM_MID,88,-6); } } }
+    if(eb){ lv_obj_set_style_text_font(eb,&lv_font_montserrat_28,0); lv_obj_align(eb,LV_ALIGN_TOP_LEFT,18,12); }   // "HEAT"/"COOL" (no TO), bigger
+    lv_obj_set_style_text_font(val,&font_set48,0); lv_obj_align(val,LV_ALIGN_LEFT_MID,20,18);
+    if(mn){ lv_obj_set_size(mn,60,60); lv_obj_align(mn,LV_ALIGN_RIGHT_MID,-92,18); }   // - and + to the RIGHT of the value, wide gap between them
+    if(pl){ lv_obj_set_size(pl,60,60); lv_obj_align(pl,LV_ALIGN_RIGHT_MID,-16,18); } } }
 
 // ---- render from a model snapshot ----
 void renderMain(const DisplayState& s){ char b[128];
