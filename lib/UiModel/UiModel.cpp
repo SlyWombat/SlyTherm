@@ -231,6 +231,27 @@ void UiModel::setPreset(Preset preset) {
   enqueue(intent);
 }
 
+void UiModel::requestHold(HoldType t) {
+  if (!setpointChangeAllowed()) {  // a hold is a comfort-class change
+    ++lockBlockedCommands_;
+    setDirty(kDirtyLock);
+    return;
+  }
+  UiIntent intent;
+  intent.type = IntentType::kSetHold;
+  intent.hold = t;
+  enqueue(intent);
+}
+void UiModel::resumeSchedule() {
+  if (!setpointChangeAllowed()) {
+    ++lockBlockedCommands_;
+    setDirty(kDirtyLock);
+    return;
+  }
+  UiIntent intent;
+  intent.type = IntentType::kClearHold;
+  enqueue(intent);
+}
 void UiModel::ackAlarms() {
   // Issue #45: alarm VISIBILITY is exempt from every lock level, but the ack
   // is a change intent and stays locked.

@@ -132,6 +132,10 @@ struct DisplayState {
   uint32_t compressorLockoutRemainS = 0;
   float    gasModulationPct         = 0.0f;
 
+  // Active hold (issue #81): type + seconds remaining (timed holds only, else 0).
+  HoldType holdType    = HoldType::kNone;
+  uint32_t holdRemainS = 0;
+
   Alarm   alarms[kMaxAlarms] = {};
   uint8_t alarmCount    = 0;
   bool    alarmsDropped = false;   // bounded list overflowed; oldest discarded
@@ -148,7 +152,11 @@ struct DisplayState {
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
-enum class IntentType : uint8_t { kSetSetpoints, kSetMode, kSetPreset, kAckAlarms };
+enum class IntentType : uint8_t {
+  kSetSetpoints, kSetMode, kSetPreset, kAckAlarms,
+  kSetHold,    // choose a hold duration (issue #81); carries `hold`
+  kClearHold,  // "Resume schedule" -> clearHold()
+};
 
 struct UiIntent {
   IntentType type   = IntentType::kSetSetpoints;
@@ -156,6 +164,7 @@ struct UiIntent {
   float      coolC  = 0.0f;
   UserMode   mode   = UserMode::kOff;
   Preset     preset = Preset::kHome;
+  HoldType   hold   = HoldType::kNone;  // kSetHold: the chosen hold duration
 };
 
 // ---------- Deadband clamp+push ----------
@@ -232,12 +241,18 @@ class UiModel : public UiCommands {
   void setClock(const char* s) { strncpy(state_.clockStr, s, sizeof(state_.clockStr) - 1); state_.clockStr[sizeof(state_.clockStr) - 1] = 0; }
   void setDegradedMode(bool on);
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
+  // Active hold echo (issue #81); rendered every tick, so no dirty bit needed.
+  void setHoldStatus(HoldType t, uint32_t remainS) { state_.holdType = t; state_.holdRemainS = remainS; }
 
   // --- UiCommands (screen event handlers call these) ---
   void adjustSetpoint(SetpointSide side, float deltaC) override;
   void setMode(UserMode mode) override;
   void setPreset(Preset preset) override;
   void ackAlarms() override;
+  // Hold duration chooser (issue #81): comfort-class change intents (gated like
+  // setpoints/presets). requestHold picks a duration; resumeSchedule clears it.
+  void requestHold(HoldType t);
+  void resumeSchedule();
 
   // --- screen lock (issue #45) ---
   // POD, fixed layout, same NVS-blob discipline as CompressorGuard: caller

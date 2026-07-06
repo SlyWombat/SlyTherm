@@ -534,6 +534,7 @@ struct EntitySpec {
   bool binary = false;  // adds payload_on/payload_off ON/OFF
   bool hasRange = false;  // adds min/max/step (number entities)
   float minV = 0.0f, maxV = 0.0f, stepV = 0.0f;
+  const char* optionsJson = nullptr;  // pre-built JSON array for a select entity
 };
 
 std::string entityDiscoveryJson(const EntitySpec& e) {
@@ -544,6 +545,7 @@ std::string entityDiscoveryJson(const EntitySpec& e) {
       .str("state_topic", e.stateTopic);
   if (!e.commandTopic.empty()) o.str("command_topic", e.commandTopic);
   if (e.hasRange) o.num("min", e.minV).num("max", e.maxV).num("step", e.stepV);
+  if (e.optionsJson != nullptr) o.raw("options", e.optionsJson);
   if (e.unit != nullptr) o.str("unit_of_measurement", e.unit);
   if (e.deviceClass != nullptr) o.str("device_class", e.deviceClass);
   if (e.valueTemplate != nullptr) o.str("value_template", e.valueTemplate);
@@ -673,6 +675,23 @@ std::string holdDiscoveryJson() {
   e.valueTemplate = "{{ value_json.type }}";
   e.jsonAttributesTopic = topic::kStateHold;
   e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+// Hold-duration select (issue #81): set/read the active hold from HA. The
+// command topic (kCmdHold) already accepts the wire strings; "none" resumes
+// the schedule (mapped to a clear in the glue, since the parser reserves
+// "clear"). Options mirror the HoldType<->string map so state round-trips.
+std::string holdSelectDiscoveryJson() {
+  EntitySpec e;
+  e.name = "Dettson Hold Duration";
+  e.uniqueId = "dettson_hold_duration";
+  e.stateTopic = topic::kStateHold;
+  e.commandTopic = topic::kCmdHold;
+  e.valueTemplate = "{{ value_json.type }}";
+  e.optionsJson =
+      "[\"none\",\"until_next_preset\",\"two_hours\",\"four_hours\",\"indefinite\"]";
+  e.config = true;
   return entityDiscoveryJson(e);
 }
 

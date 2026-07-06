@@ -618,8 +618,11 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
       strlcpy(gPending.preset, buf, sizeof(gPending.preset));
     } else accepted = false;
   } else if (strcmp(topic, hm::topic::kCmdHold) == 0) {
-    auto p = hm::parseHoldCommand(buf);
-    if (p.ok) { gPending.hasHold = true; gPending.hold = p.value; } else accepted = false;
+    // HA hold-duration select (#81) sends "none" to resume the schedule; the
+    // parser reserves "clear", so map the select's no-hold option to a clear.
+    if (strcmp(buf, "none") == 0) { gPending.hasHold = true; gPending.hold = hm::HoldCommand{}; gPending.hold.clear = true; }
+    else { auto p = hm::parseHoldCommand(buf);
+      if (p.ok) { gPending.hasHold = true; gPending.hold = p.value; } else accepted = false; }
   } else if (strcmp(topic, hm::topic::kCmdEmHeat) == 0) {
     auto p = hm::parseEmHeatCommand(buf);
     if (p.ok) { gPending.hasEmHeat = true; gPending.emHeat = p.value; } else accepted = false;
@@ -724,6 +727,7 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("binary_sensor", "compressor_locked_out"),
               compressorLockedOutDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "hold"), holdDiscoveryJson());
+  pubRetained(discoveryTopic("select", "hold_duration"), holdSelectDiscoveryJson());  // #81
   pubRetained(discoveryTopic("switch", "em_heat"), emHeatDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "lock"), lockDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "outdoor_temp"), outdoorTempDiscoveryJson());
@@ -1247,6 +1251,12 @@ void consumeCommands(uint32_t nowS) {
       case ui::IntentType::kAckAlarms:
         gSup->alarms().ackAll();
         break;
+      case ui::IntentType::kSetHold:  // hold-duration chooser (#81)
+        gModeSm->startHold(intent.hold, nowS);
+        break;
+      case ui::IntentType::kClearHold:  // "Resume schedule"
+        gModeSm->clearHold();
+        break;
     }
   }
   uiUnlock();
@@ -1640,6 +1650,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 #endif
     gUi.setBusDiag(gLastBusRxS, ctFrames); }
   gUi.setDegradedMode(fused.degraded);
+  gUi.setHoldStatus(gModeSm->activeHoldType(), gModeSm->holdRemainingS(nowS));  // hold chooser (#81)
   // Per-sensor rows for the Sensors screen + ambient "driving sensor".
   {
     ui::SensorRow rows[ui::kMaxSensorRows];

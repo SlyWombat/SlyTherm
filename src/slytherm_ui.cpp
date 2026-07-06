@@ -124,6 +124,8 @@ lv_obj_t *gHomeTab=nullptr;  // Home tab page — parent of the hero, for the mo
 struct SensorRowUi{ lv_obj_t*row,*info,*btn,*btnlbl; }; SensorRowUi gSensorRows[7]={};
 char gRowName[7][16]={};
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[3];  // UI v2 Home/Presets
+lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
+lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 struct PresetDef{ const char* name; float heat; float cool; };
 const PresetDef kPresetDefs[3]={{"Home",21.0f,24.0f},{"Away",17.0f,28.0f},{"Sleep",19.0f,23.0f}};
@@ -171,6 +173,7 @@ uint32_t actCol(HvacAction a){ switch(a){case HvacAction::kHeating:case HvacActi
 void setTxt(lv_obj_t*o,const char*t){ const char*c=lv_label_get_text(o); if(c&&strcmp(c,t)==0)return; lv_label_set_text(o,t); }
 lv_obj_t* mkBtn(lv_obj_t*,const char*,lv_event_cb_t,lv_align_t,int,int,uint32_t,int);  // defined below; default width lives on the definition
 void openSniff(lv_event_t*);  // RS-485 LISTEN screen (#71), defined below; used by buildDiag
+void holdEvt(lv_event_t*);    // open the hold-duration chooser (#81), defined below; used by buildHome
 // tracked-out caption ("eyebrow"): small Montserrat + wide letter-spacing (docs/09)
 void eyebrow(lv_obj_t*l){ lv_obj_set_style_text_font(l,&lv_font_montserrat_16,0); lv_obj_set_style_text_letter_space(l,2,0); }
 
@@ -212,6 +215,11 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0); lv_obj_set_style_bg_opa(wAction,LV_OPA_TRANSP,0);
   lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,270);
   wFollow=lv_label_create(tab); lv_obj_set_style_text_color(wFollow,lv_color_hex(COL_MUTED),0); lv_obj_align(wFollow,LV_ALIGN_TOP_LEFT,26,302);
+  // hold pill (#81): tap to choose 2h/4h/until-next/forever or resume the schedule
+  gHoldBtn=lv_btn_create(tab); lv_obj_set_size(gHoldBtn,258,38); lv_obj_align(gHoldBtn,LV_ALIGN_TOP_LEFT,26,330);
+  lv_obj_set_style_bg_color(gHoldBtn,lv_color_hex(COL_RAISED),0); lv_obj_set_style_shadow_width(gHoldBtn,0,0); lv_obj_set_style_radius(gHoldBtn,10,0);
+  lv_obj_add_event_cb(gHoldBtn,holdEvt,LV_EVENT_CLICKED,nullptr);
+  gHoldLbl=lv_label_create(gHoldBtn); lv_label_set_text(gHoldLbl,"Set a hold"); lv_obj_set_style_text_font(gHoldLbl,&lv_font_montserrat_16,0); lv_obj_center(gHoldLbl);
   // heat + cool cards (right), big target font, shown per mode
   gHeatCard=card(tab); lv_obj_set_size(gHeatCard,340,170); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gHeatCard,0,0);
   lv_obj_set_style_border_color(gHeatCard,lv_color_hex(COL_EMBER),0); lv_obj_set_style_border_width(gHeatCard,1,0); lv_obj_set_style_border_opa(gHeatCard,LV_OPA_40,0);
@@ -290,6 +298,29 @@ void buildKeypad(lv_obj_t*scr){ kpad=lv_obj_create(scr); lv_obj_set_size(kpad,36
   for(int i=0;i<12;i++){ lv_obj_t*b=lv_btn_create(grid); lv_obj_set_size(b,96,64); lv_obj_add_event_cb(b,kpEvt,LV_EVENT_CLICKED,(void*)(intptr_t)vals[i]);
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,keys[i]); lv_obj_center(l); }
   lv_obj_add_flag(kpad,LV_OBJ_FLAG_HIDDEN); }
+
+// ---- hold-duration chooser (#81) ----
+void holdPick(lv_event_t*e){ int v=(int)(intptr_t)lv_event_get_user_data(e);
+  L(); if(v<0) gM->resumeSchedule(); else gM->requestHold((HoldType)v); U();   // v<0: Resume schedule; else HoldType enum value
+  if(gHoldSheet) lv_obj_add_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); }
+void holdClose(lv_event_t*){ if(gHoldSheet) lv_obj_add_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); }
+void holdEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
+  if(!gHoldSheet) return; lv_obj_clear_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gHoldSheet); }
+void buildHoldSheet(lv_obj_t*scr){ gHoldSheet=lv_obj_create(scr); lv_obj_set_size(gHoldSheet,420,382); lv_obj_center(gHoldSheet);
+  lv_obj_set_style_bg_color(gHoldSheet,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(gHoldSheet,lv_color_hex(COL_CRYO),0);
+  lv_obj_set_style_border_width(gHoldSheet,2,0); lv_obj_set_style_radius(gHoldSheet,14,0); lv_obj_set_style_pad_all(gHoldSheet,0,0); lv_obj_clear_flag(gHoldSheet,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*t=lv_label_create(gHoldSheet); lv_label_set_text(t,"Hold this temperature"); lv_obj_set_style_text_font(t,&lv_font_montserrat_20,0);
+  lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,16,14);
+  struct HB{const char*t;int v;} hb[5]={{"2 hours",(int)HoldType::kTwoHours},{"4 hours",(int)HoldType::kFourHours},
+    {"Until next schedule",(int)HoldType::kUntilNextPreset},{"Hold until you change it",(int)HoldType::kIndefinite},{"Resume schedule",-1}};
+  for(int i=0;i<5;i++){ lv_obj_t*b=lv_btn_create(gHoldSheet); lv_obj_set_size(b,388,48); lv_obj_align(b,LV_ALIGN_TOP_MID,0,50+i*54);
+    lv_obj_set_style_bg_color(b,lv_color_hex(hb[i].v==-1?COL_RAISED:COL_BG),0); lv_obj_set_style_border_color(b,lv_color_hex(hb[i].v==-1?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(b,1,0);
+    lv_obj_add_event_cb(b,holdPick,LV_EVENT_CLICKED,(void*)(intptr_t)hb[i].v);
+    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,hb[i].t); lv_obj_center(l); }
+  lv_obj_t*x=lv_btn_create(gHoldSheet); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-6,8);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,holdClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  lv_obj_add_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); }
 
 void clkEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } uiToggleClock24(); }
 void setPinEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
@@ -601,7 +632,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildAmbient(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildAmbient(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -644,6 +675,17 @@ void renderMain(const DisplayState& s){ char b[128];
     else if(s.degradedMode) strcpy(b,"Local sensor only");   // only when a local slot exists (#73)
     else strcpy(b,"No room sensor reporting");                // no local fallback: fails to no-demand
     setTxt(wFollow,b); }
+  if(gHoldLbl){ char hb[40];   // hold pill (#81): active hold + remaining, or a prompt to set one
+    switch(s.holdType){
+      case HoldType::kTwoHours: case HoldType::kFourHours:
+        snprintf(hb,sizeof(hb),"Hold %lu:%02lu",(unsigned long)(s.holdRemainS/3600u),(unsigned long)((s.holdRemainS%3600u)/60u)); break;
+      case HoldType::kUntilNextPreset: strcpy(hb,"Hold until next schedule"); break;
+      case HoldType::kIndefinite: strcpy(hb,"Hold until you change it"); break;
+      default: strcpy(hb,"Set a hold"); break; }
+    setTxt(gHoldLbl,hb); const bool held=s.holdType!=HoldType::kNone;
+    lv_obj_set_style_text_color(gHoldLbl,lv_color_hex(held?COL_INK:COL_TEXT3),0);
+    lv_obj_set_style_border_color(gHoldBtn,lv_color_hex(held?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gHoldBtn,held?2:1,0);
+    if(s.mode==UserMode::kOff) lv_obj_add_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.coolSetpointC); setTxt(wCoolSp,b);
   lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);

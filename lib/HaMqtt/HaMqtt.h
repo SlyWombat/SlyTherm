@@ -281,6 +281,7 @@ std::string lastErrorDiscoveryJson();            // sensor, entity_category diag
 std::string compressorMinOffRemainingDiscoveryJson();  // sensor, s, diagnostic
 std::string compressorLockedOutDiscoveryJson();        // binary_sensor, diagnostic
 std::string holdDiscoveryJson();                       // sensor, diagnostic (type + attrs)
+std::string holdSelectDiscoveryJson();                 // select: HA sets/reads the hold duration (#81)
 std::string emHeatDiscoveryJson();                     // switch component (G15)
 std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
 std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
