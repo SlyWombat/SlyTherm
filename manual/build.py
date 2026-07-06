@@ -38,6 +38,7 @@ import argparse
 import base64
 import html as htmllib
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -82,6 +83,11 @@ HARD_ERRORS: list[str] = []
 def _render_mmdc(mmd: Path, out: Path) -> None:
     cmd = ['mmdc', '-i', str(mmd), '-o', str(out),
            '-t', 'neutral', '-b', 'white']
+    # Optional puppeteer config (executablePath + --no-sandbox) for hosts where
+    # mmdc can't download/launch its own chromium: MMDC_PUPPETEER_CONFIG=<json>.
+    _pcfg = os.environ.get('MMDC_PUPPETEER_CONFIG')
+    if _pcfg:
+        cmd += ['-p', _pcfg]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not out.exists():
         raise RuntimeError(f'mmdc failed on {mmd.name}: '
