@@ -26,11 +26,11 @@
 
 ## 12.3 Compliance — honest statement
 
-**The DT-1 is not a certified or listed product.**
+**The SlyTherm is not a certified or listed product.**
 
 - It carries **no CSA, UL, or other safety listing**.
 - The furnace and heat pump are certified **as systems with approved
-  controls**; installing the DT-1 in place of the OEM thermostat is a
+  controls**; installing the SlyTherm in place of the OEM thermostat is a
   **modification of a certified gas appliance's control system** and places
   the installation **outside the certified configuration** — even though the
   design does not alter the combustion-safety chain (the certified IFC

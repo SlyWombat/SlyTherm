@@ -60,6 +60,31 @@ scheduled change comes along — unless you place a timed or indefinite
 Presets can also influence which room sensors are used — for example, Sleep
 can be configured to follow the bedroom sensors only. See *Remote sensors*.
 
+## Setting a vacation on the wall unit
+
+If you are going away, you can set a **vacation** right on the thermostat —
+no phone or Home Assistant needed. On the **Presets** page, tap the
+**Vacation** button to open the vacation planner:
+
+- **Starts** — *Today* or a number of days from now.
+- **Length** — how many nights you will be away.
+- **Eco heat / Eco cool** — the energy-saving setpoints to hold while you are
+  gone (the planner keeps them a safe gap apart). The defaults are a mild
+  16 °C heat / 28 °C cool, roughly the Away preset.
+
+Tap **Start vacation** and the thermostat takes over for that date range. On
+the Home screen you will see a **"Vacation until <date>"** banner. While the
+vacation is running, the eco setpoints hold **regardless of the schedule or
+who is home**, so a schedule change or a returning phone won't cancel it. At
+the end date the thermostat **automatically resumes** normal operation and
+puts your previous setpoints back. To end a vacation early, open the planner
+again and tap **Cancel vacation**.
+
+A vacation is remembered through a power cut, and — if you also use the Home
+Assistant *vacation calendar* from the starter package — both work the same
+way; use whichever is handier. When the thermostat is PIN-locked, setting or
+cancelling a vacation asks for the PIN, like any other comfort change.
+
 ## Smart recovery (pre-heat / pre-cool)
 
 A schedule normally *starts* heating or cooling at the programmed time —

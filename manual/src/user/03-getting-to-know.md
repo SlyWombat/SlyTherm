@@ -8,35 +8,37 @@ menu, or swipe left/right.
 
 ## The home screen
 
-![DT-1 home screen with numbered callouts](diagrams/home-screen.svg)
+![SlyTherm home screen with numbered callouts](diagrams/home-screen.svg)
 
 | # | Element | What it shows / does |
 | --- | --- | --- |
-| 1 | **Current temperature** | The room temperature the thermostat is controlling to — a blend of your room sensors (see *Remote sensors*). Shows `--.-` if no valid reading is available. |
-| 2 | **Setpoint dial** | Two coloured arcs around the dial: orange for the **heat** setpoint, blue for the **cool** setpoint. Drag an arc's knob to change that setpoint. The two setpoints always keep a minimum gap (see *Everyday use*). |
-| 3 | **Setpoint readout** | The two setpoints as numbers, e.g. `19.0 / 24.0` (heat / cool). |
-| 4 | **Activity** | What the system is doing right now: *Idle*, *Heating*, *Cooling*, *Fan*, or *Defrosting*. |
-| 5 | **Mode row** | Tap to choose **OFF / HEAT / COOL / AUTO / EM HEAT**. The active mode is highlighted. |
-| 6 | **Preset row** | Tap **Home / Away / Sleep** comfort presets (see *Schedules and presets*). |
-| 7 | **Outdoor temperature** | The outside temperature the thermostat is using, with its source (heating equipment, outdoor sensor, or weather service). |
-| 8 | **Running now** | Which equipment is active: gas heat (with its current output, 40–100 %), heat pump heat, cooling, fan, or defrost. |
-| 9 | **Compressor protection countdown** | When the heat pump is resting between runs, a countdown shows when it may start again. Hidden when not relevant. This is normal protection, not a fault. |
-| 10 | **Alert banner** | The most recent alert, in plain language. Hidden when there is nothing to report. Shows the "no room temperature" notice if every room sensor is lost. |
-| 11 | **Connection icons** | Status of **Wi-Fi**, the link to your **Home Assistant app**, and the link to the **furnace**. Green = good. The thermostat keeps controlling temperature even when Wi-Fi or the app link is down. |
-| 12 | **Hold pill** | Shows the active hold and its time remaining ("Hold 1:59", "Hold until next schedule", "Hold until you change it"). Tap it to choose a hold length or to **Resume schedule** (see *Everyday use*). Reads "Set a hold" when nothing is held. |
-| 13 | **Page menu** | Tap the logo (top-left) for the page menu — Home, Presets, Sensors, System, Settings, Diagnostics — or swipe. |
+| 1 | **Top bar** | Across the top: the **SlyTherm logo** (tap it for the page menu), the **Wi-Fi dot**, the **outdoor temperature**, and the **clock** (day + time once the thermostat has the time). |
+| 2 | **NOW temperature** | The large temperature on the left is the room temperature the thermostat is controlling to — a blend of your room sensors (see *Remote sensors*). Shows `--.-°` if no valid reading is available. Its colour warms to amber when heating, cools to blue when cooling. |
+| 3 | **Presence line** | Just under the big temperature: a short plain-language line such as which room is driving the reading, or whether the home is showing as occupied. |
+| 4 | **HEAT / COOL cards** | On the right, one or two cards show your **heat** setpoint (amber) and **cool** setpoint (blue) as big numbers, each with **– and +** buttons to change it in 0.5° steps. In HEAT you see the heat card, in COOL the cool card, in AUTO both stacked. The two setpoints always keep a minimum gap (see *Everyday use*). |
+| 5 | **Mode bar** | The segmented bar across the middle: tap **OFF / HEAT / COOL / AUTO / EM HEAT**. The active mode is highlighted. When the system is **OFF**, a "System off" note appears where the cards would be. |
+| 6 | **Hold pill** | Below the presence line: shows the active hold and its time remaining ("Hold • 1h 59m left", "Hold until next schedule", "Hold until you change it"). Tap it to choose a hold length or to **Resume schedule** (see *Everyday use*). Hidden when nothing is held and when the system is OFF. |
+| 7 | **Vacation banner** | A pill across the top of Home reading **"Vacation until <date>"** whenever a vacation is set (see *Schedules and presets*). It disappears on its own when the vacation ends. |
+| 8 | **Outdoor temperature** | In the top bar: the outside temperature the thermostat is using (from the heating equipment, an outdoor sensor, or a weather service). |
+| 9 | **Compressor protection countdown** | When the heat pump is resting between runs, the System page shows a countdown for when it may start again. This is normal protection, not a fault. |
+| 10 | **Alert banner** | The most recent alert, in plain language, appears when there is something to report — including the "no room temperature" notice if every room sensor is lost. Hidden when all is well. |
+| 11 | **Wi-Fi dot** | The small dot in the top bar shows the **Wi-Fi** link (green = connected). The thermostat keeps controlling temperature even when Wi-Fi or the app link is down; deeper link status lives on **Diagnostics**. |
+| 12 | **Page menu** | Tap the **SlyTherm logo** (top-left) to drop down the page menu — Home, Presets, Sensors, System, Settings, Diagnostics — or swipe left/right. |
 
 ## The other pages
 
 - **Presets** — the comfort presets (Home, Away, Sleep, and any your
   household has added) as cards. Tap one to apply it; the active preset is
-  outlined. Same as the preset row on Home, with a bit more room.
+  outlined. Same as tapping a preset elsewhere, with a bit more room. At the
+  bottom is a **Vacation** button that opens the on-device vacation planner
+  (see *Schedules and presets*).
 
-- **Sensors** — a table of every room sensor: its name, temperature, whether
-  the room is occupied, how fresh the reading is, whether it is currently
-  included in the room average, and its health. Tap a sensor's button to
-  include or exclude it. Useful for checking a sensor battery or seeing why a
-  room is being ignored.
+- **Sensors** — a table of every room sensor in aligned columns: **Room**
+  (its friendly name), **Temp** (its temperature), and **Status** (In use,
+  Following — the sensor currently driving the system, Away with how long, or
+  *stale* if the reading is old), with an **On/Off** button on the right to
+  include or exclude that room from the average. Useful for checking a sensor
+  battery or seeing why a room is being ignored.
 
 - **System** — a plain-language summary of what the equipment is doing right
   now (running equipment, the room average, outdoor temperature, compressor
@@ -54,7 +56,24 @@ menu, or swipe left/right.
 
 - **Diagnostics** — the alert history plus connection health (Wi-Fi, app
   link, furnace link), the compressor countdown, and the furnace's current
-  output. This is the page a service technician will ask you to read out.
+  output, including the CT-485 furnace-bus frame count when the bus is wired.
+  This is the page a service technician will ask you to read out.
+
+## Screens you will see now and then
+
+- **Ambient (screensaver)** — after a few minutes untouched, the screen dims
+  to a calm clock-and-temperature view so it isn't glaring in a dark room.
+  Touch anywhere to wake it back to Home; nothing about your heating changes
+  while it is dimmed.
+
+- **Welcome (first-time setup)** — the very first time the thermostat powers
+  up (or after a factory reset) it walks you through joining Wi-Fi and linking
+  the Home Assistant app. You will not normally see this again.
+
+- **Safe mode** — if the thermostat detects a problem with itself it falls
+  back to a stripped-down safe screen that still shows the temperature and
+  keeps the equipment's own safety systems in charge. If you ever see it,
+  note any message shown and contact your installer.
 
 ## Things worth knowing
 

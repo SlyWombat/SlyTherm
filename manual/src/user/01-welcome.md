@@ -1,6 +1,6 @@
 # Welcome
 
-Your ElectricRV Dual-Fuel Smart Thermostat controls two pieces of heating and
+Your SlyTherm Dual-Fuel Smart Thermostat controls two pieces of heating and
 cooling equipment as one system:
 
 - a **Dettson Chinook modulating gas furnace**, and
@@ -56,7 +56,7 @@ decides how to get there.
 | Item | Required? |
 | --- | --- |
 | Dettson Chinook furnace + Gree-built heat pump (professionally installed) | Yes |
-| The DT-1 wall thermostat (professionally installed and commissioned) | Yes |
+| The SlyTherm wall thermostat (professionally installed and commissioned) | Yes |
 | Home Assistant on your home network | For schedules, phone app, and remote sensors |
 | Remote room sensors (Zigbee or ESPHome-based) | Optional |
 | A working carbon monoxide (CO) alarm | **Yes — see the safety section** |

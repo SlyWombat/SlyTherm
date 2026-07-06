@@ -256,6 +256,13 @@ nav#TOC > ul > li > a { font-weight: 600; color: var(--heading); }
   padding-top: 2.5in;
 }
 
+.title-page img {                /* SlyTherm cover logo */
+  display: block;
+  width: 132px;
+  height: auto;
+  margin: 0 auto 1.4em;
+}
+
 .title-page h1 {
   break-before: avoid;           /* no page break before the title */
   page-break-before: avoid;

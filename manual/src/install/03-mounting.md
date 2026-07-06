@@ -2,7 +2,7 @@
 
 ## 3.1 Location
 
-Mount the DT-1 at the **existing OEM thermostat location**. This is
+Mount the SlyTherm wall unit at the **existing OEM thermostat location**. This is
 deliberate: the wall plate there already terminates R/C/1/2 (24 VAC power and
 the CT-485 bus), and the location was chosen by the original installer for
 representative room air. Do not relocate the controller to a wall cavity with
@@ -20,9 +20,9 @@ Standard thermostat-placement practice applies: interior wall, approximately
 2. Label every conductor at the wall plate before disconnecting anything
    (R, C, 1, 2, and any extras found in the survey).
 3. Install a **low-voltage old-work bracket** in the existing opening. The
-   bracket carries the DT-1 wall enclosure; no electrical box is required for
+   bracket carries the SlyTherm wall enclosure; no electrical box is required for
    Class-2 wiring, subject to local code.
-4. The DT-1 wall enclosure must house, behind the display:
+4. The SlyTherm wall enclosure must house, behind the display:
    - the isolated AC/DC converter module (Section 4);
    - the inline fuse and MOV;
    - the RS-485 transceiver carrier board with TVS protection;

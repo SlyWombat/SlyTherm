@@ -6,7 +6,7 @@
 
 ## 1.1 What this controller does — and does not — control
 
-The DT-1 **does not command the gas valve.** It sends a ClimateTalk (CT-485)
+The SlyTherm **does not command the gas valve.** It sends a ClimateTalk (CT-485)
 **heat demand** — a capacity *request* — over the furnace's RS-485 bus. The
 furnace's certified **Integrated Furnace Control (IFC)** is the only device
 that opens or modulates the gas valve, and the IFC independently enforces
@@ -28,7 +28,7 @@ The same boundary applies on the heat-pump side: the controller requests
 capacity; the Gree-built outdoor unit's own controls execute it. Note,
 however, that the outdoor unit's protections (pressure trips, restart delay,
 fault latching) are **equipment protections, not a certified life-safety
-chain** — the DT-1's own compressor timers and lockouts are the primary
+chain** — the SlyTherm's own compressor timers and lockouts are the primary
 protection layer (see Section 7).
 
 ## 1.2 Who may perform this work
@@ -51,11 +51,11 @@ protection layer (see Section 7).
   with an approved control**. The OEM communicating thermostat family
   (R02P032/R02P034; the original R02P030 is discontinued) is part of that
   certified configuration.
-- Installing the DT-1 in place of the OEM thermostat is a **modification of a
+- Installing the SlyTherm in place of the OEM thermostat is a **modification of a
   certified gas appliance's control system**. Riding the bus *as a
   thermostat* — with the IFC keeping all combustion safeties — does not alter
   the certified combustion-safety path, but it **is outside the certified
-  configuration**. The same logic applies on the heat-pump side: the DT-1
+  configuration**. The same logic applies on the heat-pump side: the SlyTherm
   stays on the thermostat side of the coil board / interface board and never
   touches the Gree-proprietary outdoor-unit link.
 - **Honest implications:** this installation **can void the furnace and
@@ -76,7 +76,7 @@ All of the following are required, not recommended:
    the CT-485 bus / thermostat terminals only; leave the R/C/1/2 terminal
    semantics intact; never open the Gree H1/H2 or COND links.
 2. **Install a carbon-monoxide (CO) alarm** in the dwelling and verify it
-   works. This is a precondition of running the DT-1, not an option.
+   works. This is a precondition of running the SlyTherm, not an option.
 3. **Retain an OEM thermostat for rollback.** Keep a Dettson R02P034
    (communicating) — or an R02P033 for a conventional installation — on site
    so the system can be returned to its certified configuration in minutes
@@ -95,7 +95,7 @@ All of the following are required, not recommended:
 > short R to V/W2.
 
 > **CAUTION — 24 VAC is AC, and furnace boards commonly half-wave-rectify
-> with the C terminal shared.** Powering the DT-1 from anything other than
+> with the C terminal shared.** Powering the SlyTherm from anything other than
 > the specified **isolated** AC-input supply, or bonding the controller's DC
 > ground to furnace C, can short a half-cycle of the transformer and blow the
 > furnace's control fuse (Section 4).
@@ -108,7 +108,7 @@ All of the following are required, not recommended:
 
 ## 1.6 Loss of heat is also a hazard
 
-The DT-1's design fails toward **no demand** on any fault. The flip side is
+The SlyTherm's design fails toward **no demand** on any fault. The flip side is
 that a sustained fault in heating season means **no heat** — itself a hazard
 (frozen pipes, habitability). The controller raises an escalating alarm
 (on-screen and via Home Assistant) on sustained forced-no-demand; the

@@ -2,7 +2,7 @@
 
 ## 2.1 What you are installing
 
-The DT-1 is a **single wall-mounted touchscreen controller** installed at the
+The SlyTherm is a **single wall-mounted touchscreen controller** installed at the
 location of the OEM thermostat. The existing thermostat wall plate already
 carries the four conductors the controller needs in a communicating system:
 
@@ -40,7 +40,7 @@ either case, and do not purchase Case-B hardware before the survey.
 
 The outdoor unit is reached *via the bus*: a Dettson K03085 interface board
 inside the furnace (RJ-11 cable to the IFC; COND-1/2/3 plus a
-Gree-proprietary link to the outdoor unit) is a CT-485 node, and the DT-1
+Gree-proprietary link to the outdoor unit) is a CT-485 node, and the SlyTherm
 sends heat-pump and cooling demands to it over the same two bus wires already
 at the wall. **No additional output hardware is required.** The 24 V sense
 inputs described in Section 6 are still recommended as permanent
@@ -53,7 +53,7 @@ instrumentation.
 A true Gree FLEXX outdoor unit is **not a CT-485 node** — it is commanded by
 conventional 24 V signals at the cased-coil board (its H1/H2 RS-485 link is
 Gree-proprietary and must never be touched). In this case, gas demand stays
-on CT-485, and the DT-1 adds a **24 V relay output stage** (Y1, Y2 if
+on CT-485, and the SlyTherm adds a **24 V relay output stage** (Y1, Y2 if
 supported, O/B, G) plus opto-isolated sense inputs and a hardwired condensate
 float switch (Section 6).
 

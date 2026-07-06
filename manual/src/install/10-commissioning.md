@@ -1,6 +1,6 @@
 # 10. Commissioning
 
-Commissioning is **not optional**. The DT-1's safety case rests on behaviors
+Commissioning is **not optional**. The SlyTherm's safety case rests on behaviors
 that must be **proven on the installed equipment** — most importantly that
 every demand channel reaches zero under every induced fault. The system must
 not be left in service until every item below is signed off, and a licensed

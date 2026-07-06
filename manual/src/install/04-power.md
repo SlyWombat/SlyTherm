@@ -2,7 +2,7 @@
 
 ## 4.1 Source and budget
 
-The DT-1 is powered from the furnace's 24 VAC control transformer via the
+The SlyTherm is powered from the furnace's 24 VAC control transformer via the
 **R** and **C** conductors at the wall plate.
 
 | Item | Value |
@@ -10,7 +10,7 @@ The DT-1 is powered from the furnace's 24 VAC control transformer via the
 | Nominal supply | 24 VAC RMS (≈ 34 V peak) |
 | Real-world supply | HVAC transformers run hot: 28–30 VAC at light load → **40 V+ peak**. The converter front end must be rated ≥ 50 V input |
 | Transformer capacity | Typically 40 VA with little headroom |
-| DT-1 draw | Display-class board: 1.6–2.25 W verified; **≤ ~3 VA** from the transformer including conversion losses |
+| SlyTherm draw | Display-class board: 1.6–2.25 W verified; **≤ ~3 VA** from the transformer including conversion losses |
 | Transients | Processor + Wi-Fi peaks ~500 mA @ 3.3 V, 600 mA+ transient; display backlight inrush at power-up |
 
 ## 4.2 Isolated supply — mandatory

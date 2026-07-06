@@ -31,7 +31,7 @@ The rollback device is kept **on site** as a condition of installation
    `active_equipment` to read `idle`. If the controller is dead, skip this
    step — equipment will drop its calls on bus silence / open relays.
 2. Kill 24 VAC to the control circuit (furnace service switch).
-3. Remove the DT-1 display from its bracket and disconnect the field wiring
+3. Remove the SlyTherm display from its bracket and disconnect the field wiring
    at the enclosure terminal blocks: R, C, 1, 2 — and, in Case B, Y1/(Y2)/
    O-B/G and the sense conductors.
 4. **Leave the hardwired condensate float switch in the Y circuit** — it is
@@ -45,12 +45,12 @@ The rollback device is kept **on site** as a condition of installation
    (communicating models) or controls conventionally.
 8. Run one heat call (and one cool call, in season) to completion of startup
    to confirm normal operation.
-9. In Home Assistant, the DT-1 entities will go `offline` (Last Will);
+9. In Home Assistant, the SlyTherm entities will go `offline` (Last Will);
    disable any automations that command them.
 
 ## 11.4 Returning to service
 
-Re-installation of the DT-1 after a rollback repeats the relevant parts of
+Re-installation of the SlyTherm after a rollback repeats the relevant parts of
 commissioning (Section 10): boot-silence check, the fault-injection rows for
 any channel whose wiring was touched, and the interlock tests if Case-B
 wiring was disturbed.

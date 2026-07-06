@@ -2,7 +2,7 @@
 
 ## The short version
 
-There is no "ElectricRV app" to download — and that's a feature. Phone
+There is no "SlyTherm app" to download — and that's a feature. Phone
 control uses the free **Home Assistant Companion app** (iOS and Android),
 talking to *your own* Home Assistant system inside your own home. No cloud
 account, no subscription, no company server between your finger and your

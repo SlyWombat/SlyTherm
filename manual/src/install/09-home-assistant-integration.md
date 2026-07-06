@@ -1,6 +1,6 @@
 # 9. Home Assistant Integration
 
-The DT-1 integrates with Home Assistant (HA) over **MQTT on the local
+The SlyTherm integrates with Home Assistant (HA) over **MQTT on the local
 network only** — no cloud service is used or required. HA is a
 **supervisory** layer: dashboards, schedules, remote sensors, history, and
 phone access. Every control HA offers also works (or degrades safely) when
@@ -92,9 +92,15 @@ an **HA bridge automation** that republishes them to MQTT:
   firmware's per-sensor staleness timeout (default 300 s) requires the live
   cadence; non-retained publication ensures a dead broker cannot replay
   stale temperatures.
-- **Roster/config topic:** retained JSON at `slytherm/config/sensors` —
-  sensor ids, which presets each sensor participates in, and per-sensor
-  staleness overrides.
+- **Per-sensor presence topic:** retained publication at
+  `slytherm/sensors/<id>/presence`, carrying the sensor's last-seen or
+  present/away state. Because it is retained, it **seeds the controller's
+  sticky home/away on boot** — a rebooting controller recovers each sensor's
+  presence immediately, before the first live heartbeat arrives.
+- **Roster/config topic:** retained JSON at `slytherm/config/sensors`. Each
+  sensor entry carries its **`id`**, a friendly **`name`** (the display name
+  shown on the wall Sensors screen), which presets the sensor participates
+  in, and per-sensor staleness overrides.
 
 Sensor **fusion happens in the controller, not in HA templates** — the
 control input must survive an HA outage, and per-sensor health must be

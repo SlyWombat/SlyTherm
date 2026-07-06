@@ -1,20 +1,30 @@
-# ElectricRV Dual-Fuel Smart Thermostat — Technical Installation Manual
+::: {.title-page}
 
-> **DRAFT v0.3 — PRE-RELEASE, NOT FOR FIELD USE**
+![](theme/slytherm-mark.png)
+
+# SlyTherm Dual-Fuel Smart Thermostat {.unlisted .unnumbered}
+
+[Installation & Commissioning Manual]{.doc-title}
+
+[Model ST-1 (Dettson dual-fuel edition)]{.model}
+
+[SlyTherm]{.manufacturer}
+
+[DRAFT v0.4 — PRE-RELEASE, NOT FOR FIELD USE]{.draft-banner}
+
+| Revision | Date | Changes |
+| --- | --- | --- |
+| 0.3 | 2026-06-11 | Pre-release draft: installation, wiring, CT-485 bus, relay stage, HA integration, commissioning, rollback |
+| 0.4 | 2026-07-06 | SlyTherm branding; onboard isolated RS-485 (GPIO43/44); HA topic + roster validation |
+
+:::
+
+> **DRAFT v0.4 — PRE-RELEASE, NOT FOR FIELD USE**
 >
 > This manual describes a design that has not yet completed bench validation or
 > field commissioning. Several behaviors of the installed equipment are still
 > pending verification and are explicitly marked as such throughout. Do not
 > install this product from this draft.
-
-| | |
-| --- | --- |
-| **Product** | ElectricRV Dual-Fuel Smart Thermostat |
-| **Model** | DT-1 (Dettson/Gree edition) |
-| **Manufacturer** | ElectricRV |
-| **Document** | Technical Installation and Integration Manual |
-| **Revision** | 0.3 (see Revision History, final section) |
-| **Date** | 2026-06-11 |
 
 *Product, model, and manufacturer names are provisional branding and may
 change before release.*
@@ -28,7 +38,7 @@ Home Assistant integration, commissioning, and rollback.
 
 A separate **User Manual** covers day-to-day operation of the thermostat.
 
-The DT-1 is designed for one specific equipment family:
+The SlyTherm is designed for one specific equipment family:
 
 - **Furnace:** Dettson Chinook modulating gas furnace (ClimateTalk / CT-485
   communicating control, 40–100 % modulation).
@@ -36,7 +46,7 @@ The DT-1 is designed for one specific equipment family:
   either a communicating Dettson Alizé configuration (with the Dettson
   K03085 interface board) or a conventional 24 V Gree FLEXX configuration.
 
-Do not install the DT-1 on any other equipment.
+Do not install the SlyTherm on any other equipment.
 
 ## Who may install this product
 

@@ -1,8 +1,8 @@
 # 7. The Safety Chain
 
 This section explains, for the installer, how the system fails safe — what
-the certified equipment enforces on its own, what the DT-1 enforces, and
-what the external hardware enforces even when the DT-1's processor is dead.
+the certified equipment enforces on its own, what the SlyTherm enforces, and
+what the external hardware enforces even when the SlyTherm's processor is dead.
 Understanding this is a prerequisite for the commissioning tests in
 Section 10.
 
@@ -10,21 +10,21 @@ Section 10.
 
 ## 7.1 Division of enforcement
 
-| Layer | Enforces | Independent of the DT-1? |
+| Layer | Enforces | Independent of the SlyTherm? |
 | --- | --- | --- |
 | **Furnace IFC (certified)** | Flame sensing/lockout, primary high-limit, rollout, pressure/vent proving, ignition-trial limits, modulation ceiling | **Yes** — not on the bus, cannot be disabled over CT-485 |
 | **Heat-pump outdoor unit (equipment protections, not a certified chain)** | High/low refrigerant pressure trips, high discharge temperature, compressor overload, inverter-module protection, internal ~3-minute restart delay, minimum run time. Repeated trips **latch a manual-reset fault** | Yes — but treat as a **backstop only**. Note: smaller units have *no* low-pressure switch, and these are equipment protections, not life-safety. Verify the installed model's protections against its manual during the survey |
 | **External hardware (watchdog, pull resistors, float switch)** | No-demand on processor hang; bus silence at boot; relays open at boot; cooling call broken on condensate overflow | Yes — works with the processor dead |
-| **DT-1 firmware** | Everything in 7.3 | No — which is why the layers above exist |
+| **SlyTherm firmware** | Everything in 7.3 | No — which is why the layers above exist |
 
 Relying on the outdoor unit's 3-minute delay as the anti-short-cycle
 mechanism is **not acceptable**: repeated trips latch manual-reset faults
-that strand the system. The DT-1's compressor timers are the primary
+that strand the system. The SlyTherm's compressor timers are the primary
 protection.
 
 ## 7.2 Fail-to-no-demand, explained for installers
 
-The DT-1's prime directive: **on any abnormal condition, fail to NO-DEMAND on
+The SlyTherm's prime directive: **on any abnormal condition, fail to NO-DEMAND on
 all channels** — heat, cool, fan, backup/aux, defrost — and, in Case B, all
 relays de-energized — **without violating compressor minimum timers on the
 way down or back up**.
@@ -53,7 +53,7 @@ A flapping fault must not short-cycle the compressor through the failsafe
 path itself: recovery from any failsafe trip passes through the compressor
 minimum-off timer like any other start.
 
-## 7.3 What the DT-1 firmware enforces
+## 7.3 What the SlyTherm firmware enforces
 
 - **Compressor protection (primary):** minimum OFF time, minimum ON time,
   maximum starts/hour, post-boot hold-off — with timer state persisted so a
@@ -62,7 +62,7 @@ minimum-off timer like any other start.
 - **Mutual exclusion of gas heat and compressor heat** — prohibited by the
   manufacturer (the heat-pump coil sits downstream of the heat exchanger;
   gas-heated air entering the coil drives head pressure toward the
-  high-pressure cutout). Nothing at the bus level enforces this; the DT-1
+  high-pressure cutout). Nothing at the bus level enforces this; the SlyTherm
   does, at its single demand-emission point. Defrost tempering is the sole
   sanctioned overlap, with a fixed demand and a 15-minute hard cap.
 - **Low-ambient compressor lockout and dual-fuel balance-point logic**, with
@@ -151,7 +151,7 @@ alone is not sufficient once relays exist. The watchdog **remains armed at
 all times**, including during firmware updates — there is no "disable for
 update" mode.
 
-The DT-1's processor-internal watchdog only reboots the chip; it is a
+The SlyTherm's processor-internal watchdog only reboots the chip; it is a
 convenience layer, not the safety layer. The layered set is: internal task
 watchdog (hung task) → external hardware watchdog (dead chip) → equipment
 comms-loss timeout (catch-all).

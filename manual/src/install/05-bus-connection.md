@@ -13,11 +13,11 @@
 Keep the bus pair **twisted** all the way to the transceiver, and keep the
 tap stub **shorter than ~0.3 m**.
 
-![Wall-plate wiring — R/C power and CT-485 bus to the DT-1](diagrams/inst-wall-plate-wiring.svg)
+![Wall-plate wiring — R/C power and CT-485 bus to the SlyTherm wall unit](diagrams/inst-wall-plate-wiring.svg)
 
 ## 5.2 Transceiver requirements
 
-The DT-1's transceiver (on the carrier board behind the display) must meet
+The SlyTherm board's transceiver (on the carrier board behind the display) must meet
 all of these — substitutions that miss any one of them break the safety
 chain:
 
@@ -31,6 +31,14 @@ chain:
 - **DE/RE pulled to the receive/idle state by a resistor**, so a booting,
   resetting, or crashed controller **releases the bus and stays silent**.
 - Powered from the controller's clean 3.3 V rail.
+
+> **Onboard transceiver.** The SlyTherm carrier board satisfies these
+> requirements on-board: it provides a **galvanically-isolated RS-485
+> transceiver** whose A/B data lines are driven from the ESP32-S3 UART0 on
+> **GPIO43 (TX)** and **GPIO44 (RX)**, with the DE/RE direction control on a
+> controller GPIO that the external hardware watchdog can force off
+> (Section 7). Because the transceiver is isolated, the isolation requirement
+> of Sections 4 and 5.4 is met at the board — no external isolator is needed.
 
 ## 5.3 Line protection
 
@@ -62,7 +70,7 @@ node physically becomes the bus end at the wall, the answer differs from a
 mid-bus tap. That is why this measurement is performed **at the wall plate**,
 not assumed from the furnace end.
 
-**Procedure (at the wall plate, before connecting the DT-1's A/B lines):**
+**Procedure (at the wall plate, before connecting the SlyTherm's A/B lines):**
 
 1. With the system powered **off**, measure the DC resistance between
    terminals 1 and 2 (A–B).
@@ -95,7 +103,7 @@ not assumed from the furnace end.
 ## 5.7 Boot silence and bus discipline
 
 The CT-485 bus carries the furnace's own control traffic; corrupting it is a
-failure mode in its own right. The DT-1's bus discipline (all enforced in
+failure mode in its own right. The SlyTherm's bus discipline (all enforced in
 firmware, verified at commissioning):
 
 - **Silent at boot/reset** — DE is resistor-pulled off; the oscilloscope
@@ -114,6 +122,6 @@ firmware, verified at commissioning):
 > transmit path.
 
 > **WARNING — one thermostat only.** The OEM communicating thermostat must be
-> **removed from the bus** before the DT-1 ever transmits. Two masters on a
+> **removed from the bus** before the SlyTherm ever transmits. Two masters on a
 > coordinator-polled bus is undefined behavior. (Keep the OEM thermostat on
 > site for rollback — Section 11.)

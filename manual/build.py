@@ -59,9 +59,9 @@ BUILD = ROOT / 'build'                          # gitignored
 BUILD_DIAGRAMS = BUILD / 'diagrams'
 PDF_DIR = PROJECT / 'docs' / 'manuals'
 
-PRODUCT = 'ElectricRV Dual-Fuel Smart Thermostat'
-MODEL = 'DT-1 (Dettson/Gree edition)'
-DRAFT = 'DRAFT v0.3'
+PRODUCT = 'SlyTherm Dual-Fuel Smart Thermostat'
+MODEL = 'ST-1 (Dettson dual-fuel edition)'
+DRAFT = 'DRAFT v0.4'
 
 MANUALS = {
     'user': {'title': 'User Manual', 'pdf': 'USER_MANUAL.pdf'},
