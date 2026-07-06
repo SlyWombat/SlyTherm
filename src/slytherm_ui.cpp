@@ -207,7 +207,7 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   // top-justified with the card's value (mockup 04-home: hero + card center-aligned as a pair)
   lv_obj_t*nl=lv_label_create(tab); lv_label_set_text(nl,"NOW"); eyebrow(nl); lv_obj_set_style_text_color(nl,lv_color_hex(COL_TEXT3),0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,26,98);
   wTemp=lv_label_create(tab); lv_obj_set_style_text_font(wTemp,&font_now80,0); lv_obj_set_style_text_color(wTemp,lv_color_hex(COL_INK),0); lv_obj_align(wTemp,LV_ALIGN_TOP_LEFT,26,110);
-  lv_obj_align_to(nl,wTemp,LV_ALIGN_OUT_TOP_LEFT,2,6);  // NOW positioned RELATIVE to the temp (its bottom just above the digit line box — never overwrites)
+  lv_obj_align_to(nl,wTemp,LV_ALIGN_OUT_TOP_LEFT,2,-10);  // NOW above the temp digits (negative y lifts it clear — the Thin font's digits sit at the line-box top, so a positive offset overwrote them)
   wDeg=lv_label_create(tab); lv_label_set_text(wDeg,"\xC2\xB0"); lv_obj_set_style_text_font(wDeg,&lv_font_montserrat_48,0); lv_obj_set_style_text_color(wDeg,lv_color_hex(COL_INK),0); lv_obj_align_to(wDeg,wTemp,LV_ALIGN_OUT_RIGHT_TOP,2,12);  // ° superscript (re-aligned each render — digits change width)
   wAction=lv_label_create(tab); lv_obj_set_style_text_font(wAction,&lv_font_montserrat_20,0); lv_obj_set_style_bg_opa(wAction,LV_OPA_TRANSP,0);
   lv_obj_align(wAction,LV_ALIGN_TOP_LEFT,26,270);
