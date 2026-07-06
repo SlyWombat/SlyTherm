@@ -1779,7 +1779,14 @@ void setup() {
         gPrefs.putBytes("fwid", (const void*)d.app_elf_sha256, 8);
         gPrefs.putBool("rui", false);
         ResetLoopBlob z{}; gPrefs.putBytes("rl", &z, sizeof(z));
-        Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch");
+        // #87: a fresh firmware flash must NOT resurrect a stale hold pill. Clear
+        // the persisted hold and reset its change-detect shadow so the restore
+        // block below boots with no hold and it re-persists cleanly. A normal
+        // power-cycle (same firmware) keeps the persisted hold and still restores
+        // a legit active hold.
+        gPrefs.putUChar("hold", 0);
+        gShadow.hold = 0xFF;
+        Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch + hold");
       } } }
   gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
