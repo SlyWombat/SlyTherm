@@ -209,6 +209,21 @@ struct SensorReading {
 // Range gating of temp itself (5-40 C etc.) belongs to SensorFusion.
 bool parseSensorJson(const char* json, SensorReading& out);
 
+// ---------- Retained presence JSON (issue #88) ----------
+// {"occupied": <bool>, "last_seen": <unix seconds>}
+// Published RETAINED per room on slytherm/sensors/<id>/presence, so a thermostat
+// that reboots/reconnects seeds the last-known home/away state immediately.
+// last_seen is parsed as a full-precision integer (a float would round ~1.7e9 to
+// the nearest ~128 s). Missing/malformed fields are marked absent; returns true
+// if the object carries either field.
+struct PresenceReading {
+  bool     hasOccupied = false;
+  bool     occupied    = false;
+  bool     hasLastSeen = false;
+  uint32_t lastSeen    = 0;   // unix seconds; caller converts to its own timebase
+};
+bool parsePresenceJson(const char* json, PresenceReading& out);
+
 // ---------- Smart recovery next-target (docs/06 "Smart recovery") ----------
 // slytherm/cmd/next_target: HA publishes the next scheduled preset/setpoint
 // change as JSON {"temp": C, "mode": "heat"|"cool", "in_s": seconds}.

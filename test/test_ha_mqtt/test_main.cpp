@@ -602,6 +602,38 @@ static void test_sensor_json_bad_optional_fields_dropped_not_fatal() {
   TEST_ASSERT_FALSE(r.hasHum);
 }
 
+// ---------- retained presence JSON (issue #88) ----------
+
+static void test_parse_presence_json() {
+  PresenceReading p;
+  // Full message.
+  TEST_ASSERT_TRUE(parsePresenceJson("{\"occupied\":true,\"last_seen\":1751731200}", p));
+  TEST_ASSERT_TRUE(p.hasOccupied);
+  TEST_ASSERT_TRUE(p.occupied);
+  TEST_ASSERT_TRUE(p.hasLastSeen);
+  TEST_ASSERT_EQUAL_UINT32(1751731200u, p.lastSeen);   // full integer precision, no float rounding
+
+  // Vacant + key order + whitespace + unknown keys.
+  TEST_ASSERT_TRUE(parsePresenceJson("{ \"last_seen\": 1700000000 , \"occupied\": false, \"x\":1 }", p));
+  TEST_ASSERT_TRUE(p.hasOccupied);
+  TEST_ASSERT_FALSE(p.occupied);
+  TEST_ASSERT_EQUAL_UINT32(1700000000u, p.lastSeen);
+
+  // occupied-only (no timestamp) still usable.
+  TEST_ASSERT_TRUE(parsePresenceJson("{\"occupied\":true}", p));
+  TEST_ASSERT_TRUE(p.hasOccupied);
+  TEST_ASSERT_FALSE(p.hasLastSeen);
+
+  // Rejections / absences.
+  TEST_ASSERT_FALSE(parsePresenceJson(nullptr, p));
+  TEST_ASSERT_FALSE(parsePresenceJson("", p));
+  TEST_ASSERT_FALSE(parsePresenceJson("{}", p));                    // neither field
+  // occupied:null -> absent; last_seen:0 -> treated as absent -> nothing usable.
+  TEST_ASSERT_FALSE(parsePresenceJson("{\"occupied\":null,\"last_seen\":0}", p));
+  TEST_ASSERT_FALSE(p.hasOccupied);
+  TEST_ASSERT_FALSE(p.hasLastSeen);
+}
+
 // ---------- smart recovery next_target (issue #50) ----------
 
 static void test_next_target_topic() {
@@ -798,6 +830,7 @@ int main() {
   RUN_TEST(test_sensor_json_missing_and_null_fields_tolerated);
   RUN_TEST(test_sensor_json_invalid_temp_rejected);
   RUN_TEST(test_sensor_json_bad_optional_fields_dropped_not_fatal);
+  RUN_TEST(test_parse_presence_json);
   RUN_TEST(test_next_target_topic);
   RUN_TEST(test_parse_next_target_valid_and_tolerant);
   RUN_TEST(test_parse_next_target_rejects_junk);

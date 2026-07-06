@@ -205,6 +205,20 @@ bool numberToken(const char* q, float& out) {
   return true;
 }
 
+// Parses a non-negative integer token (issue #88 last_seen = unix seconds).
+// strtoull keeps full precision (a float rounds ~1.7e9 to the nearest ~128 s).
+// The token must end at , } or end-of-input; overflow clamps to UINT32_MAX.
+bool uint32Token(const char* q, uint32_t& out) {
+  char* end = nullptr;
+  unsigned long long v = std::strtoull(q, &end, 10);
+  if (end == q) return false;
+  const char* t = skipWs(end);
+  if (*t != ',' && *t != '}' && *t != '\0') return false;
+  if (v > 0xFFFFFFFFULL) v = 0xFFFFFFFFULL;
+  out = static_cast<uint32_t>(v);
+  return true;
+}
+
 bool keywordToken(const char* q, const char* kw) {
   size_t n = std::strlen(kw);
   if (std::strncmp(q, kw, n) != 0) return false;
@@ -283,6 +297,26 @@ bool parseSensorJson(const char* json, SensorReading& out) {
     out.humidityPct = v;
   }
   return out.hasTemp;  // a reading without a valid temp is unusable
+}
+
+bool parsePresenceJson(const char* json, PresenceReading& out) {
+  out = PresenceReading{};
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+
+  const char* o = findValue(json, "occupied");
+  if (o != nullptr) {
+    if (keywordToken(o, "true")) { out.hasOccupied = true; out.occupied = true; }
+    else if (keywordToken(o, "false")) { out.hasOccupied = true; out.occupied = false; }
+    // null / malformed -> absent
+  }
+  uint32_t ts = 0;
+  const char* l = findValue(json, "last_seen");
+  if (l != nullptr && uint32Token(l, ts) && ts > 0) {
+    out.hasLastSeen = true;
+    out.lastSeen = ts;
+  }
+  return out.hasOccupied || out.hasLastSeen;  // usable if it carries either field
 }
 
 bool parseNextTargetJson(const char* json, NextTarget& out) {

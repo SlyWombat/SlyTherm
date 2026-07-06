@@ -54,6 +54,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <ctime>  // #88: time(nullptr) to convert HA's unix last_seen -> monotonic
 
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -195,6 +196,10 @@ struct Pending {
   OffsetCmd offsets[8]; size_t offsetCount = 0;
   struct Sample { uint8_t idx; float tempC; int8_t occ; };  // occ: -1 unknown
   Sample samples[32]; size_t sampleCount = 0;
+  // #88: HA-reported presence, converted to the monotonic timebase in the MQTT
+  // handler (hasSeen=false when the timestamp is unknown / clock unsynced).
+  struct PresenceSample { uint8_t idx; bool occupied; uint32_t lastSeenS; bool hasSeen; };
+  PresenceSample presence[16]; size_t presenceCount = 0;
   bool anyInbound = false;  // any accepted MQTT traffic (setpoint-staleness clock)
 };
 Pending gPending;
@@ -558,11 +563,42 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (strncmp(topic, sensPrefix, strlen(sensPrefix)) == 0) {
     const char* id = topic + strlen(sensPrefix);
     const char* slash = strchr(id, '/');
-    if (!slash || strcmp(slash, "/state") != 0) return;
+    if (!slash) return;
     char name[kSensorNameLen];
     size_t n = static_cast<size_t>(slash - id);
     if (n == 0 || n >= sizeof(name)) return;
     memcpy(name, id, n); name[n] = '\0';
+    // #88: retained presence — {"occupied":bool,"last_seen":<unix>}. Convert HA's
+    // unix last_seen into our monotonic timebase using the wall clock, then queue.
+    if (strcmp(slash, "/presence") == 0) {
+      hm::PresenceReading pr;
+      if (!hm::parsePresenceJson(buf, pr)) return;
+      xSemaphoreTake(gCmdMux, portMAX_DELAY);
+      uint8_t idx = findSensor(name);
+      if (idx != 0xFF && idx != 0 && gPending.presenceCount < 16) {
+        const bool occupied = pr.hasOccupied ? pr.occupied : false;
+        const uint32_t nowMono = nowSeconds();
+        uint32_t lastSeenMono = 0; bool hasSeen = false;
+        if (pr.hasLastSeen) {
+          const time_t epoch = time(nullptr);
+          if (epoch > static_cast<time_t>(1600000000) &&
+              pr.lastSeen <= static_cast<uint32_t>(epoch)) {
+            const uint32_t age = static_cast<uint32_t>(epoch) - pr.lastSeen;
+            lastSeenMono = nowMono > age ? nowMono - age : 0;
+            hasSeen = true;
+          } else if (occupied) {          // clock unsynced but occupied now -> seen now
+            lastSeenMono = nowMono; hasSeen = true;
+          }  // future/implausible last_seen while vacant -> leave unplaced
+        } else if (occupied) {
+          lastSeenMono = nowMono; hasSeen = true;
+        }
+        gPending.presence[gPending.presenceCount++] = {idx, occupied, lastSeenMono, hasSeen};
+        gPending.anyInbound = true;
+      }
+      xSemaphoreGive(gCmdMux);
+      return;
+    }
+    if (strcmp(slash, "/state") != 0) return;
     hm::SensorReading r;
     if (!hm::parseSensorJson(buf, r) || !r.hasTemp) return;
     xSemaphoreTake(gCmdMux, portMAX_DELAY);
@@ -774,7 +810,8 @@ void subscribeAll() {
       hm::topic::kCmdMode, hm::topic::kCmdFanMode, hm::topic::kCmdPreset,
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
-      cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/cmd/sensor/+/offset"};
+      cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
+      "slytherm/cmd/sensor/+/offset"};
   for (const char* t : topics) gMqtt.subscribe(t);
 }
 
@@ -1208,6 +1245,10 @@ void consumeCommands(uint32_t nowS) {
                    s.occ < 0 ? Occupancy::kUnknown
                              : (s.occ ? Occupancy::kOccupied : Occupancy::kVacant),
                    nowS);
+  }
+  for (size_t i = 0; i < p.presenceCount; ++i) {  // #88: HA last_seen presence ledger
+    const auto& pr = p.presence[i];
+    gFusion.updatePresence(pr.idx, pr.occupied, pr.lastSeenS, pr.hasSeen, nowS);
   }
   for (size_t i = 0; i < p.offsetCount; ++i) {
     gFusion.setSensorOffsetC(p.offsets[i].idx, p.offsets[i].offsetC);
@@ -1703,6 +1744,20 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       r.lastOccAgeS = stt.lastOccAgeS;
     }
     gUi.setSensorRows(rows, rn);
+  }
+  // #88: presence line — sticky home/away from HA's REPORTED last_seen (3 h
+  // across all presence sensors), decoupled from the motion window + temp
+  // staleness. valid=anyReporting so with no presence sensor the UI falls back
+  // to the temp-health text ("Local sensor only" / "No room sensor reporting").
+  {
+    const PresenceState pres = gFusion.presence(nowS);
+    char room[kSensorNameLen] = "";
+    if (pres.present && pres.dominantId != 0xFF && pres.dominantId < kFusionSlots) {
+      const SensorEntry& e = gSensorTable[pres.dominantId];
+      strlcpy(room, e.disp[0] ? e.disp : e.name, sizeof(room));
+    }
+    gUi.setPresence(pres.anyReporting, pres.present, pres.anyReporting, room,
+                    pres.lastSeenAgeS);
   }
   safety::syncAlarmsToUi(gSup->alarms(), gUi);
   uiUnlock();

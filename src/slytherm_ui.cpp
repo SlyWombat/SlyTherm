@@ -768,6 +768,33 @@ void layoutCard(lv_obj_t*c,lv_obj_t*val,bool big,uint32_t rail){ if(!c||!val) re
     if(mn){ lv_obj_set_size(mn,60,60); lv_obj_align(mn,LV_ALIGN_RIGHT_MID,-92,18); }   // - and + to the RIGHT of the value, wide gap between them
     if(pl){ lv_obj_set_size(pl,60,60); lv_obj_align(pl,LV_ALIGN_RIGHT_MID,-16,18); } } }
 
+// #88: presence line, shared by Home + ambient. The sticky HA-last-seen
+// presence (3 h across all presence sensors) wins when a presence sensor is
+// reporting: Present -> "Reading <dominant room> * Present"; away -> "Nobody
+// home". With NO presence sensor reporting we fall back to the legacy temp-
+// source description (which rooms are read / degraded / no sensor).
+void fillPresenceLine(const DisplayState& s, char* b, size_t n){
+  const DisplayState::PresenceView& p = s.presence;
+  if(p.valid && p.anyReporting){
+    if(p.present){
+      if(p.roomName[0]) snprintf(b,n,"Reading %s \xE2\x80\xA2 Present",p.roomName);
+      else              snprintf(b,n,"Present");
+    } else snprintf(b,n,"Nobody home");
+    return;
+  }
+  const SensorRow* recent=nullptr; uint32_t bestAge=0xFFFFFFFFu; int nHealthy=0;
+  for(uint8_t i=0;i<s.sensorCount;i++){ const SensorRow&r=s.sensors[i]; if(!r.participating) continue;
+    if(r.healthy) nHealthy++;                                   // count only rooms actually contributing
+    uint32_t age=r.occupied?0u:r.lastOccAgeS;                   // most-recently-occupied wins (any room)
+    if(age<bestAge){ bestAge=age; recent=&r; } }
+  if(recent && recent->occupied) snprintf(b,n,"Reading %s \xE2\x80\xA2 Present",recent->name);
+  else if(recent && bestAge<3600u) snprintf(b,n,"Reading %s \xE2\x80\xA2 Last entered %lu min ago",recent->name,(unsigned long)(bestAge/60u));
+  else if(recent && bestAge<10800u) snprintf(b,n,"Reading %s \xE2\x80\xA2 Last entered %lu hr ago",recent->name,(unsigned long)((bestAge+1800u)/3600u));
+  else if(nHealthy>0) snprintf(b,n,"Nobody home \xE2\x80\xA2 averaging %d rooms",nHealthy);
+  else if(s.degradedMode) snprintf(b,n,"Local sensor only");   // only when a local slot exists (#73)
+  else snprintf(b,n,"No room sensor reporting");                // no local fallback: fails to no-demand
+}
+
 // ---- render from a model snapshot ----
 void renderMain(const DisplayState& s){ char b[128];
   snprintf(b,sizeof(b),"%.1f",(double)s.fusedTempC); setTxt(wTemp, s.fusedTempValid?b:"--.-");
@@ -779,18 +806,7 @@ void renderMain(const DisplayState& s){ char b[128];
     else if(s.mode==UserMode::kAuto){ snprintf(b,sizeof(b),"Idle - holding %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     else { strcpy(b,"Idle"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     setTxt(wAction,b); }
-  { const SensorRow* recent=nullptr; uint32_t bestAge=0xFFFFFFFFu; int nHealthy=0;
-    for(uint8_t i=0;i<s.sensorCount;i++){ const SensorRow&r=s.sensors[i]; if(!r.participating) continue;
-      if(r.healthy) nHealthy++;                                   // count only rooms actually contributing
-      uint32_t age=r.occupied?0u:r.lastOccAgeS;                   // most-recently-occupied wins (any room, not just dominant)
-      if(age<bestAge){ bestAge=age; recent=&r; } }
-    if(recent && recent->occupied) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Present",recent->name);
-    else if(recent && bestAge<3600u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu min ago",recent->name,(unsigned long)(bestAge/60u));
-    else if(recent && bestAge<10800u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu hr ago",recent->name,(unsigned long)((bestAge+1800u)/3600u));
-    else if(nHealthy>0) snprintf(b,sizeof(b),"Nobody home \xE2\x80\xA2 averaging %d rooms",nHealthy);
-    else if(s.degradedMode) strcpy(b,"Local sensor only");   // only when a local slot exists (#73)
-    else strcpy(b,"No room sensor reporting");                // no local fallback: fails to no-demand
-    setTxt(wFollow,b); }
+  fillPresenceLine(s,b,sizeof(b)); setTxt(wFollow,b);   // #88: sticky HA-last-seen presence
   if(gHoldLbl){ char hb[40];   // hold pill (#81): active hold + remaining, or a prompt to set one
     switch(s.holdType){
       case HoldType::kTwoHours: case HoldType::kFourHours:
@@ -882,18 +898,7 @@ void renderAmbient(const DisplayState& s){ char b[80];
     else if(s.mode==UserMode::kAuto){ snprintf(b,sizeof(b),"Idle - holding %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_MUTED),0); }
     else { strcpy(b,"Idle"); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_MUTED),0); }
     setTxt(aTarget,b); }
-  { const SensorRow* recent=nullptr; uint32_t bestAge=0xFFFFFFFFu; int nHealthy=0;
-    for(uint8_t i=0;i<s.sensorCount;i++){ const SensorRow&r=s.sensors[i]; if(!r.participating) continue;
-      if(r.healthy) nHealthy++;
-      uint32_t age=r.occupied?0u:r.lastOccAgeS;
-      if(age<bestAge){ bestAge=age; recent=&r; } }
-    if(recent && recent->occupied) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Present",recent->name);
-    else if(recent && bestAge<3600u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu min ago",recent->name,(unsigned long)(bestAge/60u));
-    else if(recent && bestAge<10800u) snprintf(b,sizeof(b),"Reading %s \xE2\x80\xA2 Last entered %lu hr ago",recent->name,(unsigned long)((bestAge+1800u)/3600u));
-    else if(nHealthy>0) snprintf(b,sizeof(b),"Nobody home \xE2\x80\xA2 averaging %d rooms",nHealthy);
-    else if(s.degradedMode) strcpy(b,"Local sensor only");   // only when a local slot exists (#73)
-    else strcpy(b,"No room sensor reporting");                // no local fallback: fails to no-demand
-    setTxt(aName,b); }
+  fillPresenceLine(s,b,sizeof(b)); setTxt(aName,b);   // #88: sticky HA-last-seen presence
   if(s.alarmCount>0){ lv_obj_clear_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); setTxt(aAlarm, s.alarms[0].text[0]?friendlyAlarm(s.alarms[0].text):"alarm"); }
   else lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
 

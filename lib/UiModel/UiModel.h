@@ -157,6 +157,17 @@ struct DisplayState {
   uint32_t busFrames  = 0;         // CT-485: frames decoded OK (live only when RS-485 UART enabled)
 
   char clockStr[24] = "";          // NTP day/time for the top bar ("" until NTP syncs)
+
+  // Presence (issue #88): sticky home/away from HA's REPORTED last_seen (3 h
+  // across all presence sensors), decoupled from the short motion window AND
+  // from temp staleness. Seeded from HA's retained presence topic on boot.
+  struct PresenceView {
+    bool     valid        = false;         // presence feature has data (>=1 presence sensor reporting)
+    bool     present      = false;         // someone seen within the away window
+    bool     anyReporting = false;         // >=1 presence sensor has ever reported
+    char     roomName[kSensorNameLen] = {};// dominant most-recently-seen room ("" if none)
+    uint32_t lastSeenAgeS = 0xFFFFFFFFu;   // age of the newest last_seen across all
+  } presence;
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
@@ -248,6 +259,17 @@ class UiModel : public UiCommands {
   void setBusDiag(uint32_t lastRxS, uint32_t frames) { state_.busLastRxS = lastRxS; state_.busFrames = frames; }
   void setClock(const char* s) { strncpy(state_.clockStr, s, sizeof(state_.clockStr) - 1); state_.clockStr[sizeof(state_.clockStr) - 1] = 0; }
   void setDegradedMode(bool on);
+  // Presence echo (issue #88); rendered every tick, so no dirty bit needed.
+  void setPresence(bool valid, bool present, bool anyReporting,
+                   const char* roomName, uint32_t lastSeenAgeS) {
+    state_.presence.valid = valid;
+    state_.presence.present = present;
+    state_.presence.anyReporting = anyReporting;
+    const char* rn = roomName ? roomName : "";
+    strncpy(state_.presence.roomName, rn, kSensorNameLen - 1);
+    state_.presence.roomName[kSensorNameLen - 1] = 0;
+    state_.presence.lastSeenAgeS = lastSeenAgeS;
+  }
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
   // Active hold echo (issue #81); rendered every tick, so no dirty bit needed.
   void setHoldStatus(HoldType t, uint32_t remainS) { state_.holdType = t; state_.holdRemainS = remainS; }

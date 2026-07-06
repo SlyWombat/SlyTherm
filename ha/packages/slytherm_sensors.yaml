@@ -6,6 +6,8 @@
 #   slytherm/sensors/<id>/state   {"temp": <°C>[, "occ": <bool>]}   non-retained, heartbeat
 # and only uses sensors listed in the retained roster
 #   slytherm/config/sensors       {"sensors":[{"id":"living","name":"Living Room","max_age_s":300,"offset":0.0}]}
+# For sticky home/away it also subscribes to a RETAINED presence topic (issue #88)
+#   slytherm/sensors/<id>/presence {"occupied": <bool>, "last_seen": <unix_s>}  retained
 #
 # Prereqs: HA's MQTT integration points at the same broker as the thermostat
 # (see ha/README.md → "Live sensors"). Then EDIT the `slytherm_rooms` list below
@@ -94,3 +96,42 @@ automation:
                   ,"occ":{{ 'true' if is_state(repeat.item.occ, 'on') else 'false' }}
                   {%- endif -%}
                   }
+
+  # ---- Publish RETAINED presence per room (issue #88) ----
+  # The wall unit keeps a STICKY home/away state: it stays "Present" for 3 hours
+  # after the most recent last_seen across ALL rooms, then shows "Nobody home".
+  # Because this is RETAINED, a thermostat that reboots/reconnects seeds the
+  # last-known presence immediately (people home -> "Present" at boot, not
+  # "Nobody home"). Only rooms with an `occ` entity are published.
+  #   slytherm/sensors/<id>/presence  {"occupied":<bool>,"last_seen":<unix_s>}  retained
+  # occupied  = the room's current occupancy state
+  # last_seen = unix seconds of the most recent presence: now() while 'on', else
+  #             when the sensor last went 'off' (last_changed). The 1-min
+  #             heartbeat keeps it fresh and re-seeds the retained value.
+  - id: slytherm_publish_presence
+    alias: "SlyTherm · publish room presence (retained)"
+    mode: single
+    trigger:
+      - platform: homeassistant
+        event: start
+      - platform: mqtt
+        topic: slytherm/availability
+        payload: online
+      - platform: time_pattern
+        minutes: "/1"
+    variables:
+      rooms: *slytherm_rooms
+    action:
+      - repeat:
+          for_each: "{{ rooms }}"
+          sequence:
+            - condition: template
+              value_template: "{{ repeat.item.occ is defined and repeat.item.occ }}"
+            - service: mqtt.publish
+              data:
+                topic: "slytherm/sensors/{{ repeat.item.id }}/presence"
+                retain: true
+                payload: >-
+                  {"occupied":{{ 'true' if is_state(repeat.item.occ, 'on') else 'false' }},
+                  "last_seen":{{ (as_timestamp(now()) if is_state(repeat.item.occ, 'on')
+                  else as_timestamp(states[repeat.item.occ].last_changed, as_timestamp(now()))) | int(0) }}}

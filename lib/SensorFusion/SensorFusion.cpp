@@ -96,6 +96,53 @@ bool SensorFusion::update(uint8_t id, float tempC, Occupancy occ, uint32_t nowS)
   return true;
 }
 
+void SensorFusion::updatePresence(uint8_t id, bool occupied, uint32_t lastSeenS,
+                                  bool hasLastSeen, uint32_t nowS) {
+  Slot* s = find(id);
+  if (!s) return;
+  s->presenceReported = true;
+  s->occupiedState = occupied;
+  if (hasLastSeen) {
+    // Monotonic, non-decreasing: an out-of-order (older) retained message must
+    // not walk the ledger backwards.
+    if (!s->presenceSeen || lastSeenS > s->lastSeenS) s->lastSeenS = lastSeenS;
+    s->presenceSeen = true;
+  } else if (occupied) {
+    // No timestamp but HA says occupied now -> "seen now".
+    if (!s->presenceSeen || nowS > s->lastSeenS) s->lastSeenS = nowS;
+    s->presenceSeen = true;
+  }
+  // Vacant with no timestamp: recorded as reporting, but not placed in time.
+}
+
+PresenceState SensorFusion::presenceWithin(uint32_t windowS, uint32_t nowS) const {
+  PresenceState ps;
+  bool haveNewest = false;
+  uint32_t newest = 0;
+  uint8_t dom = 0xFF;
+  for (const auto& s : slots_) {
+    if (!s.used || s.isLocal) continue;  // local DS18B20 has no presence
+    if (s.presenceReported) ps.anyReporting = true;
+    if (!s.presenceSeen) continue;
+    ps.everSeen = true;
+    if (!haveNewest || s.lastSeenS >= newest) {
+      newest = s.lastSeenS;
+      dom = s.id;
+      haveNewest = true;
+    }
+  }
+  if (haveNewest) {
+    ps.lastSeenAgeS = ageOf(nowS, newest);
+    ps.present = ps.lastSeenAgeS < windowS;
+    ps.dominantId = dom;
+  }
+  return ps;
+}
+
+PresenceState SensorFusion::presence(uint32_t nowS) const {
+  return presenceWithin(kPresenceAwayS, nowS);
+}
+
 FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
   uint32_t dt = 0;
   if (hasTime_ && nowS > lastNowS_) dt = nowS - lastNowS_;

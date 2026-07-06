@@ -478,6 +478,95 @@ static void test_fallback_local_sensor_offset_applied() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 17.5f, r.value);
 }
 
+// ---------- Presence: sticky HA-last-seen home/away (issue #88) ----------
+
+static void test_presence_present_within_window() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  const uint32_t now = 100000;
+  // last_seen expressed in the monotonic timebase: A 1 h ago, B 10 min ago.
+  f.updatePresence(kA, false, now - 3600, /*hasLastSeen=*/true, now);
+  f.updatePresence(kB, true, now - 600, /*hasLastSeen=*/true, now);
+  const dettson::PresenceState p = f.presence(now);
+  TEST_ASSERT_TRUE(p.anyReporting);
+  TEST_ASSERT_TRUE(p.everSeen);
+  TEST_ASSERT_TRUE(p.present);
+  TEST_ASSERT_EQUAL_UINT8(kB, p.dominantId);          // follows most-recently-seen room
+  TEST_ASSERT_UINT32_WITHIN(2, 600, p.lastSeenAgeS);
+}
+
+static void test_presence_away_past_window() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  const uint32_t now = 100000;
+  f.updatePresence(kA, false, now - (3u * 3600u + 60u), true, now);  // 3 h 1 min ago
+  const dettson::PresenceState p = f.presence(now);
+  TEST_ASSERT_TRUE(p.anyReporting);
+  TEST_ASSERT_TRUE(p.everSeen);
+  TEST_ASSERT_FALSE(p.present);                        // past the 3 h away window
+}
+
+static void test_presence_sticky_until_3h_after_last_seen() {
+  // The core #88 fix: presence persists for 3 h from last_seen even though no
+  // further motion/presence message arrives (it does NOT decay in minutes).
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  const uint32_t t0 = 50000;
+  f.updatePresence(kA, true, t0, true, t0);           // seen once at t0
+  TEST_ASSERT_TRUE(f.presence(t0 + 2u * 3600u + 3540u).present);   // 2 h 59 m: present
+  TEST_ASSERT_FALSE(f.presence(t0 + 3u * 3600u + 60u).present);    // 3 h 1 m: away
+}
+
+static void test_presence_seed_from_retained_no_wallclock() {
+  // Boot with people home: retained occupied=true but the timestamp can't be
+  // placed yet (no wall clock) -> counts as "seen now" -> Present immediately.
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  const uint32_t boot = 30;
+  f.updatePresence(kA, true, 0, /*hasLastSeen=*/false, boot);
+  const dettson::PresenceState p = f.presence(boot);
+  TEST_ASSERT_TRUE(p.present);
+  TEST_ASSERT_EQUAL_UINT8(kA, p.dominantId);
+}
+
+static void test_presence_no_sensor_reporting_vs_nobody_home() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  const uint32_t now = 100000;
+  const dettson::PresenceState p0 = f.presence(now);  // nothing reported yet
+  TEST_ASSERT_FALSE(p0.anyReporting);                 // UI: "no room sensor reporting"
+  TEST_ASSERT_FALSE(p0.everSeen);
+  TEST_ASSERT_FALSE(p0.present);
+  f.updatePresence(kA, false, now - 4u * 3600u, true, now);  // vacant, seen 4 h ago
+  const dettson::PresenceState p1 = f.presence(now);
+  TEST_ASSERT_TRUE(p1.anyReporting);                  // UI: "Nobody home"
+  TEST_ASSERT_TRUE(p1.everSeen);
+  TEST_ASSERT_FALSE(p1.present);
+}
+
+static void test_presence_out_of_order_last_seen_ignored() {
+  // A late-arriving older retained message must not walk the ledger backwards.
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  const uint32_t now = 100000;
+  f.updatePresence(kA, true, now - 60, true, now);    // seen 1 min ago
+  f.updatePresence(kA, false, now - 7200, true, now); // stale retained arrives late
+  const dettson::PresenceState p = f.presence(now);
+  TEST_ASSERT_UINT32_WITHIN(2, 60, p.lastSeenAgeS);   // kept the newer timestamp
+  TEST_ASSERT_TRUE(p.present);
+}
+
+static void test_presence_excludes_local_sensor() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kL, /*isLocal=*/true);
+  const uint32_t now = 100000;
+  f.updatePresence(kL, true, now, true, now);
+  const dettson::PresenceState p = f.presence(now);
+  TEST_ASSERT_FALSE(p.anyReporting);                  // local DS18B20 has no presence
+  TEST_ASSERT_FALSE(p.present);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_invalid_no_demand);
@@ -499,5 +588,12 @@ int main() {
   RUN_TEST(test_offset_change_routes_through_slew_no_step);
   RUN_TEST(test_offset_edit_does_not_mask_stuck_detector);
   RUN_TEST(test_fallback_local_sensor_offset_applied);
+  RUN_TEST(test_presence_present_within_window);
+  RUN_TEST(test_presence_away_past_window);
+  RUN_TEST(test_presence_sticky_until_3h_after_last_seen);
+  RUN_TEST(test_presence_seed_from_retained_no_wallclock);
+  RUN_TEST(test_presence_no_sensor_reporting_vs_nobody_home);
+  RUN_TEST(test_presence_out_of_order_last_seen_ignored);
+  RUN_TEST(test_presence_excludes_local_sensor);
   return UNITY_END();
 }

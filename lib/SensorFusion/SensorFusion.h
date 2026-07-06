@@ -51,6 +51,26 @@ struct FusedTemp {
   uint16_t alarms = 0;    // FusionAlarm bits observed this evaluation
 };
 
+// Presence (issue #88): sticky home/away derived from HA's REPORTED last_seen
+// timestamp, NOT the short motion window and NOT temp staleness. The system is
+// Present while ANY presence sensor was seen within kPresenceAwayS, then follows
+// the most-recently-seen room; once every sensor's last_seen is older than the
+// window it goes Away ("Nobody home"). Seeded on boot from HA's retained
+// presence topic so a reboot with people home shows Present immediately.
+//
+// Factored: presence() delegates to presenceWithin(window) over a per-sensor
+// last_seen ledger, so a future night "sleep" state can reuse the same ledger
+// with its own window — not implemented now.
+constexpr uint32_t kPresenceAwayS = 3u * 3600u;  // 3 h across ALL presence sensors
+
+struct PresenceState {
+  bool     present      = false;         // someone seen within the window
+  bool     anyReporting = false;         // >=1 presence sensor has ever reported
+  bool     everSeen     = false;         // >=1 sensor has ever been placed in time
+  uint8_t  dominantId   = 0xFF;          // most-recently-seen room (0xFF = none)
+  uint32_t lastSeenAgeS = 0xFFFFFFFFu;   // age of the newest last_seen across all
+};
+
 struct SensorStatus {
   bool registered = false;
   bool live = false;       // passed all health gates at the last fusedTemp()
@@ -100,6 +120,20 @@ class SensorFusion {
   // Evaluate health, fuse, smooth, slew-limit. Call periodically (~1-60 s).
   FusedTemp fusedTemp(uint32_t nowS);
 
+  // Feed HA-reported presence (issue #88). `occupied` is HA's current state;
+  // `lastSeenS` is when this sensor last detected presence expressed in the SAME
+  // monotonic timebase as nowS (the caller converts HA's unix last_seen with the
+  // wall clock). `hasLastSeen` is false when the timestamp is unknown (no wall
+  // clock yet): an occupied sample then counts as "seen now"; a vacant one is
+  // recorded as reporting-but-not-placed. Independent of update()/motion window
+  // and of temp maxAgeS. No-op for an unregistered id.
+  void updatePresence(uint8_t id, bool occupied, uint32_t lastSeenS,
+                      bool hasLastSeen, uint32_t nowS);
+
+  // Overall presence right now (Present within kPresenceAwayS; most-recently-seen
+  // room; anyReporting distinguishes "no sensor reporting" from "nobody home").
+  PresenceState presence(uint32_t nowS) const;
+
   SensorStatus status(uint8_t id, uint32_t nowS) const;
 
   // Id of the sensor with the greatest current influence on the fused value
@@ -140,11 +174,22 @@ class SensorFusion {
     bool live = false;    // last-evaluation result
     uint16_t faults = 0;
 
+    // Presence ledger (issue #88): HA last_seen based, sticky, decoupled from
+    // the occupancy weight (lastOccS) and from temp staleness (maxAgeS).
+    bool presenceReported = false;   // any presence message received (occupied or vacant)
+    bool presenceSeen = false;       // ever placed a real last_seen in the timebase
+    uint32_t lastSeenS = 0;          // monotonic time of the most recent presence
+    bool occupiedState = false;      // HA's last reported occupied flag
+
     float correctedC() const { return tempC + offsetC; }
   };
 
   Slot* find(uint8_t id);
   const Slot* find(uint8_t id) const;
+
+  // Presence over an arbitrary window (issue #88; reused by a future sleep
+  // state). Pure read over the per-sensor last_seen ledger.
+  PresenceState presenceWithin(uint32_t windowS, uint32_t nowS) const;
 
   Slot slots_[kMaxSensors];
 
