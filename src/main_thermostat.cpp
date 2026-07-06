@@ -276,6 +276,83 @@ ct485::Ct485Thermostat*   gCt = nullptr;
 uint32_t gCompStopAnchorS = 0;
 uint32_t gBootHoldEndS = 0;
 
+// ---- On-device Vacation hold (issue #78) --------------------------------------
+// A long hold whose eco setpoints are gated by a calendar window. The on-device
+// clock (#69) anchors the window to local midnights; while `now` is inside the
+// window the eco setpoints override schedule + presence, then auto-resume at end
+// (prior setpoints restored). Persisted as one NVS blob so it survives reboots.
+struct VacationState {
+  bool     on         = false;   // a vacation is configured
+  bool     anchored   = false;   // epochs computed (needs a valid clock)
+  bool     applied    = false;   // eco setpoints currently forced (prior* captured)
+  uint16_t startDays  = 0;       // start offset from set-day midnight (0 = today)
+  uint16_t nights     = 1;       // length in nights (>=1)
+  uint32_t startEpoch = 0;       // unix seconds, local-midnight aligned
+  uint32_t endEpoch   = 0;
+  float    heatC      = 16.0f;   // eco heat setpoint applied in-window
+  float    coolC      = 28.0f;   // eco cool setpoint applied in-window
+  float    priorHeatC = 20.0f;   // captured on entry, restored on exit
+  float    priorCoolC = 24.0f;
+};
+VacationState gVac;
+bool gVacUiActive = false;        // banner visible flag (pushed to gUi under uiLock)
+char gVacBanner[32] = "";         // "Vacation until Jul 12"
+
+static void saveVacation() { gPrefs.putBytes("vac", &gVac, sizeof(gVac)); }
+static bool clockIsSynced() { return time(nullptr) > 1735689600L; }  // after 2025-01-01 => NTP set
+static bool anchorVacation() {
+  struct tm ti;
+  if (!getLocalTime(&ti, 0)) return false;
+  ti.tm_hour = 0; ti.tm_min = 0; ti.tm_sec = 0;   // local midnight of the set-day
+  time_t mid = mktime(&ti);
+  if (mid <= 0) return false;
+  gVac.startEpoch = static_cast<uint32_t>(mid + static_cast<time_t>(gVac.startDays) * 86400L);
+  gVac.endEpoch   = static_cast<uint32_t>(mid + static_cast<time_t>(gVac.startDays + gVac.nights) * 86400L);
+  gVac.anchored = true;
+  return true;
+}
+// Evaluated every control cycle BEFORE the mode state machine so the eco
+// setpoints are in place when demand is computed.
+void evaluateVacation(uint32_t /*nowS*/) {
+  if (!gVac.on) { gVacUiActive = false; gVacBanner[0] = 0; return; }
+  const bool clockOk = clockIsSynced();
+  if (!gVac.anchored) {                       // set while NTP was still cold: anchor once synced
+    if (clockOk && anchorVacation()) saveVacation();
+    else { gVacUiActive = true; strlcpy(gVacBanner, "Vacation set", sizeof(gVacBanner)); return; }
+  }
+  const time_t nowE = time(nullptr);
+  if (clockOk && static_cast<uint32_t>(nowE) >= gVac.endEpoch) {   // window elapsed -> auto-resume
+    if (gVac.applied && gModeSm) {
+      gModeSm->setHeatSetpoint(gVac.priorHeatC);
+      gModeSm->setCoolSetpoint(gVac.priorCoolC);
+    }
+    gVac = VacationState{};        // clear all (on=false)
+    saveVacation();
+    gVacUiActive = false; gVacBanner[0] = 0;
+    Serial.println("[vac] window ended -> resume normal operation");
+    return;
+  }
+  const bool inWindow = clockOk && static_cast<uint32_t>(nowE) >= gVac.startEpoch;
+  if (inWindow && gModeSm) {        // force eco each cycle -> overrides schedule + presence
+    if (!gVac.applied) {
+      gVac.priorHeatC = gModeSm->heatSetpoint();
+      gVac.priorCoolC = gModeSm->coolSetpoint();
+      gVac.applied = true; saveVacation();
+      Serial.printf("[vac] active: eco heat %.1f cool %.1f (was %.1f/%.1f)\n",
+                    (double)gVac.heatC, (double)gVac.coolC,
+                    (double)gVac.priorHeatC, (double)gVac.priorCoolC);
+    }
+    gModeSm->setHeatSetpoint(gVac.heatC);
+    gModeSm->setCoolSetpoint(gVac.coolC);
+  }
+  // Banner: "Vacation until <end>" while active, "Vacation <start>" while scheduled.
+  char d[16];
+  { time_t e = static_cast<time_t>(inWindow ? gVac.endEpoch : gVac.startEpoch);
+    struct tm et; localtime_r(&e, &et); strftime(d, sizeof(d), "%b %d", &et); }
+  snprintf(gVacBanner, sizeof(gVacBanner), inWindow ? "Vacation until %s" : "Vacation %s", d);
+  gVacUiActive = true;
+}
+
 struct GuardGate : public CompressorGate {
   bool canStart(uint32_t nowS) override { return gGuard.requestStart(nowS).allowed; }
   bool canStop(uint32_t nowS) override {
@@ -1322,6 +1399,30 @@ void consumeCommands(uint32_t nowS) {
       case ui::IntentType::kClearHold:  // "Resume schedule"
         gModeSm->clearHold();
         break;
+      case ui::IntentType::kSetVacation: {  // #78: set the window + eco setpoints
+        gVac = VacationState{};
+        gVac.on = true;
+        gVac.startDays = intent.vacStartDays;
+        gVac.nights = intent.vacNights < 1 ? 1 : intent.vacNights;
+        gVac.heatC = intent.heatC;
+        gVac.coolC = intent.coolC;
+        if (clockIsSynced()) anchorVacation();   // else evaluateVacation anchors when NTP arrives
+        saveVacation();
+        Serial.printf("[vac] request start+%ud len %un heat %.1f cool %.1f\n",
+                      (unsigned)gVac.startDays, (unsigned)gVac.nights,
+                      (double)gVac.heatC, (double)gVac.coolC);
+        break;
+      }
+      case ui::IntentType::kClearVacation: {  // #78: cancel/resume
+        if (gVac.applied && gModeSm) {
+          gModeSm->setHeatSetpoint(gVac.priorHeatC);
+          gModeSm->setCoolSetpoint(gVac.priorCoolC);
+        }
+        gVac = VacationState{};
+        saveVacation();
+        Serial.println("[vac] cancelled -> resume normal operation");
+        break;
+      }
     }
   }
   uiUnlock();
@@ -1541,6 +1642,9 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   bf.configCrcOk = gConfigOk;
   gSup->updateBootGate(bf, nowS);
 
+  // ---- Vacation hold (#78): eco setpoints override schedule/presence in-window ----
+  evaluateVacation(nowS);
+
   // ---- Mode state machine -> effective call ----
   const bool swapOk = compressorProvenIdle(nowS);
   Call call = gModeSm->update(fused.value, fused.valid, nowS, swapOk);
@@ -1716,6 +1820,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     gUi.setBusDiag(gLastBusRxS, ctFrames); }
   gUi.setDegradedMode(fused.degraded);
   gUi.setHoldStatus(gModeSm->activeHoldType(), gModeSm->holdRemainingS(nowS));  // hold chooser (#81)
+  gUi.setVacation(gVacUiActive, gVacBanner);  // #78: vacation banner ("Vacation until <date>")
   // Live preset roster -> UI (#74): real names + setpoints from the authoritative
   // ModeStateMachine roster (retained slytherm/config/presets or boot defaults).
   { ui::DisplayState::PresetView pv[kMaxPresets]; uint8_t pn = 0;
@@ -1944,6 +2049,18 @@ void setup() {
     gFanMode = static_cast<hm::FanMode>(gPrefs.getUChar("fan", 0));
     if (gFanMode > hm::FanMode::kCirculate) gFanMode = hm::FanMode::kAuto;
     gSetpointsValidated = true;
+  }
+
+  // ---- Vacation hold restore (#78): reload the persisted window/eco setpoints ----
+  {
+    VacationState vb;
+    if (gPrefs.getBytes("vac", &vb, sizeof(vb)) == sizeof(vb) && vb.on) {
+      gVac = vb;   // keep absolute epochs so a reboot never extends the window;
+                   // if it was set before NTP (anchored=false) evaluateVacation anchors later
+      Serial.printf("[vac] restored: start+%ud len %un eco %.1f/%.1f\n",
+                    (unsigned)gVac.startDays, (unsigned)gVac.nights,
+                    (double)gVac.heatC, (double)gVac.coolC);
+    }
   }
 
   // ---- UiModel screen-lock blob (fails open by design) ----

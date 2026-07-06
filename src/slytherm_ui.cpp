@@ -148,6 +148,7 @@ char gRowName[7][16]={};
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
 lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
+lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): "Vacation until <date>"
 lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
 lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
 // System 12 h trend graph (#76): ~5-min RAM ring, 144 pts (temps x10 as lv_coord_t).
@@ -252,6 +253,11 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   lv_obj_set_style_bg_color(gHoldBtn,lv_color_hex(COL_RAISED),0); lv_obj_set_style_shadow_width(gHoldBtn,0,0); lv_obj_set_style_radius(gHoldBtn,10,0);
   lv_obj_add_event_cb(gHoldBtn,holdEvt,LV_EVENT_CLICKED,nullptr);
   gHoldLbl=lv_label_create(gHoldBtn); lv_label_set_text(gHoldLbl,"Set a hold"); lv_obj_set_style_text_font(gHoldLbl,&lv_font_montserrat_16,0); lv_obj_center(gHoldLbl);
+  // #78: vacation banner pill across the top of Home, shown while a vacation is set
+  gVacHome=lv_label_create(tab); lv_obj_set_style_text_font(gVacHome,&lv_font_montserrat_20,0);
+  lv_obj_set_style_text_color(gVacHome,lv_color_hex(COL_CRYO),0); lv_obj_set_style_bg_color(gVacHome,lv_color_hex(COL_RAISED),0);
+  lv_obj_set_style_bg_opa(gVacHome,LV_OPA_COVER,0); lv_obj_set_style_pad_hor(gVacHome,16,0); lv_obj_set_style_pad_ver(gVacHome,6,0); lv_obj_set_style_radius(gVacHome,10,0);
+  lv_obj_align(gVacHome,LV_ALIGN_TOP_MID,0,8); lv_label_set_text(gVacHome,""); lv_obj_add_flag(gVacHome,LV_OBJ_FLAG_HIDDEN);
   // heat + cool cards (right), big target font, shown per mode
   gHeatCard=card(tab); lv_obj_set_size(gHeatCard,340,170); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,84); lv_obj_set_style_pad_all(gHeatCard,0,0);
   lv_obj_set_style_border_color(gHeatCard,lv_color_hex(COL_EMBER),0); lv_obj_set_style_border_width(gHeatCard,1,0); lv_obj_set_style_border_opa(gHeatCard,LV_OPA_40,0);
@@ -277,6 +283,67 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
     lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_center(l); modeBtns[i]=b; } }
 
+// ---- On-device Vacation sheet (issue #78) ----------------------------------
+// Steppers for Start (days out), Length (nights), and eco heat/cool setpoints,
+// with Start / Cancel. Sends a kSetVacation / kClearVacation intent; the control
+// task anchors the window to the on-device clock and applies eco in-window.
+lv_obj_t *gVacSheet=nullptr,*gVacStartLbl=nullptr,*gVacNightsLbl=nullptr,*gVacHeatLbl=nullptr,*gVacCoolLbl=nullptr;
+int gVacStartDays=0, gVacNights=7; float gVacEcoHeat=16.0f, gVacEcoCool=28.0f;
+void vacRefresh(){ if(!gVacSheet) return; char b[24];
+  if(gVacStartDays==0) strcpy(b,"Today"); else snprintf(b,sizeof(b),"In %d day%s",gVacStartDays,gVacStartDays==1?"":"s"); setTxt(gVacStartLbl,b);
+  snprintf(b,sizeof(b),"%d night%s",gVacNights,gVacNights==1?"":"s"); setTxt(gVacNightsLbl,b);
+  snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)gVacEcoHeat); setTxt(gVacHeatLbl,b);
+  snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)gVacEcoCool); setTxt(gVacCoolLbl,b); }
+void vacStep(lv_event_t*e){ int c=(int)(intptr_t)lv_event_get_user_data(e); int field=c>>1; bool up=c&1;
+  switch(field){
+    case 0: gVacStartDays+=up?1:-1; if(gVacStartDays<0)gVacStartDays=0; if(gVacStartDays>30)gVacStartDays=30; break;
+    case 1: gVacNights+=up?1:-1; if(gVacNights<1)gVacNights=1; if(gVacNights>60)gVacNights=60; break;
+    case 2: gVacEcoHeat+=up?0.5f:-0.5f; if(gVacEcoHeat<7.0f)gVacEcoHeat=7.0f; if(gVacEcoHeat>gVacEcoCool-1.0f)gVacEcoHeat=gVacEcoCool-1.0f; break;
+    case 3: gVacEcoCool+=up?0.5f:-0.5f; if(gVacEcoCool>35.0f)gVacEcoCool=35.0f; if(gVacEcoCool<gVacEcoHeat+1.0f)gVacEcoCool=gVacEcoHeat+1.0f; break;
+  } vacRefresh(); }
+void vacStart(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
+  L(); gM->requestVacation((uint16_t)gVacStartDays,(uint16_t)gVacNights,gVacEcoHeat,gVacEcoCool); U();
+  if(gVacSheet) lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
+void vacCancelHold(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
+  L(); gM->cancelVacation(); U(); if(gVacSheet) lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
+void vacClose(lv_event_t*){ if(gVacSheet) lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
+void vacOpen(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
+  if(!gVacSheet) return; vacRefresh(); lv_obj_clear_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gVacSheet); }
+static lv_obj_t* vacRow(lv_obj_t*par,const char*name,int y,int field){
+  lv_obj_t*nl=lv_label_create(par); lv_label_set_text(nl,name); lv_obj_set_style_text_color(nl,lv_color_hex(COL_MUTED),0);
+  lv_obj_set_style_text_font(nl,&lv_font_montserrat_20,0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,18,y+12);
+  lv_obj_t*minus=lv_btn_create(par); lv_obj_set_size(minus,46,44); lv_obj_align(minus,LV_ALIGN_TOP_RIGHT,-150,y);
+  lv_obj_set_style_bg_color(minus,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(minus,vacStep,LV_EVENT_CLICKED,(void*)(intptr_t)(field*2+0));
+  { lv_obj_t*l=lv_label_create(minus); lv_label_set_text(l,"-"); lv_obj_center(l); }
+  lv_obj_t*val=lv_label_create(par); lv_obj_set_style_text_font(val,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(val,lv_color_hex(COL_INK),0);
+  lv_obj_set_width(val,92); lv_obj_set_style_text_align(val,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(val,LV_ALIGN_TOP_RIGHT,-52,y+12);
+  lv_obj_t*plus=lv_btn_create(par); lv_obj_set_size(plus,46,44); lv_obj_align(plus,LV_ALIGN_TOP_RIGHT,-4,y);
+  lv_obj_set_style_bg_color(plus,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(plus,vacStep,LV_EVENT_CLICKED,(void*)(intptr_t)(field*2+1));
+  { lv_obj_t*l=lv_label_create(plus); lv_label_set_text(l,"+"); lv_obj_center(l); }
+  return val; }
+void buildVacationSheet(lv_obj_t*scr){ gVacSheet=lv_obj_create(scr); lv_obj_set_size(gVacSheet,470,442); lv_obj_center(gVacSheet);
+  lv_obj_set_style_bg_color(gVacSheet,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(gVacSheet,lv_color_hex(COL_CRYO),0);
+  lv_obj_set_style_border_width(gVacSheet,2,0); lv_obj_set_style_radius(gVacSheet,14,0); lv_obj_set_style_pad_all(gVacSheet,0,0); lv_obj_clear_flag(gVacSheet,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*t=lv_label_create(gVacSheet); lv_label_set_text(t,"Vacation"); lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0);
+  lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,18,14);
+  lv_obj_t*sub=lv_label_create(gVacSheet); lv_label_set_text(sub,"Hold eco setpoints while you are away"); lv_obj_set_style_text_font(sub,&lv_font_montserrat_16,0);
+  lv_obj_set_style_text_color(sub,lv_color_hex(COL_TEXT3),0); lv_obj_align(sub,LV_ALIGN_TOP_LEFT,18,50);
+  gVacStartLbl =vacRow(gVacSheet,"Starts",   80,0);
+  gVacNightsLbl=vacRow(gVacSheet,"Length",  142,1);
+  gVacHeatLbl  =vacRow(gVacSheet,"Eco heat",204,2);
+  gVacCoolLbl  =vacRow(gVacSheet,"Eco cool",266,3);
+  lv_obj_t*sb=lv_btn_create(gVacSheet); lv_obj_set_size(sb,214,52); lv_obj_align(sb,LV_ALIGN_BOTTOM_LEFT,18,-16);
+  lv_obj_set_style_bg_color(sb,lv_color_hex(COL_OK),0); lv_obj_add_event_cb(sb,vacStart,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(sb); lv_label_set_text(l,"Start vacation"); lv_obj_center(l); }
+  lv_obj_t*cb=lv_btn_create(gVacSheet); lv_obj_set_size(cb,214,52); lv_obj_align(cb,LV_ALIGN_BOTTOM_RIGHT,-18,-16);
+  lv_obj_set_style_bg_color(cb,lv_color_hex(COL_RAISED),0); lv_obj_set_style_border_color(cb,lv_color_hex(COL_BORDER),0); lv_obj_set_style_border_width(cb,1,0);
+  lv_obj_add_event_cb(cb,vacCancelHold,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(cb); lv_label_set_text(l,"Cancel vacation"); lv_obj_center(l); }
+  lv_obj_t*x=lv_btn_create(gVacSheet); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-6,8);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,vacClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  vacRefresh(); lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
+
 // #74: build up to kMaxPresets cards once (3-wide grid); renderMain fills the
 // name/values from the LIVE roster (DisplayState.presets) and shows/hides by
 // presetCount. Card index == roster index == the value passed to presetEvt.
@@ -293,7 +360,13 @@ void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); 
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,""); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,8); gPresetName[i]=l;
     lv_obj_t*s=lv_label_create(b); lv_label_set_text(s,""); lv_obj_set_style_text_color(s,lv_color_hex(COL_MUTED),0); lv_obj_align(s,LV_ALIGN_CENTER,0,6); gPresetVal[i]=s;
     lv_obj_t*h=lv_label_create(b); lv_label_set_text(h,"tap to apply"); lv_obj_set_style_text_color(h,lv_color_hex(COL_TEXT3),0); lv_obj_align(h,LV_ALIGN_BOTTOM_MID,0,-6);
-    lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN); } }
+    lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN); }
+  // #78: Vacation entry — opens the on-device vacation sheet (dates + eco setpoints)
+  lv_obj_t*vb=lv_btn_create(tab); lv_obj_set_size(vb,748,60); lv_obj_align(vb,LV_ALIGN_TOP_LEFT,6,314);
+  lv_obj_set_style_bg_color(vb,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(vb,lv_color_hex(COL_CRYO),0); lv_obj_set_style_border_width(vb,1,0); lv_obj_set_style_radius(vb,8,0);
+  lv_obj_add_event_cb(vb,vacOpen,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(vb); lv_label_set_text(l,LV_SYMBOL_GPS "  Vacation  -  hold eco setpoints while away");
+    lv_obj_set_style_text_font(l,&lv_font_montserrat_20,0); lv_obj_align(l,LV_ALIGN_LEFT_MID,16,0); } }
 
 void sensorToggleEvt(lv_event_t*e){ int i=(int)(intptr_t)lv_event_get_user_data(e); if(i<0||i>=7) return;
   if(uiLocked()){ promptUnlock(); return; } if(gRowName[i][0]) uiToggleSensor(gRowName[i]); }
@@ -781,7 +854,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildAmbient(); buildWelcome(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildAmbient(); buildWelcome(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -852,6 +925,8 @@ void renderMain(const DisplayState& s){ char b[128];
     lv_obj_set_style_border_color(gHoldBtn,lv_color_hex(held?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gHoldBtn,held?2:1,0);
     // #74: only show the pill when there's an ACTIVE hold (never at boot/default); hidden when off
     if(s.mode==UserMode::kOff || !held) lv_obj_add_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(gHoldBtn,LV_OBJ_FLAG_HIDDEN); }
+  if(gVacHome){ if(s.vacationActive && s.vacationBanner[0]){ setTxt(gVacHome,s.vacationBanner); lv_obj_clear_flag(gVacHome,LV_OBJ_FLAG_HIDDEN); }   // #78 vacation banner
+    else lv_obj_add_flag(gVacHome,LV_OBJ_FLAG_HIDDEN); }
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.heatSetpointC); setTxt(wHeatSp,b);
   snprintf(b,sizeof(b),"%.1f\xC2\xB0",(double)s.coolSetpointC); setTxt(wCoolSp,b);
   lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);

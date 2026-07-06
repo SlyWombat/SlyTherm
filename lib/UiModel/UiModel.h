@@ -168,6 +168,12 @@ struct DisplayState {
     char     roomName[kSensorNameLen] = {};// dominant most-recently-seen room ("" if none)
     uint32_t lastSeenAgeS = 0xFFFFFFFFu;   // age of the newest last_seen across all
   } presence;
+
+  // On-device Vacation hold (issue #78): a long hold with eco setpoints gated by
+  // a date window. Control owns the clock/date compare; the UI just renders the
+  // banner. active=true while `now` is inside the range.
+  bool vacationActive = false;
+  char vacationBanner[32] = "";          // "Vacation until Jul 12" ("" when inactive)
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
@@ -175,15 +181,19 @@ enum class IntentType : uint8_t {
   kSetSetpoints, kSetMode, kSetPreset, kAckAlarms,
   kSetHold,    // choose a hold duration (issue #81); carries `hold`
   kClearHold,  // "Resume schedule" -> clearHold()
+  kSetVacation,   // on-device vacation (#78): heatC/coolC = eco setpoints, vacStartDays/vacNights = window
+  kClearVacation, // cancel/resume from vacation
 };
 
 struct UiIntent {
   IntentType type   = IntentType::kSetSetpoints;
-  float      heatC  = 0.0f;   // kSetSetpoints: both values, post clamp+push
+  float      heatC  = 0.0f;   // kSetSetpoints / kSetVacation(eco): both values, post clamp+push
   float      coolC  = 0.0f;
   UserMode   mode   = UserMode::kOff;
   Preset     preset = Preset::kHome;
   HoldType   hold   = HoldType::kNone;  // kSetHold: the chosen hold duration
+  uint16_t   vacStartDays = 0;          // kSetVacation: start offset in days (0 = today)
+  uint16_t   vacNights    = 1;          // kSetVacation: length in nights (>=1)
 };
 
 // ---------- Deadband clamp+push ----------
@@ -273,6 +283,12 @@ class UiModel : public UiCommands {
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
   // Active hold echo (issue #81); rendered every tick, so no dirty bit needed.
   void setHoldStatus(HoldType t, uint32_t remainS) { state_.holdType = t; state_.holdRemainS = remainS; }
+  // Vacation banner echo (#78); control fills it from the date compare. No dirty bit.
+  void setVacation(bool active, const char* banner) {
+    state_.vacationActive = active;
+    if (banner) { size_t n = 0; while (banner[n] && n < sizeof(state_.vacationBanner) - 1) { state_.vacationBanner[n] = banner[n]; ++n; } state_.vacationBanner[n] = 0; }
+    else state_.vacationBanner[0] = 0;
+  }
   // Live preset roster echo (issue #74); rendered every tick, so no dirty bit.
   void setPresets(const DisplayState::PresetView* p, uint8_t n) {
     if (n > kMaxPresets) n = kMaxPresets;
@@ -289,6 +305,10 @@ class UiModel : public UiCommands {
   // setpoints/presets). requestHold picks a duration; resumeSchedule clears it.
   void requestHold(HoldType t);
   void resumeSchedule();
+  // On-device Vacation (issue #78): a comfort-class change intent (gated like a
+  // hold). requestVacation sets the window + eco setpoints; cancelVacation clears.
+  void requestVacation(uint16_t startDays, uint16_t nights, float ecoHeatC, float ecoCoolC);
+  void cancelVacation();
 
   // --- screen lock (issue #45) ---
   // POD, fixed layout, same NVS-blob discipline as CompressorGuard: caller

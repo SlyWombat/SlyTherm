@@ -252,6 +252,30 @@ void UiModel::resumeSchedule() {
   intent.type = IntentType::kClearHold;
   enqueue(intent);
 }
+void UiModel::requestVacation(uint16_t startDays, uint16_t nights, float ecoHeatC, float ecoCoolC) {
+  if (!setpointChangeAllowed()) {  // #78: vacation is a comfort-class change (PIN-gated when locked)
+    ++lockBlockedCommands_;
+    setDirty(kDirtyLock);
+    return;
+  }
+  UiIntent intent;
+  intent.type = IntentType::kSetVacation;
+  intent.vacStartDays = startDays;
+  intent.vacNights = nights < 1 ? 1 : nights;
+  intent.heatC = ecoHeatC;
+  intent.coolC = ecoCoolC;
+  enqueue(intent);
+}
+void UiModel::cancelVacation() {
+  if (!setpointChangeAllowed()) {
+    ++lockBlockedCommands_;
+    setDirty(kDirtyLock);
+    return;
+  }
+  UiIntent intent;
+  intent.type = IntentType::kClearVacation;
+  enqueue(intent);
+}
 void UiModel::ackAlarms() {
   // Issue #45: alarm VISIBILITY is exempt from every lock level, but the ack
   // is a change intent and stays locked.
