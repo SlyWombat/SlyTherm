@@ -13,6 +13,7 @@
 #include <lvgl.h>
 
 #include "slytherm_ui.h"
+#include "SleepState.h"   // #90: shared night-window constants (kSleepStartHour/EndHour)
 #include "wifi_prov.h"
 #include "mqtt_cfg.h"
 #include "telnet_log.h"
@@ -30,6 +31,7 @@ extern "C" bool uiSniffActive();
 extern "C" uint32_t uiSniffFrames();
 extern "C" int uiSniffLines(char out[10][56]);     // newest-first; returns count
 extern "C" void uiClearReducedMode();              // main_thermostat.cpp: clear the #80 safe-UI latch + reboot
+extern "C" void uiNoteTouch();                     // main_thermostat.cpp: #90 sleep-state touch note (press edge)
 LV_FONT_DECLARE(font_now80);                 // 128px Montserrat-Thin subset (0-9 . ° -) for the hero (font_now80.c)
 LV_FONT_DECLARE(font_set48);                 // 48px Montserrat-Bold subset (0-9 . ° -) for setpoint values (font_set48.c)
 
@@ -121,9 +123,10 @@ lv_disp_draw_buf_t drawBuf; lv_color_t buf1[800*40];
 lv_disp_drv_t dispDrv; lv_indev_drv_t indDrv;
 void flushCb(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*px){
   gfx.pushImage(a->x1,a->y1,a->x2-a->x1+1,a->y2-a->y1+1,(lgfx::rgb565_t*)px); lv_disp_flush_ready(d); }
-void touchCb(lv_indev_drv_t*,lv_indev_data_t*dt){ uint16_t x,y;
-  if(gTouchOk&&gtRead(x,y)){ dt->state=LV_INDEV_STATE_PR; dt->point.x=x; dt->point.y=y; }
-  else dt->state=LV_INDEV_STATE_REL; }
+void touchCb(lv_indev_drv_t*,lv_indev_data_t*dt){ uint16_t x,y; static bool wasDown=false;
+  if(gTouchOk&&gtRead(x,y)){ dt->state=LV_INDEV_STATE_PR; dt->point.x=x; dt->point.y=y;
+    if(!wasDown){ wasDown=true; uiNoteTouch(); } }   // #90: press edge -> sleep-state wake
+  else { dt->state=LV_INDEV_STATE_REL; wasDown=false; } }
 
 // ---- screens ----
 lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
@@ -881,6 +884,13 @@ void layoutCard(lv_obj_t*c,lv_obj_t*val,bool big,uint32_t rail){ if(!c||!val) re
 // source description (which rooms are read / degraded / no sensor).
 void fillPresenceLine(const DisplayState& s, char* b, size_t n){
   const DisplayState::PresenceView& p = s.presence;
+  // #90: night Sleep state — subtle "Asleep" indicator on Home + ambient,
+  // coherent with the #86 night deep-blank (same window drives both).
+  if(p.asleep){
+    if(p.valid && p.present && p.roomName[0]) snprintf(b,n,"Reading %s \xE2\x80\xA2 Asleep",p.roomName);
+    else snprintf(b,n,"Asleep");
+    return;
+  }
   if(p.valid && p.anyReporting){
     if(p.present){
       if(p.roomName[0]) snprintf(b,n,"Reading %s \xE2\x80\xA2 Present",p.roomName);
@@ -1094,13 +1104,15 @@ void service(){
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; gBlanked=false; lv_scr_load(scrAmb); gAmbShiftIdx=0; gAmbShiftMs=now; ambientShift(0); }
     if(gAmbient && now-gAmbShiftMs>=kAmbShiftMs){ gAmbShiftMs=now; ambientShift(++gAmbShiftIdx); }
-    // #86a: NIGHT-ONLY deep screensaver. Between 00:00-06:00 local, after
+    // #86a: NIGHT-ONLY deep screensaver. Within the night window (the SAME
+    // kSleepStartHour..kSleepEndHour the #90 Sleep state uses, so the dark
+    // screen and the Asleep state cover the same hours), after
     // kNightBlankIdleMs idle, fully blank the backlight (latched, issued once);
     // touch still reaches the GT911 with the light off and ambWake restores.
-    // Outside 00:00-06:00 we NEVER blank (ambient stays lit). getLocalTime FAIL
+    // Outside the window we NEVER blank (ambient stays lit). getLocalTime FAIL
     // -> hour unknown -> fail SAFE: don't blank, and restore if already blanked.
     { int hour=-1; struct tm ti; if(getLocalTime(&ti,0)) hour=ti.tm_hour;
-      const bool night=(hour>=0 && hour<6);
+      const bool night=SleepState::inNightWindow(hour,kSleepStartHour,kSleepEndHour);
       if(gAmbient && !gBlanked && night && lv_disp_get_inactive_time(NULL)>kNightBlankIdleMs){
         gBlanked=true; ch422O(gCh&~kBitBl); }
       else if(gBlanked && !night){ renderAmbient(s); lv_refr_now(NULL); ch422O(gCh|kBitBl); gBlanked=false; }  // rolled past 06:00 (or clock lost): repaint ambient, THEN light on (no flash)

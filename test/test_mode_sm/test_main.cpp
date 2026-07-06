@@ -414,16 +414,21 @@ static void test_em_heat_coexists_with_comfort_presets() {
 
 // ---------- holds (G4 Ecobee semantics) ----------
 
-static void test_manual_setpoint_creates_until_next_preset_hold() {
-  ModeStateMachine sm = makeRosterSm();  // default hold type: until next preset
+static void test_manual_setpoint_creates_four_hour_hold() {
+  // #91: an on-device manual setpoint change always creates a 4 h hold (the
+  // Home pill counts it down) — no schedule exists on-device, so the old
+  // until-next-preset default made manual changes effectively open-ended.
+  ModeStateMachine sm = makeRosterSm();
   sm.applyPreset("home", 100);
   auto r = sm.setHeatSetpoint(19.0f, 200);  // manual overload
   TEST_ASSERT_TRUE(r.accepted);
-  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
   TEST_ASSERT_EQUAL_STRING("", sm.activePreset());  // manual change clears it
-  TEST_ASSERT_EQUAL(0, sm.holdRemainingS(200));     // untimed hold
-  // The next preset arrival ends the hold AND applies.
-  auto pr = sm.applyPreset("sleep", 300);
+  TEST_ASSERT_EQUAL_UINT32(dettson::kHoldLongS, sm.holdRemainingS(200));
+  // Presets are blocked while the 4 h clock runs...
+  TEST_ASSERT_TRUE(sm.applyPreset("sleep", 300).blockedByHold);
+  // ...and apply again once it expires (expiry applied inside applyPreset).
+  auto pr = sm.applyPreset("sleep", 200 + dettson::kHoldLongS);
   TEST_ASSERT_TRUE(pr.applied);
   TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
   TEST_ASSERT_EQUAL_STRING("sleep", sm.activePreset());
@@ -432,10 +437,10 @@ static void test_manual_setpoint_creates_until_next_preset_hold() {
 
 static void test_unknown_preset_does_not_end_hold() {
   ModeStateMachine sm = makeRosterSm();
-  sm.setCoolSetpoint(26.0f, 100);
-  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  sm.setCoolSetpoint(26.0f, 100);  // manual change -> 4 h hold (#91)
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
   sm.applyPreset("bogus", 200);
-  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
 }
 
 static void test_mode_change_creates_hold() {
@@ -448,12 +453,11 @@ static void test_mode_change_creates_hold() {
 }
 
 static void test_two_hour_hold_blocks_presets_then_expires_mid_tick() {
-  ModeStateMachine::Config cfg;
-  cfg.defaultHoldType = HoldType::kTwoHours;
-  ModeStateMachine sm(cfg);
+  ModeStateMachine sm;
   PresetDef defs[] = {mkPreset("home", 21.0f, 25.0f)};
   sm.setPresetRoster(defs, 1);
-  sm.setHeatSetpoint(19.0f, 1000);
+  sm.setHeatSetpoint(19.0f);                  // time-less write: no hold created
+  sm.startHold(HoldType::kTwoHours, 1000);    // #81 chooser picks 2 h
   TEST_ASSERT_EQUAL(HoldType::kTwoHours, sm.activeHoldType());
   TEST_ASSERT_EQUAL_UINT32(dettson::kHoldShortS, sm.holdRemainingS(1000));
   TEST_ASSERT_EQUAL_UINT32(3600, sm.holdRemainingS(4600));
@@ -500,15 +504,19 @@ static void test_start_hold_none_clears() {
   TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
 }
 
-static void test_default_hold_type_none_means_manual_changes_hold_nothing() {
+static void test_default_hold_type_none_gates_mode_changes_only() {
+  // #91: defaultHoldType governs MODE changes; manual SETPOINT changes always
+  // take the fixed 4 h hold regardless (no on-device schedule to fall back to).
   ModeStateMachine::Config cfg;
   cfg.defaultHoldType = HoldType::kNone;
   ModeStateMachine sm(cfg);
   PresetDef defs[] = {mkPreset("home", 21.0f, 25.0f)};
   sm.setPresetRoster(defs, 1);
+  sm.setMode(UserMode::kHeat, 50);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());  // mode change held nothing
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 60).applied);
   sm.setHeatSetpoint(19.0f, 100);
-  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
-  TEST_ASSERT_TRUE(sm.applyPreset("home", 110).applied);
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
 }
 
 int main() {
@@ -542,13 +550,13 @@ int main() {
   RUN_TEST(test_preset_apply_honors_deadband_cool_wins);
   RUN_TEST(test_roster_skips_invalid_and_duplicate_entries_and_caps);
   RUN_TEST(test_roster_replace_clears_missing_active_preset);
-  RUN_TEST(test_manual_setpoint_creates_until_next_preset_hold);
+  RUN_TEST(test_manual_setpoint_creates_four_hour_hold);
   RUN_TEST(test_unknown_preset_does_not_end_hold);
   RUN_TEST(test_mode_change_creates_hold);
   RUN_TEST(test_two_hour_hold_blocks_presets_then_expires_mid_tick);
   RUN_TEST(test_four_hour_hold_expires_inside_apply_preset);
   RUN_TEST(test_indefinite_hold_ends_only_on_clear);
   RUN_TEST(test_start_hold_none_clears);
-  RUN_TEST(test_default_hold_type_none_means_manual_changes_hold_nothing);
+  RUN_TEST(test_default_hold_type_none_gates_mode_changes_only);
   return UNITY_END();
 }

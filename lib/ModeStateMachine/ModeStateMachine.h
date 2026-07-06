@@ -109,7 +109,9 @@ class ModeStateMachine {
   SetpointResult setHeatSetpoint(float c);
   SetpointResult setCoolSetpoint(float c);
   // Manual-write setters: an accepted write that changed either setpoint
-  // clears the active preset and creates the default-type hold.
+  // clears the active preset and creates a FOUR-HOUR hold (#91 — no on-device
+  // schedule exists, so an open-ended default would never resume; mode
+  // changes still create the Config::defaultHoldType hold).
   SetpointResult setHeatSetpoint(float c, uint32_t nowS);
   SetpointResult setCoolSetpoint(float c, uint32_t nowS);
 
@@ -129,6 +131,10 @@ class ModeStateMachine {
   // hold -> ends and the preset applies. An unknown name does NOT end a hold.
   PresetResult applyPreset(const char* name, uint32_t nowS);
   const char* activePreset() const { return activePreset_; }  // "" when none
+  // Restore paths (#90 sleep-state exit) that write setpoints through the
+  // time-less setters can drop a no-longer-true preset label. Label only —
+  // setpoints and holds untouched.
+  void clearActivePreset() { activePreset_[0] = '\0'; }
 
   // ----- Holds -----
   void startHold(HoldType t, uint32_t nowS);  // kNone behaves as clearHold()

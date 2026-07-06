@@ -165,6 +165,7 @@ struct DisplayState {
     bool     valid        = false;         // presence feature has data (>=1 presence sensor reporting)
     bool     present      = false;         // someone seen within the away window
     bool     anyReporting = false;         // >=1 presence sensor has ever reported
+    bool     asleep       = false;         // #90: night Sleep state active (home + asleep)
     char     roomName[kSensorNameLen] = {};// dominant most-recently-seen room ("" if none)
     uint32_t lastSeenAgeS = 0xFFFFFFFFu;   // age of the newest last_seen across all
   } presence;
@@ -269,12 +270,14 @@ class UiModel : public UiCommands {
   void setBusDiag(uint32_t lastRxS, uint32_t frames) { state_.busLastRxS = lastRxS; state_.busFrames = frames; }
   void setClock(const char* s) { strncpy(state_.clockStr, s, sizeof(state_.clockStr) - 1); state_.clockStr[sizeof(state_.clockStr) - 1] = 0; }
   void setDegradedMode(bool on);
-  // Presence echo (issue #88); rendered every tick, so no dirty bit needed.
+  // Presence echo (issue #88/#90); rendered every tick, so no dirty bit needed.
   void setPresence(bool valid, bool present, bool anyReporting,
-                   const char* roomName, uint32_t lastSeenAgeS) {
+                   const char* roomName, uint32_t lastSeenAgeS,
+                   bool asleep = false) {
     state_.presence.valid = valid;
     state_.presence.present = present;
     state_.presence.anyReporting = anyReporting;
+    state_.presence.asleep = asleep;
     const char* rn = roomName ? roomName : "";
     strncpy(state_.presence.roomName, rn, kSensorNameLen - 1);
     state_.presence.roomName[kSensorNameLen - 1] = 0;

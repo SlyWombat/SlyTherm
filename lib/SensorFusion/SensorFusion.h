@@ -59,8 +59,9 @@ struct FusedTemp {
 // presence topic so a reboot with people home shows Present immediately.
 //
 // Factored: presence() delegates to presenceWithin(window) over a per-sensor
-// last_seen ledger, so a future night "sleep" state can reuse the same ledger
-// with its own window — not implemented now.
+// last_seen ledger. The night Sleep state (issue #90, lib/SleepState) reuses
+// the same ledger: while asleep the away countdown is frozen by re-evaluating
+// presenceWithin(kPresenceAwayS + SleepState::awayCreditS(...)).
 constexpr uint32_t kPresenceAwayS = 3u * 3600u;  // 3 h across ALL presence sensors
 
 struct PresenceState {
@@ -134,6 +135,11 @@ class SensorFusion {
   // room; anyReporting distinguishes "no sensor reporting" from "nobody home").
   PresenceState presence(uint32_t nowS) const;
 
+  // Presence over an arbitrary window — the same ledger with a caller-chosen
+  // horizon. Used by the Sleep state (issue #90) to freeze the away countdown
+  // overnight: presenceWithin(kPresenceAwayS + awayCredit). Pure read.
+  PresenceState presenceWithin(uint32_t windowS, uint32_t nowS) const;
+
   SensorStatus status(uint8_t id, uint32_t nowS) const;
 
   // Id of the sensor with the greatest current influence on the fused value
@@ -186,10 +192,6 @@ class SensorFusion {
 
   Slot* find(uint8_t id);
   const Slot* find(uint8_t id) const;
-
-  // Presence over an arbitrary window (issue #88; reused by a future sleep
-  // state). Pure read over the per-sensor last_seen ledger.
-  PresenceState presenceWithin(uint32_t windowS, uint32_t nowS) const;
 
   Slot slots_[kMaxSensors];
 
