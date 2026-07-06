@@ -1146,8 +1146,8 @@ const char* tierName(SourceTier t) {
 }
 
 void glueAlarm(bool present, uint16_t code, safety::Severity sev, const char* text,
-               uint32_t nowS) {
-  if (present) gSup->alarms().raise(code, sev, text, nowS);
+               uint32_t nowS, bool autoClear = false) {
+  if (present) gSup->alarms().raise(code, sev, text, nowS, autoClear);
   else gSup->alarms().clearCondition(code);
 }
 
@@ -1457,7 +1457,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   }
   if (setpointFresh) gFallbackApplied = false;
   glueAlarm(gFallbackApplied, cfg::kAlarmMqttFallback, safety::Severity::kAdvisory,
-            "MQTT stale: fallback setpoints", nowS);
+            "MQTT stale: fallback setpoints", nowS, /*autoClear=*/true);
 
   // ---- Boot gate (docs/04 §3 boot validation) ----
   safety::BootFacts bf;
@@ -1476,7 +1476,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     if (call.type == CallType::kHeat && fused.value >= kDegradedHeatCeilC) call = Call{};
   }
   glueAlarm(fused.degraded, cfg::kAlarmDegradedMode, safety::Severity::kCritical,
-            "DS18B20-only degraded mode", nowS);
+            "DS18B20-only degraded mode", nowS, /*autoClear=*/true);
 
   // ---- Dual fuel ----
   DualFuelInputs dfi;
@@ -1492,7 +1492,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 #endif
   const DualFuelOutput dfo = gDualFuel->step(dfi, nowS);
   glueAlarm(dfo.oatInvalidAlarm, cfg::kAlarmOatFailCold, safety::Severity::kAdvisory,
-            "OAT invalid: fail-cold (gas only)", nowS);
+            "OAT invalid: fail-cold (gas only)", nowS, /*autoClear=*/true);
 
   // ---- Per-equipment requests ----
   float gasReq = 0, hpReq = 0, coolReq = 0, fanReq = 0;

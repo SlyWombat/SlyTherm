@@ -35,7 +35,7 @@ void AlarmRegistry::removeAt(uint8_t i) {
 }
 
 void AlarmRegistry::raise(uint16_t code, Severity sev, const char* text,
-                          uint32_t nowS) {
+                          uint32_t nowS, bool autoClear) {
   copyText(lastError_, text);
   int i = findIdx(code);
   if (i >= 0) {
@@ -45,7 +45,8 @@ void AlarmRegistry::raise(uint16_t code, Severity sev, const char* text,
       e.acked     = false;
       e.raisedAtS = nowS;
     }
-    e.severity = sev;
+    e.severity  = sev;
+    e.autoClear = autoClear;  // keep the recoverability flag current
     copyText(e.text, text);
     return;
   }
@@ -59,13 +60,16 @@ void AlarmRegistry::raise(uint16_t code, Severity sev, const char* text,
   e.raisedAtS = nowS;
   e.active    = true;
   e.acked     = false;
+  e.autoClear = autoClear;
   copyText(e.text, text);
 }
 
 void AlarmRegistry::clearCondition(uint16_t code) {
   int i = findIdx(code);
   if (i < 0) return;
-  if (entries_[i].acked) {
+  // Auto-recoverable (issue #72) or already acked -> drop the moment the
+  // condition resolves, so a healthy live state shows no stale alarm.
+  if (entries_[i].acked || entries_[i].autoClear) {
     removeAt(static_cast<uint8_t>(i));
   } else {
     entries_[i].active = false;  // stays visible until acked
@@ -180,9 +184,10 @@ SafetySupervisor::SafetySupervisor(uint32_t bootNowS, const Config& cfg)
       bootGate_(bootNowS, cfg.bootGraceS) {}
 
 void SafetySupervisor::setCondition(bool present, uint16_t code, Severity sev,
-                                    const char* text, uint32_t nowS) {
+                                    const char* text, uint32_t nowS,
+                                    bool autoClear) {
   if (present) {
-    alarms_.raise(code, sev, text, nowS);
+    alarms_.raise(code, sev, text, nowS, autoClear);
   } else {
     alarms_.clearCondition(code);
   }
@@ -190,9 +195,10 @@ void SafetySupervisor::setCondition(bool present, uint16_t code, Severity sev,
 
 void SafetySupervisor::updateBootGate(const BootFacts& f, uint32_t nowS) {
   bootGate_.update(f, nowS);
+  // Auto-clears the instant the boot gate validates (sensors/setpoints arrive).
   setCondition(bootGate_.graceExceeded(), kAlarmBootGraceExceeded,
                Severity::kCritical, "boot validation overdue, demands held",
-               nowS);
+               nowS, /*autoClear=*/true);
 }
 
 void SafetySupervisor::update(const HealthFacts& f, uint32_t nowS) {
@@ -218,16 +224,20 @@ void SafetySupervisor::update(const HealthFacts& f, uint32_t nowS) {
     }
   }
 
+  // Auto-recoverable conditions (issue #72) clear the moment their input
+  // returns — no manual ack — so Diag never shows a stale sensor/MQTT alarm
+  // while the live state is healthy. The invariant/latched faults below keep
+  // the persist-until-ack contract (a transient must never be silently lost).
   setCondition(!f.sensorValid, kAlarmSensorInvalid, Severity::kCritical,
-               "temp sensor invalid: no demand", nowS);
+               "temp sensor invalid: no demand", nowS, /*autoClear=*/true);
   setCondition(!f.controlLoopTicking, kAlarmControlLoopStalled,
                Severity::kCritical, "control loop stalled", nowS);
   setCondition(!f.demandStateSane, kAlarmDemandStateInsane, Severity::kCritical,
                "demand state insane: forced zero", nowS);
   setCondition(!f.setpointFresh, kAlarmSetpointStale, Severity::kAdvisory,
-               "setpoints stale: local fallback", nowS);
+               "setpoints stale: local fallback", nowS, /*autoClear=*/true);
   setCondition(!f.mqttAlive, kAlarmMqttDown, Severity::kAdvisory,
-               "MQTT/HA link down", nowS);
+               "MQTT/HA link down", nowS, /*autoClear=*/true);
   setCondition(resetLoop_.latched(), kAlarmResetLoopLatched, Severity::kCritical,
                "reset loop: latched no-demand", nowS);
 }

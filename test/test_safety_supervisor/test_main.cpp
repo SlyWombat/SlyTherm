@@ -145,10 +145,8 @@ static void test_pet_recovers_when_facts_recover() {
   sup.update(allGood(), 3);
   TEST_ASSERT_TRUE(sup.petExternalWdt());
   TEST_ASSERT_TRUE(sup.demandPermitted());
-  const AlarmEntry* a = sup.alarms().find(kAlarmSensorInvalid);
-  TEST_ASSERT_NOT_NULL(a);          // unacked transient stays visible...
-  TEST_ASSERT_FALSE(a->active);     // ...but inactive
-  sup.alarms().ack(kAlarmSensorInvalid);
+  // Auto-recoverable (issue #72): the sensor-invalid alarm drops the moment a
+  // valid sample returns — no manual ack, no stale Diag entry.
   TEST_ASSERT_NULL(sup.alarms().find(kAlarmSensorInvalid));
 }
 
@@ -340,6 +338,40 @@ static void test_alarm_reraise_after_clear_realerts() {
   TEST_ASSERT_EQUAL_UINT32(50, a->raisedAtS);
 }
 
+// Issue #72: an auto-clear alarm drops the instant its condition resolves,
+// with no ack — while a default (non-auto-clear) alarm still persists until
+// acked. Registry-level raise->resolve->clear.
+static void test_alarm_autoclear_drops_without_ack() {
+  AlarmRegistry reg;
+  reg.raise(1, Severity::kCritical, "auto", 5, /*autoClear=*/true);
+  TEST_ASSERT_NOT_NULL(reg.find(1));
+  TEST_ASSERT_TRUE(reg.find(1)->active);
+  reg.clearCondition(1);                 // condition resolves
+  TEST_ASSERT_NULL(reg.find(1));         // gone, no ack needed
+  TEST_ASSERT_EQUAL_UINT8(0, reg.count());
+
+  // Default (autoClear=false) still persists inactive until acked.
+  reg.raise(2, Severity::kAdvisory, "sticky", 6);
+  reg.clearCondition(2);
+  TEST_ASSERT_NOT_NULL(reg.find(2));
+  TEST_ASSERT_FALSE(reg.find(2)->active);
+}
+
+// Issue #72: the supervisor's own auto-recoverable conditions (MQTT, sensor)
+// self-clear one cycle after the fact returns — the reported bug where Diag
+// showed a stale "MQTT/HA link down" while the link was live.
+static void test_supervisor_recoverable_alarms_selfclear() {
+  SafetySupervisor sup(0);
+  bringUp(sup, 1);
+  HealthFacts f = allGood();
+  f.mqttAlive = false;
+  sup.update(f, 2);
+  TEST_ASSERT_NOT_NULL(sup.alarms().find(kAlarmMqttDown));
+  sup.update(allGood(), 3);              // link back
+  TEST_ASSERT_NULL(sup.alarms().find(kAlarmMqttDown));   // cleared, no ack
+  TEST_ASSERT_FALSE(sup.healthProblem());
+}
+
 // Mock with the UiModel alarm sink shape (clearAlarms + pushAlarm) — verifies
 // the adapter without depending on the parallel-owned UI lib.
 struct UiSinkMock {
@@ -502,6 +534,8 @@ int main() {
   RUN_TEST(test_alarm_reraise_does_not_duplicate);
   RUN_TEST(test_alarm_ack_semantics);
   RUN_TEST(test_alarm_reraise_after_clear_realerts);
+  RUN_TEST(test_alarm_autoclear_drops_without_ack);
+  RUN_TEST(test_supervisor_recoverable_alarms_selfclear);
   RUN_TEST(test_alarm_ui_adapter_sync);
   RUN_TEST(test_alarm_text_truncated_not_overrun);
   RUN_TEST(test_reset_loop_latches_in_window);

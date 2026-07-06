@@ -85,6 +85,7 @@ struct AlarmEntry {
   uint32_t raisedAtS = 0;
   bool     active    = false;  // condition currently present
   bool     acked     = false;  // human has acknowledged
+  bool     autoClear = false;  // auto-recoverable: drop on clearCondition, no ack (issue #72)
 };
 
 // Lifecycle: raise() inserts or reactivates (a re-raise after the condition
@@ -93,9 +94,16 @@ struct AlarmEntry {
 // is never silently lost. ack() of an inactive entry removes it; of an active
 // one keeps it listed (the problem persists) but acknowledged. An entry
 // leaves the list only when it is both inactive and acked.
+//
+// autoClear (issue #72): an alarm raised with autoClear=true is
+// auto-recoverable (OAT source returns, MQTT reconnects, a valid room sample
+// arrives) — clearCondition() removes it immediately, no ack needed, so a
+// resolved condition can't linger as a stale Diag entry. autoClear=false
+// (default) keeps the persist-until-ack contract for latched safety events.
 class AlarmRegistry {
  public:
-  void raise(uint16_t code, Severity sev, const char* text, uint32_t nowS);
+  void raise(uint16_t code, Severity sev, const char* text, uint32_t nowS,
+             bool autoClear = false);
   void clearCondition(uint16_t code);
   bool ack(uint16_t code);  // false if code not listed
   void ackAll();
@@ -263,7 +271,7 @@ class SafetySupervisor {
     return nowS >= thenS ? nowS - thenS : 0;
   }
   void setCondition(bool present, uint16_t code, Severity sev, const char* text,
-                    uint32_t nowS);
+                    uint32_t nowS, bool autoClear = false);
   bool mandatoryOk() const;
 
   Config              cfg_;
