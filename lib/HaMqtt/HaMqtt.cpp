@@ -14,27 +14,27 @@ namespace hamqtt {
 // ---------- Topic helpers ----------
 
 std::string sensorStateTopic(const std::string& sensorId) {
-  return "dettson/sensors/" + sensorId + "/state";
+  return SLYTHERM_TOPIC_PREFIX "sensors/" + sensorId + "/state";
 }
 
 std::string sensorAgeStateTopic(const std::string& sensorId) {
-  return "dettson/state/sensor/" + sensorId + "/age";
+  return SLYTHERM_TOPIC_PREFIX "state/sensor/" + sensorId + "/age";
 }
 
 std::string sensorParticipatingStateTopic(const std::string& sensorId) {
-  return "dettson/state/sensor/" + sensorId + "/participating";
+  return SLYTHERM_TOPIC_PREFIX "state/sensor/" + sensorId + "/participating";
 }
 
 std::string sensorOffsetCommandTopic(const std::string& sensorId) {
-  return "dettson/cmd/sensor/" + sensorId + "/offset";
+  return SLYTHERM_TOPIC_PREFIX "cmd/sensor/" + sensorId + "/offset";
 }
 
 std::string sensorOffsetStateTopic(const std::string& sensorId) {
-  return "dettson/state/sensor/" + sensorId + "/offset";
+  return SLYTHERM_TOPIC_PREFIX "state/sensor/" + sensorId + "/offset";
 }
 
 std::string discoveryTopic(const char* component, const std::string& objectId) {
-  return std::string(topic::kDiscoveryPrefix) + "/" + component + "/dettson/" +
+  return std::string(topic::kDiscoveryPrefix) + "/" + component + "/slytherm/" +
          objectId + "/config";
 }
 
@@ -513,8 +513,8 @@ std::string strList(const std::vector<std::string>& items) {
 
 std::string deviceJson() {
   return Obj()
-      .raw("identifiers", strList({"dettson_esp32"}))
-      .str("name", "Dettson ClimateTalk Thermostat")
+      .raw("identifiers", strList({"slytherm_esp32"}))
+      .str("name", "SlyTherm ClimateTalk Thermostat")
       .str("manufacturer", "ElectricRV")
       .str("model", "ESP32-S3 CT-485")
       .close();
@@ -539,7 +539,7 @@ struct EntitySpec {
 
 std::string entityDiscoveryJson(const EntitySpec& e) {
   Obj o;
-  // object_id pins a clean entity_id (sensor.dettson_<x>) instead of HA
+  // object_id pins a clean entity_id (sensor.slytherm_<x>) instead of HA
   // auto-prefixing the device name (docs/06; matches ha/packages).
   o.str("name", e.name).str("unique_id", e.uniqueId).str("object_id", e.uniqueId)
       .str("state_topic", e.stateTopic);
@@ -564,9 +564,9 @@ std::string entityDiscoveryJson(const EntitySpec& e) {
 
 std::string climateDiscoveryJson(const std::vector<std::string>& presetModes) {
   return Obj()
-      .str("name", "Dettson HVAC")
-      .str("unique_id", "dettson_hvac")
-      .str("object_id", "dettson_hvac")
+      .str("name", "SlyTherm HVAC")
+      .str("unique_id", "slytherm_hvac")
+      .str("object_id", "slytherm_hvac")
       .raw("modes", strList({"off", "heat", "cool", "heat_cool"}))
       .raw("fan_modes", strList({"auto", "on", "circulate"}))
       .raw("preset_modes", strList(presetModes))  // built from the roster
@@ -597,16 +597,16 @@ std::string climateDiscoveryJson(const std::vector<std::string>& presetModes) {
 
 std::string activeEquipmentDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Active Equipment";
-  e.uniqueId = "dettson_active_equipment";
+  e.name = "SlyTherm Active Equipment";
+  e.uniqueId = "slytherm_active_equipment";
   e.stateTopic = topic::kStateActiveEquipment;
   return entityDiscoveryJson(e);
 }
 
 std::string modulationDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Gas Modulation";
-  e.uniqueId = "dettson_modulation";
+  e.name = "SlyTherm Gas Modulation";
+  e.uniqueId = "slytherm_modulation";
   e.stateTopic = topic::kStateModulation;
   e.unit = "%";
   return entityDiscoveryJson(e);
@@ -614,24 +614,24 @@ std::string modulationDiscoveryJson() {
 
 std::string blowerDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Blower";
-  e.uniqueId = "dettson_blower";
+  e.name = "SlyTherm Blower";
+  e.uniqueId = "slytherm_blower";
   e.stateTopic = topic::kStateBlower;
   return entityDiscoveryJson(e);
 }
 
 std::string faultDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Fault";
-  e.uniqueId = "dettson_fault";
+  e.name = "SlyTherm Fault";
+  e.uniqueId = "slytherm_fault";
   e.stateTopic = topic::kStateFault;
   return entityDiscoveryJson(e);
 }
 
 std::string healthDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Health";
-  e.uniqueId = "dettson_health";
+  e.name = "SlyTherm Health";
+  e.uniqueId = "slytherm_health";
   e.stateTopic = topic::kStateHealth;
   e.deviceClass = "problem";
   e.binary = true;
@@ -640,8 +640,8 @@ std::string healthDiscoveryJson() {
 
 std::string lastErrorDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Last Error";
-  e.uniqueId = "dettson_last_error";
+  e.name = "SlyTherm Last Error";
+  e.uniqueId = "slytherm_last_error";
   e.stateTopic = topic::kStateLastError;
   e.diagnostic = true;
   return entityDiscoveryJson(e);
@@ -649,8 +649,8 @@ std::string lastErrorDiscoveryJson() {
 
 std::string compressorMinOffRemainingDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Compressor Min-Off Remaining";
-  e.uniqueId = "dettson_compressor_min_off_remaining";
+  e.name = "SlyTherm Compressor Min-Off Remaining";
+  e.uniqueId = "slytherm_compressor_min_off_remaining";
   e.stateTopic = topic::kStateCompressorMinOffRemaining;
   e.unit = "s";
   e.diagnostic = true;
@@ -659,8 +659,8 @@ std::string compressorMinOffRemainingDiscoveryJson() {
 
 std::string compressorLockedOutDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Compressor Locked Out";
-  e.uniqueId = "dettson_compressor_locked_out";
+  e.name = "SlyTherm Compressor Locked Out";
+  e.uniqueId = "slytherm_compressor_locked_out";
   e.stateTopic = topic::kStateCompressorLockedOut;
   e.diagnostic = true;
   e.binary = true;
@@ -669,8 +669,8 @@ std::string compressorLockedOutDiscoveryJson() {
 
 std::string holdDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Hold";
-  e.uniqueId = "dettson_hold";
+  e.name = "SlyTherm Hold";
+  e.uniqueId = "slytherm_hold";
   e.stateTopic = topic::kStateHold;
   e.valueTemplate = "{{ value_json.type }}";
   e.jsonAttributesTopic = topic::kStateHold;
@@ -684,8 +684,8 @@ std::string holdDiscoveryJson() {
 // "clear"). Options mirror the HoldType<->string map so state round-trips.
 std::string holdSelectDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Hold Duration";
-  e.uniqueId = "dettson_hold_duration";
+  e.name = "SlyTherm Hold Duration";
+  e.uniqueId = "slytherm_hold_duration";
   e.stateTopic = topic::kStateHold;
   e.commandTopic = topic::kCmdHold;
   e.valueTemplate = "{{ value_json.type }}";
@@ -697,8 +697,8 @@ std::string holdSelectDiscoveryJson() {
 
 std::string emHeatDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Emergency Heat";
-  e.uniqueId = "dettson_em_heat";
+  e.name = "SlyTherm Emergency Heat";
+  e.uniqueId = "slytherm_em_heat";
   e.stateTopic = topic::kStateEmHeat;
   e.commandTopic = topic::kCmdEmHeat;
   e.binary = true;  // ON/OFF payloads, both directions
@@ -719,8 +719,8 @@ std::string lockStateJson(LockState s, LockLevel l, bool userPinSet) {
 
 std::string lockDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Screen Lock";
-  e.uniqueId = "dettson_lock";
+  e.name = "SlyTherm Screen Lock";
+  e.uniqueId = "slytherm_lock";
   e.stateTopic = topic::kStateLock;
   e.valueTemplate = "{{ value_json.state }}";
   e.jsonAttributesTopic = topic::kStateLock;
@@ -730,8 +730,8 @@ std::string lockDiscoveryJson() {
 
 std::string outdoorTempDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Outdoor Temperature";
-  e.uniqueId = "dettson_outdoor_temp";
+  e.name = "SlyTherm Outdoor Temperature";
+  e.uniqueId = "slytherm_outdoor_temp";
   e.stateTopic = topic::kStateOutdoorTemp;
   e.unit = "°C";
   e.deviceClass = "temperature";
@@ -741,8 +741,8 @@ std::string outdoorTempDiscoveryJson() {
 
 std::string outdoorSourceDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Outdoor Source";
-  e.uniqueId = "dettson_outdoor_source";
+  e.name = "SlyTherm Outdoor Source";
+  e.uniqueId = "slytherm_outdoor_source";
   e.stateTopic = topic::kStateOutdoorSource;
   e.diagnostic = true;
   return entityDiscoveryJson(e);
@@ -750,8 +750,8 @@ std::string outdoorSourceDiscoveryJson() {
 
 std::string fusionDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Fusion";
-  e.uniqueId = "dettson_fusion";
+  e.name = "SlyTherm Fusion";
+  e.uniqueId = "slytherm_fusion";
   e.stateTopic = topic::kStateFusion;
   e.unit = "°C";
   e.deviceClass = "temperature";
@@ -763,8 +763,8 @@ std::string fusionDiscoveryJson() {
 
 std::string changeoverReasonDiscoveryJson() {
   EntitySpec e;
-  e.name = "Dettson Changeover Reason";
-  e.uniqueId = "dettson_changeover_reason";
+  e.name = "SlyTherm Changeover Reason";
+  e.uniqueId = "slytherm_changeover_reason";
   e.stateTopic = topic::kStateChangeoverReason;
   e.diagnostic = true;
   return entityDiscoveryJson(e);
@@ -772,8 +772,8 @@ std::string changeoverReasonDiscoveryJson() {
 
 std::string sensorAgeDiscoveryJson(const std::string& sensorId) {
   EntitySpec e;
-  e.name = "Dettson Sensor " + sensorId + " Age";
-  e.uniqueId = "dettson_sensor_" + sensorId + "_age";
+  e.name = "SlyTherm Sensor " + sensorId + " Age";
+  e.uniqueId = "slytherm_sensor_" + sensorId + "_age";
   e.stateTopic = sensorAgeStateTopic(sensorId);
   e.unit = "s";
   e.diagnostic = true;
@@ -782,8 +782,8 @@ std::string sensorAgeDiscoveryJson(const std::string& sensorId) {
 
 std::string sensorOffsetDiscoveryJson(const std::string& sensorId) {
   EntitySpec e;
-  e.name = "Dettson Sensor " + sensorId + " Offset";
-  e.uniqueId = "dettson_sensor_" + sensorId + "_offset";
+  e.name = "SlyTherm Sensor " + sensorId + " Offset";
+  e.uniqueId = "slytherm_sensor_" + sensorId + "_offset";
   e.stateTopic = sensorOffsetStateTopic(sensorId);
   e.commandTopic = sensorOffsetCommandTopic(sensorId);
   e.unit = "°C";
@@ -797,8 +797,8 @@ std::string sensorOffsetDiscoveryJson(const std::string& sensorId) {
 
 std::string sensorParticipatingDiscoveryJson(const std::string& sensorId) {
   EntitySpec e;
-  e.name = "Dettson Sensor " + sensorId + " Participating";
-  e.uniqueId = "dettson_sensor_" + sensorId + "_participating";
+  e.name = "SlyTherm Sensor " + sensorId + " Participating";
+  e.uniqueId = "slytherm_sensor_" + sensorId + "_participating";
   e.stateTopic = sensorParticipatingStateTopic(sensorId);
   e.diagnostic = true;
   e.binary = true;

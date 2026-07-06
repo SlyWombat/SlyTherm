@@ -21,7 +21,7 @@
 > valve directly — we send a *heat demand* over CT-485 and the furnace's certified IFC retains
 > **all** combustion safety interlocks. The prime directive is **fail-to-no-demand**, never
 > violating compressor minimum timers. The CT-485 stack boots **silent / listen-only** and never
-> transmits without an explicit gated opt-in (`DETTSON_CT485_TX_ENABLE`).
+> transmits without an explicit gated opt-in (`SLYTHERM_CT485_TX_ENABLE`).
 
 ---
 

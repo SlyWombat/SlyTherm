@@ -1,9 +1,9 @@
-# Presence-based Away for the Dettson DT-1 (gap G3, docs/07). Reusable
+# Presence-based Away for the SlyTherm DT-1 (gap G3, docs/07). Reusable
 # person-entity version of the zone.home automation in
-# ha/packages/dettson_starter.yaml — use this one when you want to pick
+# ha/packages/slytherm_starter.yaml — use this one when you want to pick
 # exactly which phones count (guests, a phone that stays home, etc.).
 blueprint:
-  name: "Dettson: presence-based Away preset"
+  name: "SlyTherm: presence-based Away preset"
   description: >-
     Sets the thermostat to the Away preset when every selected person has left
     home (after a settling delay), and restores the Home preset when the first
@@ -21,7 +21,7 @@ blueprint:
           multiple: true
     climate_entity:
       name: Thermostat
-      default: climate.dettson_hvac
+      default: climate.slytherm_hvac
       selector:
         entity:
           domain: climate
@@ -35,7 +35,7 @@ blueprint:
       description: >-
         Preset restored on arrival. Tip: instead of a fixed preset you can
         edit the produced automation to call
-        script.dettson_apply_scheduled_preset (from the starter package) so
+        script.slytherm_apply_scheduled_preset (from the starter package) so
         a late arrival lands on "sleep" instead of "home".
       default: home
       selector:

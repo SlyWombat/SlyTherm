@@ -1,14 +1,14 @@
-# dettson_sensors.yaml — bridge Home Assistant room sensors into the Dettson
+# slytherm_sensors.yaml — bridge Home Assistant room sensors into the SlyTherm
 # thermostat's live-sensor contract (issue #22, docs/06). This is the piece that
 # makes the wall unit's Sensors screen + "follow me" fusion show REAL rooms.
 #
 # The thermostat fuses temperatures it receives on
-#   dettson/sensors/<id>/state   {"temp": <°C>[, "occ": <bool>]}   non-retained, heartbeat
+#   slytherm/sensors/<id>/state   {"temp": <°C>[, "occ": <bool>]}   non-retained, heartbeat
 # and only uses sensors listed in the retained roster
-#   dettson/config/sensors       {"sensors":[{"id":"living","max_age_s":300,"offset":0.0}]}
+#   slytherm/config/sensors       {"sensors":[{"id":"living","max_age_s":300,"offset":0.0}]}
 #
 # Prereqs: HA's MQTT integration points at the same broker as the thermostat
-# (see ha/README.md → "Live sensors"). Then EDIT the `dettson_rooms` list below
+# (see ha/README.md → "Live sensors"). Then EDIT the `slytherm_rooms` list below
 # and reload automations. Occupancy (`occ`) is optional but powers the
 # occupancy-weighted "follow me" fusion — map a presence/motion/occupancy
 # binary_sensor per room where you have one.
@@ -17,14 +17,14 @@ automation:
   # ---- Publish the retained roster: which HA sensors the thermostat may use ----
   # Retained, so a thermostat that reconnects gets it immediately; also re-sent
   # whenever the thermostat announces itself online (LWT availability).
-  - id: dettson_publish_sensor_roster
-    alias: "Dettson · publish sensor roster"
+  - id: slytherm_publish_sensor_roster
+    alias: "SlyTherm · publish sensor roster"
     mode: single
     trigger:
       - platform: homeassistant
         event: start
       - platform: mqtt
-        topic: dettson/availability
+        topic: slytherm/availability
         payload: online
     variables:
       # ===================== EDIT ME: your rooms =====================
@@ -33,7 +33,7 @@ automation:
       # occ       (optional) a binary_sensor that is 'on' when occupied
       # max_age_s drop from fusion if no update within this many seconds
       # offset    (optional) calibration offset °C applied by the thermostat
-      rooms: &dettson_rooms
+      rooms: &slytherm_rooms
         - id: living
           temp: sensor.living_room_temperature
           occ: binary_sensor.living_room_occupancy
@@ -51,7 +51,7 @@ automation:
     action:
       - service: mqtt.publish
         data:
-          topic: dettson/config/sensors
+          topic: slytherm/config/sensors
           retain: true
           payload: >-
             {"sensors":[
@@ -63,14 +63,14 @@ automation:
             ]}
 
   # ---- Bridge each room sensor into the contract (heartbeat < max_age_s) ----
-  - id: dettson_bridge_room_sensors
-    alias: "Dettson · bridge room sensors"
+  - id: slytherm_bridge_room_sensors
+    alias: "SlyTherm · bridge room sensors"
     mode: single
     trigger:
       - platform: time_pattern
         seconds: "/30"
     variables:
-      rooms: *dettson_rooms
+      rooms: *slytherm_rooms
     action:
       - repeat:
           for_each: "{{ rooms }}"
@@ -81,7 +81,7 @@ automation:
               value_template: "{{ t not in ['unknown', 'unavailable', 'none', ''] }}"
             - service: mqtt.publish
               data:
-                topic: "dettson/sensors/{{ repeat.item.id }}/state"
+                topic: "slytherm/sensors/{{ repeat.item.id }}/state"
                 payload: >-
                   {"temp":{{ t | float }}
                   {%- if repeat.item.occ is defined and repeat.item.occ -%}

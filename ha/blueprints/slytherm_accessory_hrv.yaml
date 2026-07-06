@@ -1,4 +1,4 @@
-# Coordinated standalone HRV/ERV/ventilator for the Dettson DT-1 (gap G1
+# Coordinated standalone HRV/ERV/ventilator for the SlyTherm DT-1 (gap G1
 # step 1, docs/07 §G1). Mirrors Ecobee's ventilator semantics: minimum
 # minutes-per-hour duty, separate occupied/unoccupied rates, and an outdoor
 # lockout (free-cooling-style outdoor temp/RH limits) — driven from a
@@ -8,7 +8,7 @@
 # core protections.
 #
 # Telemetry consumed (docs/06 entity contract):
-#   sensor.dettson_outdoor_temp   fused outdoor °C (lockout)
+#   sensor.slytherm_outdoor_temp   fused outdoor °C (lockout)
 #
 # Behavior: at the top of every hour the duty block runs first (occupied or
 # unoccupied minutes, by the optional presence entity), then the switch goes
@@ -18,7 +18,7 @@
 # next hour. After an HA restart mid-run the switch stays on until the next
 # hourly evaluation — size the duty assuming that worst case.
 blueprint:
-  name: "Dettson: HRV / ventilator minutes-per-hour duty"
+  name: "SlyTherm: HRV / ventilator minutes-per-hour duty"
   description: >-
     Runs a user-supplied smart-switched HRV/ERV for a set number of minutes
     at the top of each hour, with a lower rate when unoccupied (optional
@@ -75,7 +75,7 @@ blueprint:
         entity: {}
     outdoor_temp_entity:
       name: Outdoor temperature sensor
-      default: sensor.dettson_outdoor_temp
+      default: sensor.slytherm_outdoor_temp
       selector:
         entity:
           domain: sensor

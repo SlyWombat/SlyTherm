@@ -3,7 +3,7 @@
 // Learns equipment ramp rates (degrees C per hour) per {mode heat|cool,
 // equipment hp|gas} channel from run segments the caller observes
 // (startSegment/endSegment with temps + times), then — given the next
-// scheduled target HA publishes on dettson/cmd/next_target (docs/06 "Smart
+// scheduled target HA publishes on slytherm/cmd/next_target (docs/06 "Smart
 // recovery") — recommends how early the call should start so the room
 // arrives at the setpoint on time.
 //

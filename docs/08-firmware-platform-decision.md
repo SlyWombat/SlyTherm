@@ -73,7 +73,7 @@ What custom must build that ESPHome gives free:
 
 **Hybrid corollary (honest part):** ESPHome earned its keep for everything that is *not* the wall unit. The spike’s 183-LOC component delivering a working HA-visible sniffer over our unmodified libs is a genuinely excellent power-to-effort ratio. Use ESPHome freely for:
 
-- **Accessory room-sensor nodes** publishing `dettson/sensors/<id>/state` (they are exactly its sweet spot; zero safety role).
+- **Accessory room-sensor nodes** publishing `slytherm/sensors/<id>/state` (they are exactly its sweet spot; zero safety role).
 - The **bench sniff-rig convenience build** (`spike/esphome/ct485-spike.yaml` already is one).
 - An outdoor DS18B20 node for the `OutdoorTempSource` HA-weather rung, if wanted.
 

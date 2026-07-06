@@ -14,7 +14,7 @@
 namespace thermostat {
 
 // ---------- Pins (ESP32-DevKitC bench rig; -1 = not wired -> no-op) ----------
-// CT-485 UART2 (used only under -DDETTSON_CT485_UART; matches the sniffer rig
+// CT-485 UART2 (used only under -DSLYTHERM_CT485_UART; matches the sniffer rig
 // RX pin so the same transceiver wiring serves both firmwares).
 // Waveshare ESP32-S3-Touch-LCD-4.3B onboard isolated RS-485 (auto-direction,
 // no DE line) is on GPIO43(RX)/GPIO44(TX); DE = -1 -> no direction pin (#71).
@@ -27,7 +27,7 @@ constexpr int kCt485DePin = -1;   // -1 = auto-direction transceiver, no DE/RE
 constexpr int kWdtPetPin = -1;
 
 // Case B relay outputs + blower-proof sense (used only under
-// -DDETTSON_ACTUATOR_RELAY). -1 = log only. Relays are normally open,
+// -DSLYTHERM_ACTUATOR_RELAY). -1 = log only. Relays are normally open,
 // de-energized at boot (docs/04 §1b); HIGH = energized.
 constexpr int kRelayY1Pin = -1;
 constexpr int kRelayY2Pin = -1;
@@ -37,7 +37,7 @@ constexpr int kSenseGPin  = -1;   // 24 V opto blower sense; -1 = no proof ->
                                   //  Y is never closed (docs/04 §2 coil freeze)
 constexpr int kSenseDPin  = -1;   // D-wire defrost sense (observation only)
 
-// Local DS18B20s (used only under -DDETTSON_DS18B20): indoor fallback +
+// Local DS18B20s (used only under -DSLYTHERM_DS18B20): indoor fallback +
 // outdoor rung 2. Bench default is MQTT-only simulated sensors.
 constexpr int kOneWirePin = -1;
 
@@ -50,7 +50,7 @@ constexpr uint32_t kCt485Stack        = 4096;
 constexpr uint32_t kMqttStack         = 10240; // discovery JSON strings live here
 
 // ---------- Network ----------
-constexpr const char* kMqttClientId   = "dettson-thermostat";
+constexpr const char* kMqttClientId   = "slytherm-thermostat";
 constexpr uint32_t kWifiRetryMs       = 15000;
 constexpr uint32_t kMqttReconnectMs   = 5000;
 constexpr uint16_t kMqttBufBytes      = 2048;  // climate discovery JSON > 1 KiB
@@ -58,7 +58,7 @@ constexpr uint32_t kStateHeartbeatS   = 60;    // full state republish cadence
 
 // HA-weather bridge topic for the outdoor ladder's third rung (docs/06 topic
 // map; OatRung::kHaWeather). Plausibility-gated -50..55 C on ingest.
-constexpr const char* kOatTopic = "dettson/cmd/outdoor_temp";
+constexpr const char* kOatTopic = "slytherm/cmd/outdoor_temp";
 constexpr float kOatIngestMinC = -50.0f;
 constexpr float kOatIngestMaxC = 55.0f;
 
@@ -81,7 +81,7 @@ constexpr float kHpFullScaleErrC  = 2.0f;
 // DS18B20-only degraded mode demand cap (docs/04 §4 "demand capped").
 constexpr float kDegradedGasCapPct = 60.0f;
 
-// Default preset roster until the retained dettson/config/presets arrives
+// Default preset roster until the retained slytherm/config/presets arrives
 // (docs/06 default home/away/sleep).
 struct DefaultPreset { const char* name; float heatC; float coolC; };
 constexpr DefaultPreset kDefaultPresets[] = {

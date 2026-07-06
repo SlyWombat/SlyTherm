@@ -126,7 +126,7 @@ static void test_range_and_nan_rejected() {
 }
 
 static void test_rung_names_match_topic_values() {
-  // docs/06: dettson/state/outdoor_source = bus / wired / ha / none.
+  // docs/06: slytherm/state/outdoor_source = bus / wired / ha / none.
   TEST_ASSERT_EQUAL_STRING("bus", oatRungName(OatRung::kBus));
   TEST_ASSERT_EQUAL_STRING("wired", oatRungName(OatRung::kWired));
   TEST_ASSERT_EQUAL_STRING("ha", oatRungName(OatRung::kHaWeather));

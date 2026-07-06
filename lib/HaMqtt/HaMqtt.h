@@ -1,4 +1,4 @@
-// HaMqtt.h — Home Assistant MQTT contract for the Dettson thermostat.
+// HaMqtt.h — Home Assistant MQTT contract for the SlyTherm thermostat.
 //
 // Pure string/JSON builders, topic constants, and inbound-payload parsers
 // mirroring docs/06-home-assistant.md. NO network code — the Arduino
@@ -22,70 +22,83 @@
 namespace dettson {
 namespace hamqtt {
 
+// ---------- Product topic namespace (issue #79) ----------
+// The ONE place the brand/topic prefix is defined. SlyTherm is the product;
+// Dettson is a device profile (C105-MV, CT-485/ClimateTalk) behind it, not the
+// product name. A second furnace/HP brand is a new device profile — NOT a new
+// prefix. Every topic constant + per-id topic builder derives from this.
+//
+// MIGRATION (breaking): retained topics move dettson/* -> slytherm/*. Publish
+// nothing under the old prefix; clear the old retained topics at the broker and
+// delete+re-discover the HA device (HA will not rename existing entities).
+#define SLYTHERM_TOPIC_PREFIX "slytherm/"
+
 // ---------- Topic map (docs/06 "Topic map") ----------
 namespace topic {
 
+constexpr const char* kTopicPrefix = SLYTHERM_TOPIC_PREFIX;  // single-source brand prefix
+
 // HA -> ESP32 (commands)
-constexpr const char* kCmdSetpoint       = "dettson/cmd/setpoint";
-constexpr const char* kCmdTargetTempLow  = "dettson/cmd/target_temp_low";
-constexpr const char* kCmdTargetTempHigh = "dettson/cmd/target_temp_high";
-constexpr const char* kCmdMode           = "dettson/cmd/mode";
-constexpr const char* kCmdFanMode        = "dettson/cmd/fan_mode";
-constexpr const char* kCmdPreset         = "dettson/cmd/preset";
-constexpr const char* kCmdHold           = "dettson/cmd/hold";  // hold type or "clear"
-constexpr const char* kCmdEmHeat         = "dettson/cmd/em_heat";  // switch "ON"/"OFF" (G15)
-constexpr const char* kCmdLockClear      = "dettson/cmd/lock_clear";  // forgotten-PIN recovery (issue #45)
-constexpr const char* kCmdNextTarget     = "dettson/cmd/next_target";  // smart recovery (issue #50)
+constexpr const char* kCmdSetpoint       = SLYTHERM_TOPIC_PREFIX "cmd/setpoint";
+constexpr const char* kCmdTargetTempLow  = SLYTHERM_TOPIC_PREFIX "cmd/target_temp_low";
+constexpr const char* kCmdTargetTempHigh = SLYTHERM_TOPIC_PREFIX "cmd/target_temp_high";
+constexpr const char* kCmdMode           = SLYTHERM_TOPIC_PREFIX "cmd/mode";
+constexpr const char* kCmdFanMode        = SLYTHERM_TOPIC_PREFIX "cmd/fan_mode";
+constexpr const char* kCmdPreset         = SLYTHERM_TOPIC_PREFIX "cmd/preset";
+constexpr const char* kCmdHold           = SLYTHERM_TOPIC_PREFIX "cmd/hold";  // hold type or "clear"
+constexpr const char* kCmdEmHeat         = SLYTHERM_TOPIC_PREFIX "cmd/em_heat";  // switch "ON"/"OFF" (G15)
+constexpr const char* kCmdLockClear      = SLYTHERM_TOPIC_PREFIX "cmd/lock_clear";  // forgotten-PIN recovery (issue #45)
+constexpr const char* kCmdNextTarget     = SLYTHERM_TOPIC_PREFIX "cmd/next_target";  // smart recovery (issue #50)
 
 // HA -> ESP32 (remote-sensor contract; see sensorStateTopic() for per-id state)
-constexpr const char* kConfigSensors     = "dettson/config/sensors";  // retained roster
-constexpr const char* kConfigPresets     = "dettson/config/presets";  // retained roster
+constexpr const char* kConfigSensors     = SLYTHERM_TOPIC_PREFIX "config/sensors";  // retained roster
+constexpr const char* kConfigPresets     = SLYTHERM_TOPIC_PREFIX "config/presets";  // retained roster
 
 // ESP32 -> HA (state)
-constexpr const char* kStateCurrentTemp     = "dettson/state/current_temp";
-constexpr const char* kStateSetpoint        = "dettson/state/setpoint";
-constexpr const char* kStateTargetTempLow   = "dettson/state/target_temp_low";
-constexpr const char* kStateTargetTempHigh  = "dettson/state/target_temp_high";
-constexpr const char* kStateMode            = "dettson/state/mode";
-constexpr const char* kStateFanMode         = "dettson/state/fan_mode";
-constexpr const char* kStatePreset          = "dettson/state/preset";
-constexpr const char* kStateHold            = "dettson/state/hold";  // {type, remaining}
-constexpr const char* kStateAction          = "dettson/state/action";
-constexpr const char* kStateActiveEquipment = "dettson/state/active_equipment";
-constexpr const char* kStateModulation      = "dettson/state/modulation";
-constexpr const char* kStateOutdoorTemp     = "dettson/state/outdoor_temp";
-constexpr const char* kStateOutdoorSource   = "dettson/state/outdoor_source";
-constexpr const char* kStateFusion          = "dettson/state/fusion";
+constexpr const char* kStateCurrentTemp     = SLYTHERM_TOPIC_PREFIX "state/current_temp";
+constexpr const char* kStateSetpoint        = SLYTHERM_TOPIC_PREFIX "state/setpoint";
+constexpr const char* kStateTargetTempLow   = SLYTHERM_TOPIC_PREFIX "state/target_temp_low";
+constexpr const char* kStateTargetTempHigh  = SLYTHERM_TOPIC_PREFIX "state/target_temp_high";
+constexpr const char* kStateMode            = SLYTHERM_TOPIC_PREFIX "state/mode";
+constexpr const char* kStateFanMode         = SLYTHERM_TOPIC_PREFIX "state/fan_mode";
+constexpr const char* kStatePreset          = SLYTHERM_TOPIC_PREFIX "state/preset";
+constexpr const char* kStateHold            = SLYTHERM_TOPIC_PREFIX "state/hold";  // {type, remaining}
+constexpr const char* kStateAction          = SLYTHERM_TOPIC_PREFIX "state/action";
+constexpr const char* kStateActiveEquipment = SLYTHERM_TOPIC_PREFIX "state/active_equipment";
+constexpr const char* kStateModulation      = SLYTHERM_TOPIC_PREFIX "state/modulation";
+constexpr const char* kStateOutdoorTemp     = SLYTHERM_TOPIC_PREFIX "state/outdoor_temp";
+constexpr const char* kStateOutdoorSource   = SLYTHERM_TOPIC_PREFIX "state/outdoor_source";
+constexpr const char* kStateFusion          = SLYTHERM_TOPIC_PREFIX "state/fusion";
 constexpr const char* kStateCompressorMinOffRemaining =
-    "dettson/state/compressor_min_off_remaining";
-constexpr const char* kStateCompressorLockedOut = "dettson/state/compressor_locked_out";
-constexpr const char* kStateEmHeat              = "dettson/state/em_heat";  // "ON"/"OFF"
-constexpr const char* kStateChangeoverReason    = "dettson/state/changeover_reason";
-constexpr const char* kStateLock                = "dettson/state/lock";  // JSON, see lockStateJson()
-constexpr const char* kStateFault               = "dettson/state/fault";
-constexpr const char* kAvailability             = "dettson/availability";  // LWT = offline
+    SLYTHERM_TOPIC_PREFIX "state/compressor_min_off_remaining";
+constexpr const char* kStateCompressorLockedOut = SLYTHERM_TOPIC_PREFIX "state/compressor_locked_out";
+constexpr const char* kStateEmHeat              = SLYTHERM_TOPIC_PREFIX "state/em_heat";  // "ON"/"OFF"
+constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/changeover_reason";
+constexpr const char* kStateLock                = SLYTHERM_TOPIC_PREFIX "state/lock";  // JSON, see lockStateJson()
+constexpr const char* kStateFault               = SLYTHERM_TOPIC_PREFIX "state/fault";
+constexpr const char* kAvailability             = SLYTHERM_TOPIC_PREFIX "availability";  // LWT = offline
 
 // Diagnostic entities listed in docs/06 "Entities" without an explicit topic-map
-// row; they follow the same dettson/state/ pattern.
-constexpr const char* kStateBlower    = "dettson/state/blower";
-constexpr const char* kStateHealth    = "dettson/state/health";
-constexpr const char* kStateLastError = "dettson/state/last_error";
+// row; they follow the same slytherm/state/ pattern.
+constexpr const char* kStateBlower    = SLYTHERM_TOPIC_PREFIX "state/blower";
+constexpr const char* kStateHealth    = SLYTHERM_TOPIC_PREFIX "state/health";
+constexpr const char* kStateLastError = SLYTHERM_TOPIC_PREFIX "state/last_error";
 
 constexpr const char* kDiscoveryPrefix = "homeassistant";
 
 }  // namespace topic
 
 // Per-id topic helpers.
-std::string sensorStateTopic(const std::string& sensorId);  // dettson/sensors/<id>/state
-std::string sensorAgeStateTopic(const std::string& sensorId);  // dettson/state/sensor/<id>/age
+std::string sensorStateTopic(const std::string& sensorId);  // slytherm/sensors/<id>/state
+std::string sensorAgeStateTopic(const std::string& sensorId);  // slytherm/state/sensor/<id>/age
 std::string sensorParticipatingStateTopic(const std::string& sensorId);
-std::string sensorOffsetCommandTopic(const std::string& sensorId);  // dettson/cmd/sensor/<id>/offset
-std::string sensorOffsetStateTopic(const std::string& sensorId);    // dettson/state/sensor/<id>/offset
+std::string sensorOffsetCommandTopic(const std::string& sensorId);  // slytherm/cmd/sensor/<id>/offset
+std::string sensorOffsetStateTopic(const std::string& sensorId);    // slytherm/state/sensor/<id>/offset
 
 // Sensor id of the local DS18B20 fallback for the per-id helpers above (its
 // calibration offset is exposed like any remote's — docs/07 G6).
 constexpr const char* kLocalSensorId = "local";
-// homeassistant/<component>/dettson/<objectId>/config
+// homeassistant/<component>/slytherm/<objectId>/config
 std::string discoveryTopic(const char* component, const std::string& objectId);
 
 // ---------- Fixed payload strings ----------
@@ -106,7 +119,7 @@ constexpr float kClimateTempStepC = 0.5f;
 enum class Mode : uint8_t { kOff, kHeat, kCool, kHeatCool };
 enum class FanMode : uint8_t { kAuto, kOn, kCirculate };
 // NOTE: there is deliberately no fixed Preset enum here. Presets are
-// roster-defined strings (dettson/config/presets); dettson/cmd/preset payloads
+// roster-defined strings (slytherm/config/presets); slytherm/cmd/preset payloads
 // are passed through to ModeStateMachine::applyPreset(), which validates the
 // name against the configured roster.
 
@@ -128,21 +141,21 @@ struct Parsed {
 Parsed<float> parseSetpoint(const char* payloadStr,
                             float minC = kClimateMinTempC,
                             float maxC = kClimateMaxTempC);
-// dettson/cmd/sensor/<id>/offset: same strict-float rules, bounded to
+// slytherm/cmd/sensor/<id>/offset: same strict-float rules, bounded to
 // ±kSensorOffsetMaxC. Out-of-range is rejected (never clamped here);
 // SensorFusion::setSensorOffsetC clamps again defensively.
 Parsed<float> parseSensorOffset(const char* payloadStr);
 Parsed<Mode> parseMode(const char* payloadStr);
 Parsed<FanMode> parseFanMode(const char* payloadStr);
 
-// dettson/cmd/hold: a hold-type wire string starts a hold, "clear" ends one.
+// slytherm/cmd/hold: a hold-type wire string starts a hold, "clear" ends one.
 struct HoldCommand {
   bool clear = false;
   HoldType type = HoldType::kNone;  // valid when !clear
 };
 Parsed<HoldCommand> parseHoldCommand(const char* payloadStr);
 
-// dettson/cmd/em_heat (docs/07 G15): exactly "ON"/"OFF" (HA switch defaults).
+// slytherm/cmd/em_heat (docs/07 G15): exactly "ON"/"OFF" (HA switch defaults).
 // EM HEAT is a dedicated switch, NOT an hvac mode (HA's climate schema only
 // accepts the standard modes — "emergency_heat" would be rejected) and NOT a
 // preset (the next scheduled comfort-preset write must never silently
@@ -159,7 +172,7 @@ enum class LockLevel : uint8_t { kSettingsOnly, kSettingsAndSetpoints };
 const char* toString(LockState s);  // unlocked / user_locked / installer_locked
 const char* toString(LockLevel l);  // settings / settings_setpoints
 
-// dettson/cmd/lock_clear: clears the user screen PIN — the documented
+// slytherm/cmd/lock_clear: clears the user screen PIN — the documented
 // forgotten-PIN recovery. No PIN is required: anyone who can publish here
 // already has full climate control over MQTT, so HA/broker access = admin
 // (rationale in docs/06). Retained-safe by construction:
@@ -197,7 +210,7 @@ struct SensorReading {
 bool parseSensorJson(const char* json, SensorReading& out);
 
 // ---------- Smart recovery next-target (docs/06 "Smart recovery") ----------
-// dettson/cmd/next_target: HA publishes the next scheduled preset/setpoint
+// slytherm/cmd/next_target: HA publishes the next scheduled preset/setpoint
 // change as JSON {"temp": C, "mode": "heat"|"cool", "in_s": seconds}.
 // Advisory input to RecoveryEstimator only (same isolation rule as UiModel:
 // HaMqtt does not depend on the RecoveryEstimator lib — the src/ glue maps
@@ -221,7 +234,7 @@ constexpr uint32_t kNextTargetMaxInS = 7 * 86400;
 bool parseNextTargetJson(const char* json, NextTarget& out);
 
 // ---------- Preset roster config (docs/06 "Schedules and presets") ----------
-// Retained JSON at dettson/config/presets:
+// Retained JSON at slytherm/config/presets:
 //   {"presets":[{"name":"home","heat":21.0,"cool":25.0}, ...]}
 struct PresetEntry {
   std::string name;
@@ -237,7 +250,7 @@ struct PresetEntry {
 bool parsePresetRosterJson(const char* json, std::vector<PresetEntry>& out);
 
 // ---------- Sensor roster config (docs/06 "Remote sensors") ----------
-// Retained JSON at dettson/config/sensors:
+// Retained JSON at slytherm/config/sensors:
 //   {"sensors":[{"id":"kitchen","max_age_s":300,"offset":-0.5}, ...]}
 constexpr size_t kSensorRosterMax = 16;  // SensorFusion participant-mask width
 
@@ -258,15 +271,15 @@ bool parseSensorRosterJson(const char* json, std::vector<SensorRosterEntry>& out
 // Escapes ", \, and control characters for embedding in a JSON string.
 std::string jsonEscape(const std::string& s);
 
-// MQTT Discovery payload for climate.dettson_hvac (docs/06 sketch, complete).
+// MQTT Discovery payload for climate.slytherm_hvac (docs/06 sketch, complete).
 // preset_modes is built from the configured roster; default = boot roster.
 std::string climateDiscoveryJson(
     const std::vector<std::string>& presetModes = {"home", "away", "sleep"});
 
-// dettson/state/hold payload: {"type":"two_hours","remaining":7032}
+// slytherm/state/hold payload: {"type":"two_hours","remaining":7032}
 std::string holdStateJson(HoldType t, uint32_t remainingS);
 
-// dettson/state/lock payload:
+// slytherm/state/lock payload:
 //   {"state":"user_locked","level":"settings","pin_set":true}
 // pin_set = a user PIN exists (tells HA whether lock_clear has anything to do).
 std::string lockStateJson(LockState s, LockLevel l, bool userPinSet);
@@ -286,7 +299,7 @@ std::string emHeatDiscoveryJson();                     // switch component (G15)
 std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
 std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
 std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wired/ha/none
-// dettson/state/fusion JSON (docs/06 topic map): state = value_json.temp,
+// slytherm/state/fusion JSON (docs/06 topic map): state = value_json.temp,
 // full payload exposed as attributes (tier, participants, occupied).
 std::string fusionDiscoveryJson();               // sensor, °C, diagnostic, JSON attrs
 std::string changeoverReasonDiscoveryJson();     // sensor, diagnostic

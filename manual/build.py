@@ -54,7 +54,7 @@ ROOT = Path(__file__).resolve().parent          # .../Dettson/manual
 PROJECT = ROOT.parent                           # .../Dettson
 SRC = ROOT / 'src'
 DIAGRAMS = ROOT / 'diagrams'                    # .mmd sources + hand-authored .svg
-THEME_CSS = ROOT / 'theme' / 'dettson.css'
+THEME_CSS = ROOT / 'theme' / 'slytherm.css'
 BUILD = ROOT / 'build'                          # gitignored
 BUILD_DIAGRAMS = BUILD / 'diagrams'
 PDF_DIR = PROJECT / 'docs' / 'manuals'
@@ -72,7 +72,7 @@ KROKI_URL = 'https://kroki.io'
 KROKI_TIMEOUT_S = 30
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-log = logging.getLogger('dettson.manual')
+log = logging.getLogger('slytherm.manual')
 
 # Collected across a run; missing hand-authored SVGs -> exit nonzero.
 HARD_ERRORS: list[str] = []

@@ -267,7 +267,7 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
 // name/values from the LIVE roster (DisplayState.presets) and shows/hides by
 // presetCount. Card index == roster index == the value passed to presetEvt.
 // TODO(#74 deferred): on-device EDIT of a preset (long-press -> stepper ->
-// stage retained dettson/config/presets via mqttTask). Displaying the live
+// stage retained slytherm/config/presets via mqttTask). Displaying the live
 // roster is done; editing is PARTIAL.
 void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Presets");
   for(int i=0;i<(int)kMaxPresets;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,236,116);

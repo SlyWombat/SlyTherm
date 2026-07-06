@@ -131,8 +131,8 @@ below). The compressor is never run on an unknown outdoor temperature.
 | Indoor cooling lockout | `kCoolingIndoorLockoutC` | **18 °C** | Never cool when indoor temperature is below this |
 
 > **No local sensor on this wall unit (default build).** The on-board
-> DS18B20 / local fallback slot is compiled **off** (`DETTSON_LOCAL_SENSOR`
-> default off; `-DDETTSON_DS18B20` not built). The room temperature comes
+> DS18B20 / local fallback slot is compiled **off** (`SLYTHERM_LOCAL_SENSOR`
+> default off; `-DSLYTHERM_DS18B20` not built). The room temperature comes
 > **only** from the MQTT/HA room sensors. Consequences: the **degraded /
 > local-fallback mode** above and the **fallback-sensor disagreement alarm**
 > and **built-in-fallback offset** in §8.7 **do not apply** to this build;

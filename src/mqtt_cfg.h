@@ -3,7 +3,7 @@
 // and saved in NVS, so the unit is pointed at Home Assistant's broker without a
 // reflash. The MQTT task owns the connection: it reads this config at boot and
 // re-applies whenever the UI saves a change. Compiled only into
-// env:thermostat_s3 (DETTSON_UI).
+// env:thermostat_s3 (SLYTHERM_UI).
 #pragma once
 
 #include <cstddef>

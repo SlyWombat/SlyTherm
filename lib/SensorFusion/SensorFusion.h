@@ -17,8 +17,8 @@
 
 #include "DettsonConfig.h"
 
-#ifndef DETTSON_FUSION_MAX_SENSORS
-#define DETTSON_FUSION_MAX_SENSORS 8
+#ifndef SLYTHERM_FUSION_MAX_SENSORS
+#define SLYTHERM_FUSION_MAX_SENSORS 8
 #endif
 
 namespace dettson {
@@ -75,8 +75,8 @@ constexpr uint32_t kStuckWindowMinS     = 300;
 
 class SensorFusion {
  public:
-  static constexpr size_t kMaxSensors = DETTSON_FUSION_MAX_SENSORS;
-  static_assert(DETTSON_FUSION_MAX_SENSORS >= 2 && DETTSON_FUSION_MAX_SENSORS <= 16,
+  static constexpr size_t kMaxSensors = SLYTHERM_FUSION_MAX_SENSORS;
+  static_assert(SLYTHERM_FUSION_MAX_SENSORS >= 2 && SLYTHERM_FUSION_MAX_SENSORS <= 16,
                 "participant mask is 16-bit");
 
   // Registration / roster (docs/06 retained sensor roster). Returns false on

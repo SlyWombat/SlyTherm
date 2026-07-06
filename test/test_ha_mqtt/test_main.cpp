@@ -58,46 +58,46 @@ static void assertCoherentJson(const std::string& s) {
 // ---------- topics ----------
 
 static void test_topic_map_matches_docs() {
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/setpoint", topic::kCmdSetpoint);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/target_temp_low", topic::kCmdTargetTempLow);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/target_temp_high", topic::kCmdTargetTempHigh);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/mode", topic::kCmdMode);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/fan_mode", topic::kCmdFanMode);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/preset", topic::kCmdPreset);
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/hold", topic::kCmdHold);
-  TEST_ASSERT_EQUAL_STRING("dettson/config/sensors", topic::kConfigSensors);
-  TEST_ASSERT_EQUAL_STRING("dettson/config/presets", topic::kConfigPresets);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/hold", topic::kStateHold);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/current_temp", topic::kStateCurrentTemp);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/setpoint", topic::kStateSetpoint);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/target_temp_low", topic::kStateTargetTempLow);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/target_temp_high", topic::kStateTargetTempHigh);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/mode", topic::kStateMode);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/fan_mode", topic::kStateFanMode);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/preset", topic::kStatePreset);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/action", topic::kStateAction);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/active_equipment", topic::kStateActiveEquipment);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/modulation", topic::kStateModulation);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/outdoor_temp", topic::kStateOutdoorTemp);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/outdoor_source", topic::kStateOutdoorSource);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/fusion", topic::kStateFusion);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/compressor_min_off_remaining",
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/setpoint", topic::kCmdSetpoint);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/target_temp_low", topic::kCmdTargetTempLow);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/target_temp_high", topic::kCmdTargetTempHigh);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/mode", topic::kCmdMode);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/fan_mode", topic::kCmdFanMode);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/preset", topic::kCmdPreset);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/hold", topic::kCmdHold);
+  TEST_ASSERT_EQUAL_STRING("slytherm/config/sensors", topic::kConfigSensors);
+  TEST_ASSERT_EQUAL_STRING("slytherm/config/presets", topic::kConfigPresets);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/hold", topic::kStateHold);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/current_temp", topic::kStateCurrentTemp);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/setpoint", topic::kStateSetpoint);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/target_temp_low", topic::kStateTargetTempLow);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/target_temp_high", topic::kStateTargetTempHigh);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/mode", topic::kStateMode);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/fan_mode", topic::kStateFanMode);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/preset", topic::kStatePreset);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/action", topic::kStateAction);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/active_equipment", topic::kStateActiveEquipment);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/modulation", topic::kStateModulation);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/outdoor_temp", topic::kStateOutdoorTemp);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/outdoor_source", topic::kStateOutdoorSource);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/fusion", topic::kStateFusion);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/compressor_min_off_remaining",
                            topic::kStateCompressorMinOffRemaining);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/compressor_locked_out",
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/compressor_locked_out",
                            topic::kStateCompressorLockedOut);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/changeover_reason", topic::kStateChangeoverReason);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/fault", topic::kStateFault);
-  TEST_ASSERT_EQUAL_STRING("dettson/availability", topic::kAvailability);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/changeover_reason", topic::kStateChangeoverReason);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/fault", topic::kStateFault);
+  TEST_ASSERT_EQUAL_STRING("slytherm/availability", topic::kAvailability);
 }
 
 static void test_topic_helpers() {
-  TEST_ASSERT_EQUAL_STRING("dettson/sensors/kitchen/state",
+  TEST_ASSERT_EQUAL_STRING("slytherm/sensors/kitchen/state",
                            sensorStateTopic("kitchen").c_str());
-  TEST_ASSERT_EQUAL_STRING("dettson/state/sensor/kitchen/age",
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/sensor/kitchen/age",
                            sensorAgeStateTopic("kitchen").c_str());
-  TEST_ASSERT_EQUAL_STRING("dettson/state/sensor/kitchen/participating",
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/sensor/kitchen/participating",
                            sensorParticipatingStateTopic("kitchen").c_str());
-  TEST_ASSERT_EQUAL_STRING("homeassistant/climate/dettson/hvac/config",
+  TEST_ASSERT_EQUAL_STRING("homeassistant/climate/slytherm/hvac/config",
                            discoveryTopic("climate", "hvac").c_str());
 }
 
@@ -106,8 +106,8 @@ static void test_topic_helpers() {
 static void test_climate_discovery_content() {
   std::string j = climateDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"name\":\"Dettson HVAC\""));
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_hvac\""));
+  TEST_ASSERT_TRUE(has(j, "\"name\":\"SlyTherm HVAC\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_hvac\""));
   TEST_ASSERT_TRUE(has(j, "\"modes\":[\"off\",\"heat\",\"cool\",\"heat_cool\"]"));
   TEST_ASSERT_TRUE(has(j, "\"fan_modes\":[\"auto\",\"on\",\"circulate\"]"));
   TEST_ASSERT_TRUE(has(j, "\"preset_modes\":[\"home\",\"away\",\"sleep\"]"));
@@ -115,22 +115,22 @@ static void test_climate_discovery_content() {
   TEST_ASSERT_TRUE(has(j, "\"max_temp\":30"));
   TEST_ASSERT_TRUE(has(j, "\"temp_step\":0.5"));
   TEST_ASSERT_TRUE(has(j, "\"temperature_unit\":\"C\""));
-  TEST_ASSERT_TRUE(has(j, "\"current_temperature_topic\":\"dettson/state/current_temp\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_command_topic\":\"dettson/cmd/setpoint\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_state_topic\":\"dettson/state/setpoint\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_low_command_topic\":\"dettson/cmd/target_temp_low\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_low_state_topic\":\"dettson/state/target_temp_low\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_high_command_topic\":\"dettson/cmd/target_temp_high\""));
-  TEST_ASSERT_TRUE(has(j, "\"temperature_high_state_topic\":\"dettson/state/target_temp_high\""));
-  TEST_ASSERT_TRUE(has(j, "\"mode_command_topic\":\"dettson/cmd/mode\""));
-  TEST_ASSERT_TRUE(has(j, "\"mode_state_topic\":\"dettson/state/mode\""));
-  TEST_ASSERT_TRUE(has(j, "\"fan_mode_command_topic\":\"dettson/cmd/fan_mode\""));
-  TEST_ASSERT_TRUE(has(j, "\"preset_mode_command_topic\":\"dettson/cmd/preset\""));
-  TEST_ASSERT_TRUE(has(j, "\"action_topic\":\"dettson/state/action\""));
-  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"dettson/availability\""));
+  TEST_ASSERT_TRUE(has(j, "\"current_temperature_topic\":\"slytherm/state/current_temp\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_command_topic\":\"slytherm/cmd/setpoint\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_state_topic\":\"slytherm/state/setpoint\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_low_command_topic\":\"slytherm/cmd/target_temp_low\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_low_state_topic\":\"slytherm/state/target_temp_low\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_high_command_topic\":\"slytherm/cmd/target_temp_high\""));
+  TEST_ASSERT_TRUE(has(j, "\"temperature_high_state_topic\":\"slytherm/state/target_temp_high\""));
+  TEST_ASSERT_TRUE(has(j, "\"mode_command_topic\":\"slytherm/cmd/mode\""));
+  TEST_ASSERT_TRUE(has(j, "\"mode_state_topic\":\"slytherm/state/mode\""));
+  TEST_ASSERT_TRUE(has(j, "\"fan_mode_command_topic\":\"slytherm/cmd/fan_mode\""));
+  TEST_ASSERT_TRUE(has(j, "\"preset_mode_command_topic\":\"slytherm/cmd/preset\""));
+  TEST_ASSERT_TRUE(has(j, "\"action_topic\":\"slytherm/state/action\""));
+  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"slytherm/availability\""));
   TEST_ASSERT_TRUE(has(j, "\"payload_available\":\"online\""));
   TEST_ASSERT_TRUE(has(j, "\"payload_not_available\":\"offline\""));
-  TEST_ASSERT_TRUE(has(j, "\"device\":{\"identifiers\":[\"dettson_esp32\"]"));
+  TEST_ASSERT_TRUE(has(j, "\"device\":{\"identifiers\":[\"slytherm_esp32\"]"));
   TEST_ASSERT_TRUE(has(j, "\"manufacturer\":\"ElectricRV\""));
   TEST_ASSERT_TRUE(has(j, "\"model\":\"ESP32-S3 CT-485\""));
 }
@@ -146,25 +146,25 @@ static void test_diagnostic_discovery_builders() {
     bool binary;
   };
   std::vector<Case> cases = {
-      {activeEquipmentDiscoveryJson(), "dettson_active_equipment",
-       "dettson/state/active_equipment", false, false},
-      {modulationDiscoveryJson(), "dettson_modulation", "dettson/state/modulation",
+      {activeEquipmentDiscoveryJson(), "slytherm_active_equipment",
+       "slytherm/state/active_equipment", false, false},
+      {modulationDiscoveryJson(), "slytherm_modulation", "slytherm/state/modulation",
        false, false},
-      {blowerDiscoveryJson(), "dettson_blower", "dettson/state/blower", false, false},
-      {faultDiscoveryJson(), "dettson_fault", "dettson/state/fault", false, false},
-      {healthDiscoveryJson(), "dettson_health", "dettson/state/health", false, true},
-      {lastErrorDiscoveryJson(), "dettson_last_error", "dettson/state/last_error",
+      {blowerDiscoveryJson(), "slytherm_blower", "slytherm/state/blower", false, false},
+      {faultDiscoveryJson(), "slytherm_fault", "slytherm/state/fault", false, false},
+      {healthDiscoveryJson(), "slytherm_health", "slytherm/state/health", false, true},
+      {lastErrorDiscoveryJson(), "slytherm_last_error", "slytherm/state/last_error",
        true, false},
       {compressorMinOffRemainingDiscoveryJson(),
-       "dettson_compressor_min_off_remaining",
-       "dettson/state/compressor_min_off_remaining", true, false},
-      {compressorLockedOutDiscoveryJson(), "dettson_compressor_locked_out",
-       "dettson/state/compressor_locked_out", true, true},
-      {sensorAgeDiscoveryJson("kitchen"), "dettson_sensor_kitchen_age",
-       "dettson/state/sensor/kitchen/age", true, false},
+       "slytherm_compressor_min_off_remaining",
+       "slytherm/state/compressor_min_off_remaining", true, false},
+      {compressorLockedOutDiscoveryJson(), "slytherm_compressor_locked_out",
+       "slytherm/state/compressor_locked_out", true, true},
+      {sensorAgeDiscoveryJson("kitchen"), "slytherm_sensor_kitchen_age",
+       "slytherm/state/sensor/kitchen/age", true, false},
       {sensorParticipatingDiscoveryJson("kitchen"),
-       "dettson_sensor_kitchen_participating",
-       "dettson/state/sensor/kitchen/participating", true, true},
+       "slytherm_sensor_kitchen_participating",
+       "slytherm/state/sensor/kitchen/participating", true, true},
   };
   for (const Case& c : cases) {
     assertCoherentJson(c.json);
@@ -173,7 +173,7 @@ static void test_diagnostic_discovery_builders() {
     TEST_ASSERT_TRUE_MESSAGE(has(c.json, uid.c_str()), c.uniqueId);
     TEST_ASSERT_TRUE_MESSAGE(has(c.json, st.c_str()), c.uniqueId);
     TEST_ASSERT_TRUE_MESSAGE(
-        has(c.json, "\"availability_topic\":\"dettson/availability\""), c.uniqueId);
+        has(c.json, "\"availability_topic\":\"slytherm/availability\""), c.uniqueId);
     TEST_ASSERT_TRUE_MESSAGE(has(c.json, "\"device\":{"), c.uniqueId);
     TEST_ASSERT_EQUAL_MESSAGE(c.diagnostic,
                               has(c.json, "\"entity_category\":\"diagnostic\""),
@@ -263,7 +263,7 @@ static void test_parse_fan_mode() {
   TEST_ASSERT_FALSE(parseFanMode(nullptr).ok);
 }
 
-// Presets have no fixed enum/parser: dettson/cmd/preset strings are validated
+// Presets have no fixed enum/parser: slytherm/cmd/preset strings are validated
 // against the configured roster by ModeStateMachine::applyPreset (see HaMqtt.h).
 
 static void test_enum_round_trip() {
@@ -312,18 +312,18 @@ static void test_hold_state_json_and_round_trip() {
 static void test_hold_discovery_json() {
   std::string j = holdDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_hold\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/hold\""));
   TEST_ASSERT_TRUE(has(j, "\"value_template\":\"{{ value_json.type }}\""));
-  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"dettson/state/hold\""));
+  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"slytherm/state/hold\""));
   TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
 }
 
 // ---------- EM HEAT switch (G15) ----------
 
 static void test_em_heat_topics() {
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/em_heat", topic::kCmdEmHeat);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/em_heat", topic::kStateEmHeat);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/em_heat", topic::kCmdEmHeat);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/em_heat", topic::kStateEmHeat);
 }
 
 static void test_parse_em_heat_command() {
@@ -346,12 +346,12 @@ static void test_parse_em_heat_command() {
 static void test_em_heat_discovery_json_and_not_a_mode_or_preset() {
   std::string j = emHeatDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_em_heat\""));
-  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"dettson/cmd/em_heat\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"slytherm/cmd/em_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/em_heat\""));
   TEST_ASSERT_TRUE(has(j, "\"payload_on\":\"ON\""));
   TEST_ASSERT_TRUE(has(j, "\"payload_off\":\"OFF\""));
-  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"dettson/availability\""));
+  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"slytherm/availability\""));
   // Mutual exclusion with comfort presets is structural: EM HEAT never
   // appears as an hvac mode or in preset_modes (docs/06).
   std::string climate = climateDiscoveryJson();
@@ -431,29 +431,29 @@ static void test_preset_roster_json_skips_invalid_entries_and_caps() {
 // ---------- sensor calibration offsets (issue #49, gap G6) ----------
 
 static void test_sensor_offset_topics_and_discovery() {
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/sensor/kitchen/offset",
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/sensor/kitchen/offset",
                            sensorOffsetCommandTopic("kitchen").c_str());
-  TEST_ASSERT_EQUAL_STRING("dettson/state/sensor/kitchen/offset",
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/sensor/kitchen/offset",
                            sensorOffsetStateTopic("kitchen").c_str());
   TEST_ASSERT_EQUAL_STRING("local", kLocalSensorId);
 
   std::string j = sensorOffsetDiscoveryJson("kitchen");
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_sensor_kitchen_offset\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/sensor/kitchen/offset\""));
-  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"dettson/cmd/sensor/kitchen/offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_sensor_kitchen_offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/sensor/kitchen/offset\""));
+  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"slytherm/cmd/sensor/kitchen/offset\""));
   TEST_ASSERT_TRUE(has(j, "\"min\":-5"));
   TEST_ASSERT_TRUE(has(j, "\"max\":5"));
   TEST_ASSERT_TRUE(has(j, "\"step\":0.1"));
   TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"config\""));
-  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"dettson/availability\""));
+  TEST_ASSERT_TRUE(has(j, "\"availability_topic\":\"slytherm/availability\""));
   TEST_ASSERT_TRUE(has(j, "\"device\":{"));
 
   // The local DS18B20 fallback follows the same pattern.
   std::string l = sensorOffsetDiscoveryJson(kLocalSensorId);
   assertCoherentJson(l);
-  TEST_ASSERT_TRUE(has(l, "\"unique_id\":\"dettson_sensor_local_offset\""));
-  TEST_ASSERT_TRUE(has(l, "\"command_topic\":\"dettson/cmd/sensor/local/offset\""));
+  TEST_ASSERT_TRUE(has(l, "\"unique_id\":\"slytherm_sensor_local_offset\""));
+  TEST_ASSERT_TRUE(has(l, "\"command_topic\":\"slytherm/cmd/sensor/local/offset\""));
 }
 
 static void test_parse_sensor_offset_bounds() {
@@ -603,7 +603,7 @@ static void test_sensor_json_bad_optional_fields_dropped_not_fatal() {
 // ---------- smart recovery next_target (issue #50) ----------
 
 static void test_next_target_topic() {
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/next_target", topic::kCmdNextTarget);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/next_target", topic::kCmdNextTarget);
 }
 
 static void test_parse_next_target_valid_and_tolerant() {
@@ -670,8 +670,8 @@ static void test_parse_next_target_rejects_junk() {
 static void test_outdoor_fusion_changeover_discovery_builders() {
   std::string j = outdoorTempDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_outdoor_temp\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/outdoor_temp\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_outdoor_temp\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/outdoor_temp\""));
   TEST_ASSERT_TRUE(has(j, "\"unit_of_measurement\":\"°C\""));
   TEST_ASSERT_TRUE(has(j, "\"device_class\":\"temperature\""));
   // Automation input (accessory blueprints), not a diagnostic.
@@ -679,31 +679,31 @@ static void test_outdoor_fusion_changeover_discovery_builders() {
 
   j = outdoorSourceDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_outdoor_source\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/outdoor_source\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_outdoor_source\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/outdoor_source\""));
   TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
 
   j = fusionDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_fusion\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/fusion\""));
   TEST_ASSERT_TRUE(has(j, "\"value_template\":\"{{ value_json.temp }}\""));
-  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"dettson/state/fusion\""));
+  TEST_ASSERT_TRUE(has(j, "\"json_attributes_topic\":\"slytherm/state/fusion\""));
   TEST_ASSERT_TRUE(has(j, "\"unit_of_measurement\":\"°C\""));
   TEST_ASSERT_TRUE(has(j, "\"device_class\":\"temperature\""));
   TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
 
   j = changeoverReasonDiscoveryJson();
   assertCoherentJson(j);
-  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"dettson_changeover_reason\""));
-  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"dettson/state/changeover_reason\""));
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_changeover_reason\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/changeover_reason\""));
   TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"diagnostic\""));
 
   // Shared envelope: availability + device block on all four.
   for (const std::string& d :
        {outdoorTempDiscoveryJson(), outdoorSourceDiscoveryJson(),
         fusionDiscoveryJson(), changeoverReasonDiscoveryJson()}) {
-    TEST_ASSERT_TRUE(has(d, "\"availability_topic\":\"dettson/availability\""));
+    TEST_ASSERT_TRUE(has(d, "\"availability_topic\":\"slytherm/availability\""));
     TEST_ASSERT_TRUE(has(d, "\"device\":{"));
   }
 }
@@ -751,16 +751,16 @@ static void test_lock_state_json_and_strings() {
 }
 
 static void test_lock_topics_and_discovery() {
-  TEST_ASSERT_EQUAL_STRING("dettson/cmd/lock_clear", topic::kCmdLockClear);
-  TEST_ASSERT_EQUAL_STRING("dettson/state/lock", topic::kStateLock);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/lock_clear", topic::kCmdLockClear);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/lock", topic::kStateLock);
 
   std::string d = lockDiscoveryJson();
   assertCoherentJson(d);
-  TEST_ASSERT_TRUE(has(d, "\"state_topic\":\"dettson/state/lock\""));
+  TEST_ASSERT_TRUE(has(d, "\"state_topic\":\"slytherm/state/lock\""));
   TEST_ASSERT_TRUE(has(d, "{{ value_json.state }}"));
-  TEST_ASSERT_TRUE(has(d, "\"json_attributes_topic\":\"dettson/state/lock\""));
+  TEST_ASSERT_TRUE(has(d, "\"json_attributes_topic\":\"slytherm/state/lock\""));
   TEST_ASSERT_TRUE(has(d, "\"entity_category\":\"diagnostic\""));
-  TEST_ASSERT_TRUE(has(d, "\"unique_id\":\"dettson_lock\""));
+  TEST_ASSERT_TRUE(has(d, "\"unique_id\":\"slytherm_lock\""));
   // Display entity only — clearing goes through the dedicated cmd topic,
   // never a discovery command_topic (no accidental retained switch).
   TEST_ASSERT_FALSE(has(d, "command_topic"));

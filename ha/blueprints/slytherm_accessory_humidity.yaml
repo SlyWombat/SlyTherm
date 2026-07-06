@@ -1,4 +1,4 @@
-# Coordinated standalone humidifier/dehumidifier for the Dettson DT-1
+# Coordinated standalone humidifier/dehumidifier for the SlyTherm DT-1
 # (gap G1 step 1, docs/07 §G1). The thermostat has no accessory output and no
 # humidity logic — this blueprint coordinates a USER-SUPPLIED smart
 # switch/plug-controlled (de)humidifier with DT-1 telemetry. It is
@@ -7,8 +7,8 @@
 # own protections (tank-full float, compressor delays, etc.).
 #
 # Telemetry consumed (docs/06 entity contract):
-#   sensor.dettson_active_equipment   idle / hp_heat / gas_heat / cool / defrost
-#   sensor.dettson_outdoor_temp       fused outdoor °C (frost control)
+#   sensor.slytherm_active_equipment   idle / hp_heat / gas_heat / cool / defrost
+#   sensor.slytherm_outdoor_temp       fused outdoor °C (frost control)
 #
 # Blower interlock — exact `active_equipment` wire states that prove moving
 # air (lib/HaMqtt): gas_heat, hp_heat, cool. `idle` is no blower; `defrost`
@@ -34,7 +34,7 @@
 # triple pane) shifts the whole curve by (efficiency − 4) × 2.5 %RH, then the
 # ceiling is clamped to 10–50 %RH. Effective target = min(setpoint, ceiling).
 blueprint:
-  name: "Dettson: standalone humidifier / dehumidifier coordination"
+  name: "SlyTherm: standalone humidifier / dehumidifier coordination"
   description: >-
     Drives a user-supplied smart-switched humidifier or dehumidifier from an
     indoor RH sensor and an RH setpoint, coordinated with DT-1 telemetry:
@@ -105,7 +105,7 @@ blueprint:
     require_blower:
       name: Blower interlock
       description: >-
-        Run only while sensor.dettson_active_equipment proves moving air
+        Run only while sensor.slytherm_active_equipment proves moving air
         (gas_heat / hp_heat / cool). Keep ON for duct-mounted accessories —
         a duct humidifier wetting a dead duct is how you grow mold. Safe to
         disable for standalone room units with their own fans (typical
@@ -115,7 +115,7 @@ blueprint:
         boolean:
     equipment_entity:
       name: Active equipment sensor
-      default: sensor.dettson_active_equipment
+      default: sensor.slytherm_active_equipment
       selector:
         entity:
           domain: sensor
@@ -131,7 +131,7 @@ blueprint:
         boolean:
     outdoor_temp_entity:
       name: Outdoor temperature sensor
-      default: sensor.dettson_outdoor_temp
+      default: sensor.slytherm_outdoor_temp
       selector:
         entity:
           domain: sensor

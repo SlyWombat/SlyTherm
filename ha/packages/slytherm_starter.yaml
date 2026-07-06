@@ -1,4 +1,4 @@
-# dettson_starter.yaml — Dettson DT-1 starter Home Assistant package (gap G3,
+# slytherm_starter.yaml — SlyTherm DT-1 starter Home Assistant package (gap G3,
 # docs/07-ecobee-gap-analysis.md). Schedules, vacation, filter reminder,
 # temp/RH alerts, presence-based Away — everything Ecobee ships out of the box
 # that this thermostat deliberately delegates to HA (docs/06 "Schedules and
@@ -6,12 +6,12 @@
 #
 # Install: see ha/README.md. Entities this package expects from the
 # thermostat's MQTT discovery (lib/HaMqtt):
-#   climate.dettson_hvac                  presets: home / away / sleep
-#   sensor.dettson_active_equipment       idle / hp_heat / gas_heat / cool / defrost
+#   climate.slytherm_hvac                  presets: home / away / sleep
+#   sensor.slytherm_active_equipment       idle / hp_heat / gas_heat / cool / defrost
 #
 # You must create yourself (no YAML config flow exists for these):
-#   calendar.dettson_vacation   Settings > Devices & Services > Add > Local Calendar,
-#                               name it "Dettson Vacation"
+#   calendar.slytherm_vacation   Settings > Devices & Services > Add > Local Calendar,
+#                               name it "SlyTherm Vacation"
 #   person.*                    your household phones (used via zone.home below)
 #
 # Search this file for "EDIT ME" before enabling.
@@ -24,8 +24,8 @@
 # Away, a two-block schedule is all most homes need. Edit the blocks to taste
 # (or migrate to the UI editor under Settings > Devices & Services > Helpers).
 schedule:
-  dettson_occupied:
-    name: Dettson occupied hours
+  slytherm_occupied:
+    name: SlyTherm occupied hours
     icon: mdi:home-clock
     monday: &weekday
       - from: "06:00:00"
@@ -46,16 +46,16 @@ schedule:
 # Shared "follow the schedule" step: home while the schedule is ON, sleep
 # while OFF. Called by the schedule edge, vacation end, and presence return.
 script:
-  dettson_apply_scheduled_preset:
-    alias: Dettson apply scheduled preset
+  slytherm_apply_scheduled_preset:
+    alias: SlyTherm apply scheduled preset
     icon: mdi:calendar-sync
     sequence:
       - service: climate.set_preset_mode
         target:
-          entity_id: climate.dettson_hvac
+          entity_id: climate.slytherm_hvac
         data:
           preset_mode: >-
-            {{ 'home' if is_state('schedule.dettson_occupied', 'on') else 'sleep' }}
+            {{ 'home' if is_state('schedule.slytherm_occupied', 'on') else 'sleep' }}
 
 # ---------------------------------------------------------------------------
 # Helpers (thresholds, filter counter)
@@ -64,31 +64,31 @@ script:
 # slider sits at its minimum; set it once (recommended values in comments).
 input_number:
   # Ecobee low-temp alert range 35-68 F -> 1.5-20 C. Recommended: 7 C.
-  dettson_low_temp_alert:
-    name: Dettson low indoor temp alert
+  slytherm_low_temp_alert:
+    name: SlyTherm low indoor temp alert
     min: 1.5
     max: 20
     step: 0.5
     unit_of_measurement: "°C"
     icon: mdi:thermometer-low
   # Ecobee high-temp alert range 60-104 F -> 15.5-40 C. Recommended: 32 C.
-  dettson_high_temp_alert:
-    name: Dettson high indoor temp alert
+  slytherm_high_temp_alert:
+    name: SlyTherm high indoor temp alert
     min: 15.5
     max: 40
     step: 0.5
     unit_of_measurement: "°C"
     icon: mdi:thermometer-high
   # Ecobee humidity alert range 5-95 %RH. Recommended: low 20, high 65.
-  dettson_low_humidity_alert:
-    name: Dettson low humidity alert
+  slytherm_low_humidity_alert:
+    name: SlyTherm low humidity alert
     min: 5
     max: 95
     step: 1
     unit_of_measurement: "%"
     icon: mdi:water-percent-alert
-  dettson_high_humidity_alert:
-    name: Dettson high humidity alert
+  slytherm_high_humidity_alert:
+    name: SlyTherm high humidity alert
     min: 5
     max: 95
     step: 1
@@ -96,8 +96,8 @@ input_number:
     icon: mdi:water-percent-alert
   # Blower-hours accumulator since last filter change (section 4 feeds it
   # daily). Never edit by hand except to correct; the reset button zeroes it.
-  dettson_filter_runtime_h:
-    name: Dettson filter runtime
+  slytherm_filter_runtime_h:
+    name: SlyTherm filter runtime
     min: 0
     max: 20000
     step: 0.01
@@ -106,8 +106,8 @@ input_number:
     mode: box
   # Reminder threshold in blower hours. Recommended: 300 h (~2-3 months of
   # heating-season runtime; tighten for pets/allergies).
-  dettson_filter_alert_hours:
-    name: Dettson filter reminder threshold
+  slytherm_filter_alert_hours:
+    name: SlyTherm filter reminder threshold
     min: 50
     max: 2000
     step: 10
@@ -115,13 +115,13 @@ input_number:
     icon: mdi:air-filter
 
 input_button:
-  dettson_filter_reset:
-    name: Dettson filter changed (reset)
+  slytherm_filter_reset:
+    name: SlyTherm filter changed (reset)
     icon: mdi:air-filter
 
 input_datetime:
-  dettson_filter_last_changed:
-    name: Dettson filter last changed
+  slytherm_filter_last_changed:
+    name: SlyTherm filter last changed
     has_date: true
     has_time: false
     icon: mdi:air-filter
@@ -129,12 +129,12 @@ input_datetime:
 # ---------------------------------------------------------------------------
 # 4a. Real blower runtime today (feeds the filter counter)
 # ---------------------------------------------------------------------------
-# Counts hours sensor.dettson_active_equipment spent actually moving air.
+# Counts hours sensor.slytherm_active_equipment spent actually moving air.
 # `defrost` is excluded: minutes per event, noise at filter timescales.
 sensor:
   - platform: history_stats
-    name: Dettson blower runtime today
-    entity_id: sensor.dettson_active_equipment
+    name: SlyTherm blower runtime today
+    entity_id: sensor.slytherm_active_equipment
     state:
       - gas_heat
       - hp_heat
@@ -147,41 +147,41 @@ automation:
   # -------------------------------------------------------------------------
   # 2. Schedule -> preset
   # -------------------------------------------------------------------------
-  - id: dettson_schedule_to_preset
-    alias: "Dettson: schedule -> preset"
+  - id: slytherm_schedule_to_preset
+    alias: "SlyTherm: schedule -> preset"
     description: >-
-      Follows schedule.dettson_occupied: ON -> home, OFF -> sleep. Stands down
+      Follows schedule.slytherm_occupied: ON -> home, OFF -> sleep. Stands down
       while a vacation event is active or while presence has set Away.
     trigger:
       - platform: state
-        entity_id: schedule.dettson_occupied
+        entity_id: schedule.slytherm_occupied
         to:
           - "on"
           - "off"
     condition:
       - condition: state
-        entity_id: calendar.dettson_vacation
+        entity_id: calendar.slytherm_vacation
         state: "off"
       - condition: template
         value_template: >-
-          {{ state_attr('climate.dettson_hvac', 'preset_mode') != 'away' }}
+          {{ state_attr('climate.slytherm_hvac', 'preset_mode') != 'away' }}
     action:
-      - service: script.dettson_apply_scheduled_preset
+      - service: script.slytherm_apply_scheduled_preset
     mode: single
 
   # -------------------------------------------------------------------------
   # 3. Vacation via local calendar
   # -------------------------------------------------------------------------
-  # Any event on calendar.dettson_vacation whose title contains "vacation"
+  # Any event on calendar.slytherm_vacation whose title contains "vacation"
   # holds the away preset for its whole span, then hands back to the schedule.
-  - id: dettson_vacation
-    alias: "Dettson: vacation calendar -> away"
+  - id: slytherm_vacation
+    alias: "SlyTherm: vacation calendar -> away"
     trigger:
       - platform: calendar
-        entity_id: calendar.dettson_vacation
+        entity_id: calendar.slytherm_vacation
         event: start
       - platform: calendar
-        entity_id: calendar.dettson_vacation
+        entity_id: calendar.slytherm_vacation
         event: end
     condition:
       - condition: template
@@ -195,11 +195,11 @@ automation:
             sequence:
               - service: climate.set_preset_mode
                 target:
-                  entity_id: climate.dettson_hvac
+                  entity_id: climate.slytherm_hvac
                 data:
                   preset_mode: away
         default:
-          - service: script.dettson_apply_scheduled_preset
+          - service: script.slytherm_apply_scheduled_preset
     mode: queued
 
   # -------------------------------------------------------------------------
@@ -207,115 +207,115 @@ automation:
   # -------------------------------------------------------------------------
   # Why an accumulator instead of one long history_stats window: the recorder
   # purges history (default 10 days), but a filter interval spans months. So
-  # the daily total is banked into input_number.dettson_filter_runtime_h just
+  # the daily total is banked into input_number.slytherm_filter_runtime_h just
   # before midnight (the final minute of each day is forfeited — irrelevant at
   # a 300 h threshold).
-  - id: dettson_filter_accumulate
-    alias: "Dettson: filter runtime accumulate (daily)"
+  - id: slytherm_filter_accumulate
+    alias: "SlyTherm: filter runtime accumulate (daily)"
     trigger:
       - platform: time
         at: "23:59:00"
     action:
       - service: input_number.set_value
         target:
-          entity_id: input_number.dettson_filter_runtime_h
+          entity_id: input_number.slytherm_filter_runtime_h
         data:
           value: >-
-            {{ (states('input_number.dettson_filter_runtime_h') | float(0))
-               + (states('sensor.dettson_blower_runtime_today') | float(0)) }}
+            {{ (states('input_number.slytherm_filter_runtime_h') | float(0))
+               + (states('sensor.slytherm_blower_runtime_today') | float(0)) }}
     mode: single
 
-  - id: dettson_filter_reminder
-    alias: "Dettson: filter reminder"
+  - id: slytherm_filter_reminder
+    alias: "SlyTherm: filter reminder"
     trigger:
       - platform: numeric_state
-        entity_id: input_number.dettson_filter_runtime_h
-        above: input_number.dettson_filter_alert_hours
+        entity_id: input_number.slytherm_filter_runtime_h
+        above: input_number.slytherm_filter_alert_hours
     action:
       - service: persistent_notification.create
         data:
-          notification_id: dettson_filter_reminder
-          title: "Dettson: furnace filter due"
+          notification_id: slytherm_filter_reminder
+          title: "SlyTherm: furnace filter due"
           message: >-
             Blower runtime is
-            {{ states('input_number.dettson_filter_runtime_h') | float(0) | round(0) }} h
+            {{ states('input_number.slytherm_filter_runtime_h') | float(0) | round(0) }} h
             since the last filter change
-            ({{ states('input_datetime.dettson_filter_last_changed') }}) —
+            ({{ states('input_datetime.slytherm_filter_last_changed') }}) —
             past the
-            {{ states('input_number.dettson_filter_alert_hours') | float(0) | round(0) }} h
-            interval. Replace the filter, then press "Dettson filter changed
+            {{ states('input_number.slytherm_filter_alert_hours') | float(0) | round(0) }} h
+            interval. Replace the filter, then press "SlyTherm filter changed
             (reset)".
     mode: single
 
-  - id: dettson_filter_reset
-    alias: "Dettson: filter reset button"
+  - id: slytherm_filter_reset
+    alias: "SlyTherm: filter reset button"
     trigger:
       - platform: state
-        entity_id: input_button.dettson_filter_reset
+        entity_id: input_button.slytherm_filter_reset
     action:
       - service: input_number.set_value
         target:
-          entity_id: input_number.dettson_filter_runtime_h
+          entity_id: input_number.slytherm_filter_runtime_h
         data:
           value: 0
       - service: input_datetime.set_datetime
         target:
-          entity_id: input_datetime.dettson_filter_last_changed
+          entity_id: input_datetime.slytherm_filter_last_changed
         data:
           date: "{{ now().date() }}"
       - service: persistent_notification.dismiss
         data:
-          notification_id: dettson_filter_reminder
+          notification_id: slytherm_filter_reminder
     mode: single
 
   # -------------------------------------------------------------------------
   # 5. Low/high indoor temperature + humidity alerts
   # -------------------------------------------------------------------------
   # Indoor temp comes from the climate entity's current_temperature (the
-  # firmware's fused control input — dettson/state/current_temp). The firmware
+  # firmware's fused control input — slytherm/state/current_temp). The firmware
   # keeps its own non-settable freeze floors (docs/07 §3.5); these mirror
   # Ecobee's user-settable alerts on top.
-  - id: dettson_low_temp_alert
-    alias: "Dettson: low indoor temperature alert"
+  - id: slytherm_low_temp_alert
+    alias: "SlyTherm: low indoor temperature alert"
     trigger:
       - platform: numeric_state
-        entity_id: climate.dettson_hvac
+        entity_id: climate.slytherm_hvac
         attribute: current_temperature
-        below: input_number.dettson_low_temp_alert
+        below: input_number.slytherm_low_temp_alert
         for: "00:05:00"
     action:
       - service: persistent_notification.create
         data:
-          notification_id: dettson_low_temp
-          title: "Dettson: low indoor temperature"
+          notification_id: slytherm_low_temp
+          title: "SlyTherm: low indoor temperature"
           message: >-
             Indoor temperature
-            {{ state_attr('climate.dettson_hvac', 'current_temperature') }} °C
+            {{ state_attr('climate.slytherm_hvac', 'current_temperature') }} °C
             is below the
-            {{ states('input_number.dettson_low_temp_alert') }} °C alert
+            {{ states('input_number.slytherm_low_temp_alert') }} °C alert
             threshold. Check that the heat is running.
       # EDIT ME (optional): add a notify.mobile_app_<your_phone> call here to
       # push the same message to your phone.
     mode: single
 
-  - id: dettson_high_temp_alert
-    alias: "Dettson: high indoor temperature alert"
+  - id: slytherm_high_temp_alert
+    alias: "SlyTherm: high indoor temperature alert"
     trigger:
       - platform: numeric_state
-        entity_id: climate.dettson_hvac
+        entity_id: climate.slytherm_hvac
         attribute: current_temperature
-        above: input_number.dettson_high_temp_alert
+        above: input_number.slytherm_high_temp_alert
         for: "00:05:00"
     action:
       - service: persistent_notification.create
         data:
-          notification_id: dettson_high_temp
-          title: "Dettson: high indoor temperature"
+          notification_id: slytherm_high_temp
+          title: "SlyTherm: high indoor temperature"
           message: >-
             Indoor temperature
-            {{ state_attr('climate.dettson_hvac', 'current_temperature') }} °C
+            {{ state_attr('climate.slytherm_hvac', 'current_temperature') }} °C
             is above the
-            {{ states('input_number.dettson_high_temp_alert') }} °C alert
+            {{ states('input_number.slytherm_high_temp_alert') }} °C alert
             threshold. Check cooling / check for equipment faults.
     mode: single
 
@@ -324,30 +324,30 @@ automation:
   # EDIT ME: replace sensor.your_indoor_humidity with any %RH sensor you have
   # (e.g. a SNZB-02D from docs/06 "Remote sensors"). Until then this
   # automation simply never triggers.
-  - id: dettson_humidity_alert
-    alias: "Dettson: indoor humidity alert"
+  - id: slytherm_humidity_alert
+    alias: "SlyTherm: indoor humidity alert"
     trigger:
       - platform: numeric_state
         id: low
         entity_id: sensor.your_indoor_humidity
-        below: input_number.dettson_low_humidity_alert
+        below: input_number.slytherm_low_humidity_alert
         for: "00:15:00"
       - platform: numeric_state
         id: high
         entity_id: sensor.your_indoor_humidity
-        above: input_number.dettson_high_humidity_alert
+        above: input_number.slytherm_high_humidity_alert
         for: "00:15:00"
     action:
       - service: persistent_notification.create
         data:
-          notification_id: dettson_humidity
-          title: "Dettson: indoor humidity alert"
+          notification_id: slytherm_humidity
+          title: "SlyTherm: indoor humidity alert"
           message: >-
             Indoor humidity {{ states('sensor.your_indoor_humidity') }} % is
             {{ 'below' if trigger.id == 'low' else 'above' }} the
-            {{ states('input_number.dettson_low_humidity_alert')
+            {{ states('input_number.slytherm_low_humidity_alert')
                if trigger.id == 'low'
-               else states('input_number.dettson_high_humidity_alert') }} %
+               else states('input_number.slytherm_high_humidity_alert') }} %
             alert threshold.
     mode: single
 
@@ -358,9 +358,9 @@ automation:
   # home — works as soon as your person entities have phone device trackers,
   # no per-person editing needed. For explicit person selection (e.g. to
   # ignore a person), use the blueprint instead:
-  #   ha/blueprints/dettson_presence_away.yaml
-  - id: dettson_presence_away
-    alias: "Dettson: everyone left -> away"
+  #   ha/blueprints/slytherm_presence_away.yaml
+  - id: slytherm_presence_away
+    alias: "SlyTherm: everyone left -> away"
     trigger:
       - platform: numeric_state
         entity_id: zone.home
@@ -368,29 +368,29 @@ automation:
         for: "00:10:00"
     condition:
       - condition: state
-        entity_id: calendar.dettson_vacation
+        entity_id: calendar.slytherm_vacation
         state: "off"
     action:
       - service: climate.set_preset_mode
         target:
-          entity_id: climate.dettson_hvac
+          entity_id: climate.slytherm_hvac
         data:
           preset_mode: away
     mode: single
 
-  - id: dettson_presence_return
-    alias: "Dettson: someone home -> resume schedule"
+  - id: slytherm_presence_return
+    alias: "SlyTherm: someone home -> resume schedule"
     trigger:
       - platform: numeric_state
         entity_id: zone.home
         above: 0
     condition:
       - condition: state
-        entity_id: calendar.dettson_vacation
+        entity_id: calendar.slytherm_vacation
         state: "off"
       - condition: template
         value_template: >-
-          {{ state_attr('climate.dettson_hvac', 'preset_mode') == 'away' }}
+          {{ state_attr('climate.slytherm_hvac', 'preset_mode') == 'away' }}
     action:
-      - service: script.dettson_apply_scheduled_preset
+      - service: script.slytherm_apply_scheduled_preset
     mode: single

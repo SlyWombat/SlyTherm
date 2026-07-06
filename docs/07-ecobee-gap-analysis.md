@@ -62,7 +62,7 @@ A row can carry a compound status (e.g. "Exceeds (gas) / Designed (HP)") where t
 | Ecobee feature | Ecobee behavior | DT-1 status | DT-1 detail / evidence |
 | --- | --- | --- | --- |
 | Accessory port | ONE accessory (ACC+/−) | Missing (control) / Exceeds (potential) | DT-1 has **zero accessory outputs** (install §6.1: Y1/Y2/O-B/G only, Case B). HA can control any number of *standalone* smart accessories — unlimited integration potential, but **no implemented thermostat-coordinated accessory control** |
-| Humidifier (setpoint / Frost Control) | Fixed RH or OAT-computed frost-control setpoint; Window Efficiency (1–7) input shapes the frost-control curve | Missing / Partial via HA | No humidifier output or logic. A standalone smart humidifier + HA automation (using `sensor.dettson_outdoor_temp` for frost-control math, including a window-efficiency-style curve) is buildable but undocumented and uncoordinated with HVAC state |
+| Humidifier (setpoint / Frost Control) | Fixed RH or OAT-computed frost-control setpoint; Window Efficiency (1–7) input shapes the frost-control curve | Missing / Partial via HA | No humidifier output or logic. A standalone smart humidifier + HA automation (using `sensor.slytherm_outdoor_temp` for frost-control math, including a window-efficiency-style curve) is buildable but undocumented and uncoordinated with HVAC state |
 | Dehumidifier | Fixed RH setpoint; dehumidify-with-fan | Missing / Partial via HA | Same situation as humidifier |
 | AC Overcool Max | Overcool past setpoint by 0.5–5 °F to dehumidify | Missing | No RH input to control logic (an optional I2C humidity module is listed in install §12.1 but drives nothing); no overcool logic |
 | Ventilator/HRV/ERV | Min runtime/hr occupied/unoccupied; Free Cooling | Missing / Partial via HA | No ventilator output. HA can run an HRV on its own schedule — and could even do CO2-driven ventilation, which Ecobee can't — but nothing is designed or documented here |
@@ -76,7 +76,7 @@ A row can carry a compound status (e.g. "Exceeds (gas) / Designed (HP)") where t
 | Air quality (VOC + eCO2) | Poor-air alerts + tips | Missing / Partial via HA | Nothing on-board; any HA-known AQ sensor can alert in HA, uncoordinated with the thermostat |
 | SmartSensor remotes (up to 32; temp+PIR; 5 yr battery) | RF remotes, proprietary | Partial + Exceeds | Open ecosystem instead: any Zigbee/ESPHome temp or mmWave occupancy sensor via the HA→MQTT bridge (User Manual *Supported sensors*; `docs/06-home-assistant.md`). mmWave beats PIR for still occupants; count unbounded. Ecobee's own sensors explicitly **incompatible** (proprietary 915 MHz). Cost: sensors are third-party purchases, bridge is HA config |
 | Follow Me | Occupancy-dwell-weighted average, gradual | Implemented (untested) | `lib/SensorFusion` + tests: 2.0× occupied weight, 30 min window, 10–30 min weight ramp, slew-limited (install §8.7) |
-| Per-comfort-setting sensor participation | Each comfort setting picks sensors | Designed | Sensor roster maps sensors to presets (`dettson/config/sensors`, install §9.4; User Manual *Per-preset rooms*) |
+| Per-comfort-setting sensor participation | Each comfort setting picks sensors | Designed | Sensor roster maps sensors to presets (`slytherm/config/sensors`, install §9.4; User Manual *Per-preset rooms*) |
 | Smart Home & Away | Occupancy auto-overrides schedule | Partial via HA | Presence automations ("switch to Away when both phones leave") explicitly suggested (User Manual *Schedules*); not native, must be built |
 | Door/window sensors | Security + window-open HVAC alerts | Partial via HA / Out of scope (security) | Any HA contact sensor can drive a mode-off automation; no native support, and Smart-Security-style features are out of scope (HA is the security platform if wanted) |
 
@@ -106,14 +106,14 @@ A row can carry a compound status (e.g. "Exceeds (gas) / Designed (HP)") where t
 | Aux heat runtime alerts | "Aux running excessively" | Partial — Implemented (untested) analog | Analog, not the literal feature: gas: 4 h no-progress → drop + alarm (`kGasMaxRuntimeS`); HP: progress alarm, never auto-cycled (install §8.3–8.4). Different framing, same intent |
 | Air quality alerts | VOC/eCO2 warnings (Premium) | Missing / Partial via HA | No AQ sensing; third-party sensor + HA |
 | Smoke-alarm sound + freeze detection | Subscription-tied extras | Out of scope | No microphone; security features deliberately not this product's job. Freeze protection itself: covered by fallback floors above |
-| Short-cycling / equipment-failure diagnostics | **Absent on Ecobee** (weakness #10) | Exceeds (by design) | Decoded furnace fault codes on screen + `sensor.dettson_fault`; Case B commanded-vs-sensed terminal mismatch detection; health binary_sensor; changeover-reason telemetry (install §6.4, §9.2). Fault-code decode wording pending on-site verification (User Manual flags it "⚠ To be confirmed during installation") |
+| Short-cycling / equipment-failure diagnostics | **Absent on Ecobee** (weakness #10) | Exceeds (by design) | Decoded furnace fault codes on screen + `sensor.slytherm_fault`; Case B commanded-vs-sensed terminal mismatch detection; health binary_sensor; changeover-reason telemetry (install §6.4, §9.2). Fault-code decode wording pending on-site verification (User Manual flags it "⚠ To be confirmed during installation") |
 | Alert suppression (screen vs app/email) | Configurable | Partial | Alerts surface on screen + HA notifications (User Manual *Alerts*); per-channel suppression not specified |
 
 ### 3.6 App & connectivity
 
 | Ecobee feature | Ecobee behavior | DT-1 status | DT-1 detail / evidence |
 | --- | --- | --- | --- |
-| Mobile app | Full control, schedules, reports | Partial via HA (by design) | HA Companion app against `climate.dettson_hvac` — full card, history, notifications, fully local (User Manual *Mobile app*; `lib/HaMqtt` Implemented (untested)). EM HEAT not exposed in app mode list (wall-only; see G15) |
+| Mobile app | Full control, schedules, reports | Partial via HA (by design) | HA Companion app against `climate.slytherm_hvac` — full card, history, notifications, fully local (User Manual *Mobile app*; `lib/HaMqtt` Implemented (untested)). EM HEAT not exposed in app mode list (wall-only; see G15) |
 | Web portal | ecobee.com control | Partial via HA | HA web UI locally; plus a local diagnostic web page on the device as broker-down fallback (install §9.6) |
 | Energy reports (Home IQ) | Runtime history, savings baseline, monthly email | Partial via HA | HA history/long-term statistics + energy dashboard; richer raw telemetry than Ecobee exposes (live modulation %, active equipment, changeover reasons) but no curated "report" product |
 | Weather feed | Internet weather drives display + lockouts (no physical outdoor input — weakness #5) | Implemented (untested) + Exceeds | `lib/OutdoorTempSource` + tests: bus sensor → wired outdoor DS18B20 → HA weather rungs, staleness fallback, cross-rung disagreement alarm, fail-cold policy (install §8.8). Bus OAT rung pending Phase-2 confirmation — outdoor temp may not exist on the bus at all (`docs/05-firmware-plan.md` Phase 2 done-criterion (b)), leaving wired sensor → HA weather; the Exceeds claim stands on the wired DS18B20 alone. Works offline; Ecobee's lockouts don't |
@@ -202,7 +202,7 @@ Issue-ready items for "close now" and "backlog" gaps:
    Estimate degrees-per-hour ramp from observed runs and start calls early so the setpoint is met at the scheduled preset change; toggleable, bounded look-ahead. Coordinate with HA-owned schedules (HA publishes the next setpoint/time, firmware decides the early start).
 
 5. **HA blueprint: coordinated standalone humidifier/dehumidifier/HRV** *(G1 step 1, backlog)*
-   Automation template driving a standalone smart accessory from DT-1 telemetry: RH setpoint, frost-control curve from `sensor.dettson_outdoor_temp`, interlock with `active_equipment` (e.g. humidify only with blower proven). Documents the "unlimited accessories via HA" claim honestly.
+   Automation template driving a standalone smart accessory from DT-1 telemetry: RH setpoint, frost-control curve from `sensor.slytherm_outdoor_temp`, interlock with `active_equipment` (e.g. humidify only with blower proven). Documents the "unlimited accessories via HA" claim honestly.
 
 6. **Hardware rev: one spare accessory output** *(G1 step 2, backlog)*
    Evaluate adding one watchdog-protected dry contact to the Case-B relay stage (and a bus-equivalent for Case A if one exists) for a single thermostat-coordinated accessory — matches Ecobee's one-ACC capability natively.

@@ -10,15 +10,15 @@
 //             -> shapers -> actuator; SafetySupervisor reports invariants
 //             every cycle and gates the external-WDT pet
 //           ct485Task   — Ct485Thermostat protocol state machine; UART glue
-//                         stubbed unless -DDETTSON_CT485_UART
+//                         stubbed unless -DSLYTHERM_CT485_UART
 //
 // ===================== DEMANDS-DISABLED GUARANTEE (default build) ===========
 // The default build CANNOT raise a live demand:
 //   - the actuator is LoggingActuator: demands are printed, never transmitted;
 //   - Ct485Thermostat boots SILENT and is never resume()d without
-//     -DDETTSON_CT485_TX_ENABLE, and its Config::offsetVariant is left kUnset,
+//     -DSLYTHERM_CT485_TX_ENABLE, and its Config::offsetVariant is left kUnset,
 //     so it refuses demand frames BY DESIGN (docs/02 §5a Phase 2 gate);
-//   - no relay GPIO is configured outside -DDETTSON_ACTUATOR_RELAY, and even
+//   - no relay GPIO is configured outside -DSLYTHERM_ACTUATOR_RELAY, and even
 //     then pins default to -1 (log only) in thermostat_config.h.
 // Phase 3 TX needs all three gates deliberately opened.
 // ============================================================================
@@ -30,16 +30,16 @@
 //      in Wi-Fi + broker credentials (gitignored).
 //   2. pio run -e thermostat -t upload && pio device monitor
 //   3. Publish a retained sensor roster:
-//        mosquitto_pub -r -t dettson/config/sensors \
+//        mosquitto_pub -r -t slytherm/config/sensors \
 //          -m '{"sensors":[{"id":"bench","max_age_s":300}]}'
 //   4. Simulate a room sensor (repeat at least every 300 s; non-retained):
-//        mosquitto_pub -t dettson/sensors/bench/state \
+//        mosquitto_pub -t slytherm/sensors/bench/state \
 //          -m '{"temp":19.5,"occ":true}'
 //      and (optionally) outdoor temp for the dual-fuel arbiter:
-//        mosquitto_pub -t dettson/cmd/outdoor_temp -m '5.0'
-//   5. Drive it: mosquitto_pub -t dettson/cmd/mode -m heat
-//                mosquitto_pub -t dettson/cmd/setpoint -m 21.5
-//   6. Watch dettson/state/# — and the serial log, where LoggingActuator
+//        mosquitto_pub -t slytherm/cmd/outdoor_temp -m '5.0'
+//   5. Drive it: mosquitto_pub -t slytherm/cmd/mode -m heat
+//                mosquitto_pub -t slytherm/cmd/setpoint -m 21.5
+//   6. Watch slytherm/state/# — and the serial log, where LoggingActuator
 //      prints every demand the pipeline would have emitted. Home Assistant
 //      auto-discovers the climate + diagnostic entities (docs/06).
 // Without sensor input the boot gate stays closed (boot-to-no-demand,
@@ -81,7 +81,7 @@
 #include "SensorFusion.h"
 #include "UiModel.h"
 
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
 #include <ESPmDNS.h>      // mDNS broker auto-discovery (silent home-system connect)
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
 #include <esp_ota_ops.h>  // running-partition app hash, to clear the reset-loop latch on a new flash
@@ -118,13 +118,13 @@
 // Local indoor sensor (SensorFusion slot 0). Default OFF (issue #73): this
 // wall unit fuses ONLY the MQTT/HA room sensors — no on-board DS18B20 is
 // installed, so slot 0 is not registered, not published, and drops off the
-// Sensors screen. Build with -DDETTSON_LOCAL_SENSOR to compile the local slot
-// back in for other hardware; a physical DS18B20 (-DDETTSON_DS18B20) implies it.
-#if defined(DETTSON_DS18B20) && !defined(DETTSON_LOCAL_SENSOR)
-#define DETTSON_LOCAL_SENSOR
+// Sensors screen. Build with -DSLYTHERM_LOCAL_SENSOR to compile the local slot
+// back in for other hardware; a physical DS18B20 (-DSLYTHERM_DS18B20) implies it.
+#if defined(SLYTHERM_DS18B20) && !defined(SLYTHERM_LOCAL_SENSOR)
+#define SLYTHERM_LOCAL_SENSOR
 #endif
 
-#ifdef DETTSON_DS18B20
+#ifdef SLYTHERM_DS18B20
 #include <DallasTemperature.h>
 #include <OneWire.h>
 #endif
@@ -154,7 +154,7 @@ uint32_t nowSeconds() {
 SemaphoreHandle_t gCmdMux;   // Pending mailbox + sensor table
 SemaphoreHandle_t gSnapMux;  // control -> MQTT state snapshot
 SemaphoreHandle_t gCtMux;    // Ct485Thermostat instance
-// Guards gUi across the control task and the wall-UI task (DETTSON_UI). Null
+// Guards gUi across the control task and the wall-UI task (SLYTHERM_UI). Null
 // (no-op) when the UI task isn't built, so all wraps stay compile-safe.
 SemaphoreHandle_t gUiMux = nullptr;
 inline void uiLock()   { if (gUiMux) xSemaphoreTake(gUiMux, portMAX_DELAY); }
@@ -221,7 +221,7 @@ struct Snapshot {
   hm::LockLevel lockLevel = hm::LockLevel::kSettingsOnly;
   bool pinSet = false;
   char busJson[176] = "{}";
-#ifdef DETTSON_ACTUATOR_RELAY
+#ifdef SLYTHERM_ACTUATOR_RELAY
   char relaysJson[80] = "{}";  // Case B diagnostic (docs/06 topic map)
 #endif
   struct SensorPub {
@@ -335,7 +335,7 @@ class LoggingActuator : public Actuator {
   bool silentLogged_ = false;
 };
 
-#ifdef DETTSON_ACTUATOR_CT485
+#ifdef SLYTHERM_ACTUATOR_CT485
 // Path A: demands routed into Ct485Thermostat. With offsetVariant kUnset
 // (the shipped Config) every setDemand() is refused — by design, until the
 // docs/02 §5a offsets are capture-confirmed.
@@ -374,7 +374,7 @@ class Ct485Actuator : public Actuator {
 };
 #endif
 
-#ifdef DETTSON_ACTUATOR_RELAY
+#ifdef SLYTHERM_ACTUATOR_RELAY
 // Case B compressor-side contacts. Gas stays on the CT-485 path (hybrid).
 class RelayActuator : public Actuator {
  public:
@@ -407,7 +407,7 @@ class RelayActuator : public Actuator {
   }
   const char* name() const override { return "relay"; }
 
-  // dettson/state/relays diagnostic JSON (docs/06 topic map, Case B).
+  // slytherm/state/relays diagnostic JSON (docs/06 topic map, Case B).
   void fillRelaysJson(char* buf, size_t n) const {
     const RelayOutputs& o = seq_.outputs();
     snprintf(buf, n, "{\"y1\":%s,\"y2\":%s,\"ob\":%s,\"g\":%s,\"defrost\":%s}",
@@ -426,9 +426,9 @@ class RelayActuator : public Actuator {
 };
 #endif
 
-#if defined(DETTSON_ACTUATOR_CT485)
+#if defined(SLYTHERM_ACTUATOR_CT485)
 Ct485Actuator gActuatorImpl;
-#elif defined(DETTSON_ACTUATOR_RELAY)
+#elif defined(SLYTHERM_ACTUATOR_RELAY)
 RelayActuator* gActuatorPtr = nullptr;  // pin setup must wait for setup()
 #else
 LoggingActuator gActuatorImpl;
@@ -495,7 +495,7 @@ uint8_t findOrAddSensor(const char* name) {  // gCmdMux held; 0 = not found/full
 }
 
 uint8_t findSensor(const char* name) {  // gCmdMux held
-#ifdef DETTSON_LOCAL_SENSOR
+#ifdef SLYTHERM_LOCAL_SENSOR
   if (strcmp(name, hm::kLocalSensorId) == 0) return 0;
 #endif
   for (size_t i = 1; i < kFusionSlots; ++i)
@@ -551,8 +551,8 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   buf[len] = '\0';
 
   // Wildcard topics first.
-  const char* sensPrefix = "dettson/sensors/";
-  const char* offPrefix = "dettson/cmd/sensor/";
+  const char* sensPrefix = "slytherm/sensors/";
+  const char* offPrefix = "slytherm/cmd/sensor/";
   if (strncmp(topic, sensPrefix, strlen(sensPrefix)) == 0) {
     const char* id = topic + strlen(sensPrefix);
     const char* slash = strchr(id, '/');
@@ -751,7 +751,7 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("sensor", "outdoor_source"), outdoorSourceDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "fusion"), fusionDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "changeover_reason"), changeoverReasonDiscoveryJson());
-#ifdef DETTSON_LOCAL_SENSOR
+#ifdef SLYTHERM_LOCAL_SENSOR
   pubRetained(discoveryTopic("number", std::string("sensor_") + kLocalSensorId + "_offset"),
               sensorOffsetDiscoveryJson(kLocalSensorId));
 #endif
@@ -772,7 +772,7 @@ void subscribeAll() {
       hm::topic::kCmdMode, hm::topic::kCmdFanMode, hm::topic::kCmdPreset,
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
-      cfg::kOatTopic, "dettson/sensors/+/state", "dettson/cmd/sensor/+/offset"};
+      cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/cmd/sensor/+/offset"};
   for (const char* t : topics) gMqtt.subscribe(t);
 }
 
@@ -782,7 +782,7 @@ enum PubIdx : uint8_t {
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
   PUB_LASTERR,
-#ifdef DETTSON_ACTUATOR_RELAY
+#ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
   PUB_COUNT
@@ -840,14 +840,14 @@ void publishSnapshot(bool force) {
   pubState(PUB_CHG, topic::kStateChangeoverReason, s.changeReason, force);
   pubState(PUB_LOCK, topic::kStateLock,
            lockStateJson(s.lockState, s.lockLevel, s.pinSet).c_str(), force);
-  pubState(PUB_BUS, "dettson/state/bus", s.busJson, force);
+  pubState(PUB_BUS, "slytherm/state/bus", s.busJson, force);
   pubState(PUB_FAULT, topic::kStateFault, "none", force);
   pubState(PUB_HEALTH, topic::kStateHealth,
            s.healthProblem ? payload::kOn : payload::kOff, force);
   pubState(PUB_LASTERR, topic::kStateLastError,
            s.lastError[0] ? s.lastError : "none", force);
-#ifdef DETTSON_ACTUATOR_RELAY
-  pubState(PUB_RELAYS, "dettson/state/relays", s.relaysJson, force);
+#ifdef SLYTHERM_ACTUATOR_RELAY
+  pubState(PUB_RELAYS, "slytherm/state/relays", s.relaysJson, force);
 #endif
 
   if (force) {  // per-sensor diagnostics on the heartbeat only (age ticks anyway)
@@ -870,7 +870,7 @@ void publishSnapshot(bool force) {
 
 void mqttTask(void*) {
   const bool haveMqtt = strlen(THERMOSTAT_MQTT_HOST) > 0;
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
   // Wi-Fi owned by wifi_prov: NVS-saved creds (or compile-time fallback), set
   // from the wall UI (Settings -> WiFi). Survives reflash.
   const bool haveWifi = wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
@@ -886,7 +886,7 @@ void mqttTask(void*) {
     Serial.println("[mqtt] no Wi-Fi credentials (src/thermostat_secrets.h) — serial-only bench mode");
   }
 #endif
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
   // Broker provisioned on-device (mqtt_cfg): host kept in a task-persistent
   // buffer because PubSubClient::setServer stores the pointer, not a copy.
   static char sMqttHost[64] = {};
@@ -902,7 +902,7 @@ void mqttTask(void*) {
   uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0, lastDiscoverMs = 0;
   for (;;) {
     const uint32_t nowMs = millis();
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
     wifi_prov::service(nowMs);
     telnet_log::poll();
     gWifiConnected = wifi_prov::connected();
@@ -949,7 +949,7 @@ void mqttTask(void*) {
         nowMs - lastMqttTryMs >= cfg::kMqttReconnectMs) {
       lastMqttTryMs = nowMs;
       // LWT: availability topic -> retained "offline" (docs/06).
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
       char mqUser[48], mqPass[64];
       mqtt_cfg::current(nullptr, 0, nullptr, mqUser, sizeof(mqUser), mqPass, sizeof(mqPass));
       const char* muser = strlen(mqUser) ? mqUser : nullptr;
@@ -965,18 +965,18 @@ void mqttTask(void*) {
         gDiscoveryDirty = false;
         subscribeAll();
         memset(gPubCache, 0, sizeof(gPubCache));  // full republish after reconnect
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
         telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
 #else
         Serial.println("[mqtt] connected");
 #endif
       }
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
       else telnet_log::logf("[mqtt] connect failed (state=%d)", gMqtt.state());
 #endif
     }
     gMqttConnected = gMqtt.connected();
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
     mqtt_cfg::setConnected(gMqttConnected);
 #endif
     if (gMqttConnected) {
@@ -1004,13 +1004,13 @@ void mqttTask(void*) {
 volatile uint32_t gLastBusRxS = 0;   // 0 = never
 volatile uint32_t gCtTxSuppressed = 0;
 
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
 ct485::FrameAccumulator gCtAcc;
 uint32_t gCtLastByteUs = 0;
 bool gCtInProgress = false;
 #endif
 
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
 void sniffFrame(const ct485::Frame& f) {
   if (!gSniffActive) return;
   gSniffFrames = gSniffFrames + 1;
@@ -1027,7 +1027,7 @@ void sniffFrame(const ct485::Frame& f) {
 #endif
 
 void ct485Task(void*) {
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
   if (cfg::kCt485DePin >= 0) {           // auto-direction transceivers have no DE (#71)
     pinMode(cfg::kCt485DePin, OUTPUT);
     digitalWrite(cfg::kCt485DePin, LOW);  // receive; hardware pulldown agrees
@@ -1039,7 +1039,7 @@ void ct485Task(void*) {
   for (;;) {
     const uint32_t nowMs = millis();
     xSemaphoreTake(gCtMux, portMAX_DELAY);
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
     int avail = Serial2.available();
     while (avail-- > 0) {
       const int c = Serial2.read();
@@ -1074,7 +1074,7 @@ void ct485Task(void*) {
     gCt->tick(nowMs);
     ct485::Frame txf;
     while (gCt->popTx(txf)) {
-#if defined(DETTSON_CT485_UART) && defined(DETTSON_CT485_TX_ENABLE)
+#if defined(SLYTHERM_CT485_UART) && defined(SLYTHERM_CT485_TX_ENABLE)
       uint8_t raw[ct485::kMaxFrame];
       const size_t n = ct485::encode(txf, raw);
       if (n > 0) {
@@ -1108,7 +1108,7 @@ bool gWdtPetLevel = false;
 float gLastHpEmittedPct = 0.0f;
 bool gHpRouteHeat = false;        // which family the shared compressor serves
 
-#ifdef DETTSON_DS18B20
+#ifdef SLYTHERM_DS18B20
 void pollLocalSensors(uint32_t nowS);
 #endif
 
@@ -1457,7 +1457,7 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
            gCt->starvationAlarm() ? "true" : "false");
   xSemaphoreGive(gCtMux);
 
-#ifdef DETTSON_ACTUATOR_RELAY
+#ifdef SLYTHERM_ACTUATOR_RELAY
   if (gActuatorPtr) gActuatorPtr->fillRelaysJson(s.relaysJson, sizeof(s.relaysJson));
 #endif
 
@@ -1470,7 +1470,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   consumeCommands(nowS);
 
   // ---- Inputs ----
-#ifdef DETTSON_DS18B20
+#ifdef SLYTHERM_DS18B20
   pollLocalSensors(nowS);
 #endif
   const FusedTemp fused = gFusion.fusedTemp(nowS);
@@ -1516,7 +1516,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   dfi.oatC = oat.valueC;
   dfi.oatValid = oat.valid;
   dfi.hpDemandPct = gLastHpEmittedPct;
-#ifdef DETTSON_ACTUATOR_RELAY
+#ifdef SLYTHERM_ACTUATOR_RELAY
   dfi.defrostActive = cfg::kSenseDPin >= 0 && digitalRead(cfg::kSenseDPin) == HIGH;
 #endif
   const DualFuelOutput dfo = gDualFuel->step(dfi, nowS);
@@ -1565,7 +1565,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   hf.sensorValid = fused.valid;
   hf.setpointFresh = setpointFresh;
   hf.mqttAlive = gMqttConnected;
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
   hf.busAlive = gLastBusRxS != 0 && nowS - gLastBusRxS < kBusDeadmanS;
 #else
   hf.busAlive = true;  // no bus fitted on the bench — deadman idle by design
@@ -1598,7 +1598,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     if (gHpRouteHeat) req.hpHeatPct = hpOut; else req.coolPct = hpOut;
     req.fanPct = fanReq;
     req.defrostTemperPct = temperActive ? dfo.temperHeatPct : 0.0f;
-#if defined(DETTSON_CT485_UART) && defined(DETTSON_CT485_TX_ENABLE)
+#if defined(SLYTHERM_CT485_UART) && defined(SLYTHERM_CT485_TX_ENABLE)
     if (gSup->bootGateOpen() && gCt->silent()) {
       xSemaphoreTake(gCtMux, portMAX_DELAY);
       gCt->resume(nowMs);
@@ -1620,7 +1620,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   const bool busAlarm = gCt->pairingAlarm() || gCt->commsLossAlarm() || gCt->starvationAlarm();
   xSemaphoreGive(gCtMux);
   glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical,
-            "CT-485 TX stack alarm (see dettson/state/bus)", nowS);
+            "CT-485 TX stack alarm (see slytherm/state/bus)", nowS);
 
   // ---- External hardware watchdog pet (docs/04 §3 pet-gating) ----
   if (gSup->petExternalWdt() && cfg::kWdtPetPin >= 0) {
@@ -1632,7 +1632,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   updateRunSegments(out, fused, nowS);
   adviseRecovery(fused, oat, nowS);
 
-  // ---- UI model sync (rendered by the wall-UI task, DETTSON_UI) ----
+  // ---- UI model sync (rendered by the wall-UI task, SLYTHERM_UI) ----
   uiLock();
   gUi.tick(nowS);
   gUi.setFusedTemp(fused.value, fused.valid);
@@ -1664,14 +1664,14 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     }
     gUi.setClock(cb); }
   { uint32_t ctFrames = 0;
-#ifdef DETTSON_CT485_UART
+#ifdef SLYTHERM_CT485_UART
     ctFrames = gCtAcc.counters().framesOk;   // live only when the RS-485 UART is compiled in
 #endif
     gUi.setBusDiag(gLastBusRxS, ctFrames); }
   gUi.setDegradedMode(fused.degraded);
   gUi.setHoldStatus(gModeSm->activeHoldType(), gModeSm->holdRemainingS(nowS));  // hold chooser (#81)
   // Live preset roster -> UI (#74): real names + setpoints from the authoritative
-  // ModeStateMachine roster (retained dettson/config/presets or boot defaults).
+  // ModeStateMachine roster (retained slytherm/config/presets or boot defaults).
   { ui::DisplayState::PresetView pv[kMaxPresets]; uint8_t pn = 0;
     const size_t pc = gModeSm->presetCount();
     for (size_t i = 0; i < pc && pn < kMaxPresets; ++i) {
@@ -1717,7 +1717,7 @@ void controlTask(void*) {
   }
 }
 
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
 // Wall-UI task (core 0). Renders gUi (filled by the control task) and routes
 // touch into it — display-only, demand authority stays in the control task.
 void uiTask(void*) {
@@ -1729,7 +1729,7 @@ void uiTask(void*) {
 }
 #endif
 
-#ifdef DETTSON_DS18B20
+#ifdef SLYTHERM_DS18B20
 OneWire* gOneWire = nullptr;
 DallasTemperature* gDallas = nullptr;
 uint32_t gLastDsPollS = 0;
@@ -1756,8 +1756,8 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println();
-  Serial.println("Dettson thermostat (issue #55) — demands "
-#if defined(DETTSON_CT485_TX_ENABLE)
+  Serial.println("SlyTherm thermostat (issue #55) — demands "
+#if defined(SLYTHERM_CT485_TX_ENABLE)
                  "TX-ENABLED (Phase 3 build)"
 #else
                  "DISABLED (logging/stub build)"
@@ -1887,13 +1887,13 @@ void setup() {
   }
 
   // ---- Sensors ----
-#ifdef DETTSON_LOCAL_SENSOR
+#ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;
   strlcpy(gSensorTable[0].name, hm::kLocalSensorId, kSensorNameLen);
   gSensorTable[0].inRoster = true;
 #endif
-#ifdef DETTSON_DS18B20
+#ifdef SLYTHERM_DS18B20
   if (cfg::kOneWirePin >= 0) {
     gOneWire = new OneWire(static_cast<uint8_t>(cfg::kOneWirePin));
     gDallas = new DallasTemperature(gOneWire);
@@ -1911,7 +1911,7 @@ void setup() {
     gCt = new ct485::Ct485Thermostat(cc);
   }
 
-#if defined(DETTSON_ACTUATOR_RELAY)
+#if defined(SLYTHERM_ACTUATOR_RELAY)
   gActuatorPtr = new RelayActuator();
   gActuator = gActuatorPtr;
 #else
@@ -1924,7 +1924,7 @@ void setup() {
   gCmdMux = xSemaphoreCreateMutex();
   gSnapMux = xSemaphoreCreateMutex();
   gCtMux = xSemaphoreCreateMutex();
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
   gUiMux = xSemaphoreCreateMutex();
   // #82: first-run onboarding gate — no NVS creds and no compile-time fallback
   // means the wall UI boots to the Welcome screen instead of the empty Home.
@@ -1937,7 +1937,7 @@ void setup() {
   xTaskCreatePinnedToCore(mqttTask, "mqtt", cfg::kMqttStack, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(controlTask, "control", cfg::kControlStack, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(ct485Task, "ct485", cfg::kCt485Stack, nullptr, 4, nullptr, 1);
-#ifdef DETTSON_UI
+#ifdef SLYTHERM_UI
   // Wall UI on core 0 with Wi-Fi/MQTT; control + CT-485 keep core 1 to protect
   // the control cadence and future TX turnaround (docs/03 §8, issue #28).
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);

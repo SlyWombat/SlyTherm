@@ -116,7 +116,7 @@ class AlarmRegistry {
   bool anyActiveCritical() const;
   bool anyUnacked() const;
   // Text of the most recent raise(), retained even after the entry is gone
-  // (HaMqtt dettson/state/last_error). "" if never raised.
+  // (HaMqtt slytherm/state/last_error). "" if never raised.
   const char* lastErrorText() const { return lastError_; }
 
   bool overflowed() const { return overflowed_; }  // bounded list dropped oldest

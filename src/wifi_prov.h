@@ -2,7 +2,7 @@
 // One owner of the Wi-Fi radio (the MQTT task): it maintains the connection
 // from NVS-saved credentials and processes scan/connect requests posted by the
 // UI task. The UI never touches the radio directly. Compiled only into
-// env:thermostat_s3 (DETTSON_UI).
+// env:thermostat_s3 (SLYTHERM_UI).
 #pragma once
 
 #include <cstddef>

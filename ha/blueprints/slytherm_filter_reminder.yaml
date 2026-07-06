@@ -1,16 +1,16 @@
-# Runtime-based filter/maintenance reminder for the Dettson DT-1 (gap G3,
+# Runtime-based filter/maintenance reminder for the SlyTherm DT-1 (gap G3,
 # docs/07). Pairs with the runtime accumulator in
-# ha/packages/dettson_starter.yaml (input_number.dettson_filter_runtime_h),
+# ha/packages/slytherm_starter.yaml (input_number.slytherm_filter_runtime_h),
 # but works against any entity whose state is accumulated runtime hours —
 # point a second instance at a UV-lamp or HRV-core counter for other
 # maintenance intervals.
 blueprint:
-  name: "Dettson: filter reminder by runtime hours"
+  name: "SlyTherm: filter reminder by runtime hours"
   description: >-
     Raises a persistent notification when an accumulated-runtime-hours entity
     crosses a threshold. The notification stays until dismissed or until the
     counter is reset below the threshold (e.g. via the starter package's
-    "Dettson filter changed (reset)" button).
+    "SlyTherm filter changed (reset)" button).
   domain: automation
   author: ElectricRV
   input:
@@ -18,8 +18,8 @@ blueprint:
       name: Runtime counter
       description: >-
         Entity holding accumulated blower/equipment runtime in hours since the
-        last service (starter package: input_number.dettson_filter_runtime_h).
-      default: input_number.dettson_filter_runtime_h
+        last service (starter package: input_number.slytherm_filter_runtime_h).
+      default: input_number.slytherm_filter_runtime_h
       selector:
         entity:
           domain:
@@ -41,7 +41,7 @@ blueprint:
           mode: box
     reminder_title:
       name: Notification title
-      default: "Dettson: furnace filter due"
+      default: "SlyTherm: furnace filter due"
       selector:
         text:
     notification_id:
@@ -49,7 +49,7 @@ blueprint:
       description: >-
         Unique per blueprint instance, so multiple reminders do not overwrite
         each other and a reset can dismiss the right one.
-      default: dettson_filter_reminder
+      default: slytherm_filter_reminder
       selector:
         text:
 

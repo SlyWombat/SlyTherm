@@ -22,7 +22,7 @@ enum class OatRung : uint8_t {
   kNone      = 3,
 };
 
-// String for the dettson/state/outdoor_source MQTT topic (docs/06).
+// String for the slytherm/state/outdoor_source MQTT topic (docs/06).
 const char* oatRungName(OatRung rung);
 
 struct OatSourceConfig {
