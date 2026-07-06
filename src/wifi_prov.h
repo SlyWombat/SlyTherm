@@ -21,6 +21,9 @@ constexpr int kMaxNets = 16;
 // Load saved creds (falling back to the compile-time secrets if NVS is empty)
 // and bring Wi-Fi up. Returns true if any SSID is configured.
 bool begin(const char* fallbackSsid, const char* fallbackPass);
+// True if a Wi-Fi SSID has ever been saved to NVS. Safe to call before begin()
+// (reads NVS directly) — used for the first-run onboarding gate (issue #82).
+bool hasSavedCredentials();
 // Drive connection maintenance + process pending scan/connect requests.
 void service(uint32_t nowMs);
 bool connected();

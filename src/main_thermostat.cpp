@@ -244,6 +244,7 @@ volatile bool gMqttConnected = false;
 volatile bool gWifiConnected = false;
 bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS "clk24"
 bool gReducedUi = false;  // #80: boot the minimal safe UI (reset-loop latch); NVS "rui"
+bool gFirstRun = false;   // #82: no saved Wi-Fi -> boot the Welcome onboarding screen
 
 // ============================================================================
 // Modules (constructed in setup() once the persisted clock is known)
@@ -1720,7 +1721,7 @@ void controlTask(void*) {
 // Wall-UI task (core 0). Renders gUi (filled by the control task) and routes
 // touch into it — display-only, demand authority stays in the control task.
 void uiTask(void*) {
-  slytherm_ui::begin(&gUi, gUiMux, gReducedUi);
+  slytherm_ui::begin(&gUi, gUiMux, gReducedUi, gFirstRun);
   for (;;) {
     slytherm_ui::service();
     vTaskDelay(pdMS_TO_TICKS(5));
@@ -1925,6 +1926,10 @@ void setup() {
   gCtMux = xSemaphoreCreateMutex();
 #ifdef DETTSON_UI
   gUiMux = xSemaphoreCreateMutex();
+  // #82: first-run onboarding gate — no NVS creds and no compile-time fallback
+  // means the wall UI boots to the Welcome screen instead of the empty Home.
+  // Computed here (synchronously, before uiTask) so begin() sees it race-free.
+  gFirstRun = !(wifi_prov::hasSavedCredentials() || strlen(THERMOSTAT_WIFI_SSID) > 0);
 #endif
 
   // Task layout (docs/01 §4): Wi-Fi/MQTT core 0; control + CT-485 core 1,

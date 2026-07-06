@@ -55,6 +55,12 @@ bool begin(const char* fbSsid, const char* fbPass){
 
 bool connected(){ return WiFi.status()==WL_CONNECTED; }
 
+bool hasSavedCredentials(){
+  Preferences p; p.begin("wifi", true);
+  String s = p.getString("ssid", ""); p.end();
+  return s.length() > 0;
+}
+
 void service(uint32_t nowMs){
   // forget
   L(); bool fReq=gForgetReq; gForgetReq=false; U();

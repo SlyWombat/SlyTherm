@@ -123,6 +123,7 @@ void touchCb(lv_indev_drv_t*,lv_indev_data_t*dt){ uint16_t x,y;
 lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
 bool gAmbient=false;
 bool gWelcomeActive=false;  // #82: first-run onboarding gate (no saved WiFi)
+lv_obj_t *scrWelcome=nullptr;  // #82: standalone Welcome screen (like scrAmb)
 uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift ring (#70)
 // main-screen widgets
 lv_obj_t *wTemp,*wDeg=nullptr,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wClock,*wSysBody,*wDiagBody,*wLockState;
@@ -406,6 +407,23 @@ void buildAmbient(){ scrAmb=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrAm
   aAlarm=lv_label_create(scrAmb); lv_obj_set_style_text_color(aAlarm,lv_color_hex(COL_CRIT),0);   // alarm visible even in ambient (docs/04 §1c)
   lv_obj_set_style_text_font(aAlarm,&lv_font_montserrat_20,0); lv_obj_align(aAlarm,LV_ALIGN_BOTTOM_MID,0,-16); lv_obj_add_flag(aAlarm,LV_OBJ_FLAG_HIDDEN); }
 
+// ---- first-run Welcome / onboarding (issue #82) ----
+// Shown at boot when there is no saved Wi-Fi: big logo, friendly headline, and a
+// primary "Let's Get Started" -> WiFi setup. service() moves to Home once the
+// connection comes up. Homeowner wording (no MQTT/broker jargon).
+void onGetStarted(lv_event_t*){ lv_scr_load(scrMain); openWifi(nullptr); }  // gWelcomeActive stays until connected
+void buildWelcome(){ scrWelcome=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrWelcome,lv_color_hex(COL_BG),0);
+  lv_obj_set_style_pad_all(scrWelcome,0,0); lv_obj_clear_flag(scrWelcome,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*mk=lv_img_create(scrWelcome); lv_img_set_src(mk,&slymark_img); lv_img_set_zoom(mk,700); lv_obj_align(mk,LV_ALIGN_TOP_MID,0,70);  // ~2.7x logo mark
+  lv_obj_t*h=lv_label_create(scrWelcome); lv_label_set_text(h,"Welcome to SlyTherm"); lv_obj_set_style_text_font(h,&font_set48,0);
+  lv_obj_set_style_text_color(h,lv_color_hex(COL_INK),0); lv_obj_align(h,LV_ALIGN_CENTER,0,0);
+  lv_obj_t*sub=lv_label_create(scrWelcome); lv_label_set_text(sub,"Let's get your thermostat online.");
+  lv_obj_set_style_text_font(sub,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(sub,lv_color_hex(COL_MUTED),0); lv_obj_align(sub,LV_ALIGN_CENTER,0,44);
+  lv_obj_t*b=lv_btn_create(scrWelcome); lv_obj_set_size(b,340,68); lv_obj_align(b,LV_ALIGN_BOTTOM_MID,0,-48);
+  lv_obj_set_style_bg_color(b,lv_color_hex(COL_CRYO),0); lv_obj_set_style_radius(b,12,0); lv_obj_add_event_cb(b,onGetStarted,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t*bl=lv_label_create(b); lv_label_set_text(bl,"Let's Get Started"); lv_obj_set_style_text_font(bl,&lv_font_montserrat_28,0);
+  lv_obj_set_style_text_color(bl,lv_color_hex(0x06202B),0); lv_obj_center(bl); }
+
 // ---- WiFi setup: state machine (Settings -> WiFi setup) --------------------
 void wifiGoto(WifiState s);  // fwd
 
@@ -682,7 +700,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildAmbient(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildAmbient(); buildWelcome(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -868,7 +886,7 @@ void renderSafe(const DisplayState& s){ char b[64];
 
 }  // namespace
 
-void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi){
+void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi, bool firstRun){
   gM=model; gMux=mux; gReduced=reducedUi;
   Wire.begin(kSda,kScl); Wire.setClock(400000);
   ch422M(0x01); ch422O(kBitTpRst|kBitLcdRst); delay(20);
@@ -881,7 +899,9 @@ void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi){
   lv_disp_drv_init(&dispDrv); dispDrv.hor_res=800; dispDrv.ver_res=480; dispDrv.flush_cb=flushCb; dispDrv.draw_buf=&drawBuf; lv_disp_drv_register(&dispDrv);
   lv_indev_drv_init(&indDrv); indDrv.type=LV_INDEV_TYPE_POINTER; indDrv.read_cb=touchCb; lv_indev_drv_register(&indDrv);
   if(gReduced){ buildSafeUi(); Serial.println("[ui] SAFE MODE - reduced UI (reset-loop latch, #80)"); }
-  else { buildUi(); Serial.println("[ui] SlyTherm wall UI up"); }
+  else { buildUi();
+    if(firstRun){ gWelcomeActive=true; lv_scr_load(scrWelcome); Serial.println("[ui] first run - Welcome onboarding (no saved WiFi)"); }
+    Serial.println("[ui] SlyTherm wall UI up"); }
 }
 
 void service(){
@@ -892,6 +912,11 @@ void service(){
     if(gReduced){ DisplayState s; L(); s=gM->state(); U(); renderSafe(s); screenshotPoll(); lv_timer_handler(); return; }  // #80: minimal safe screen only
     if(gSniffOpen){ renderSniff(); screenshotPoll(); lv_timer_handler(); return; }  // dedicated LISTEN screen: no ambient/main render
     DisplayState s; L(); s=gM->state(); U();
+    if(gWelcomeActive){   // #82: first-run onboarding gate — stay here until Wi-Fi is up
+      if(wifi_prov::connected()){ gWelcomeActive=false; gWifiOpen=false; if(wifiOv) lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);
+        lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF); }   // connected -> Home automatically
+      else { if(!gWifiOpen && lv_scr_act()!=scrWelcome) lv_scr_load(scrWelcome);   // backed out of WiFi setup -> Welcome (never a bare screen)
+        renderWifi(); screenshotPoll(); lv_timer_handler(); return; } }
     if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.

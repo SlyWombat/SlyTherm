@@ -21,7 +21,11 @@ namespace slytherm_ui {
 // MINIMAL safe screen (plain temp + mode + alarms, no chart/gradient/LISTEN/
 // nav) instead of re-running the full UI that may have crashed. The panel stays
 // usable; a "Restore full screen" button clears the NVS flag and reboots.
-void begin(dettson::ui::UiModel* model, SemaphoreHandle_t mux, bool reducedUi = false);
+// firstRun (issue #82): no saved Wi-Fi -> boot a full-screen Welcome onboarding
+// (big logo + "Let's Get Started" -> WiFi setup) instead of the empty Home;
+// once connected the UI transitions to Home on its own.
+void begin(dettson::ui::UiModel* model, SemaphoreHandle_t mux,
+           bool reducedUi = false, bool firstRun = false);
 
 // One service iteration (call ~5 ms): LVGL tick + timer, idle/ambient state,
 // and render the latest model snapshot. Runs on the UI task only.
