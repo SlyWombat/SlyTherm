@@ -133,6 +133,8 @@ lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
 bool gAmbient=false;
 bool gBlanked=false;  // #86: deep-screensaver latch — backlight bit cleared, restore on wake
 bool gWelcomeActive=false;  // #82: first-run onboarding gate (no saved WiFi)
+bool gBootActive=false; uint32_t gBootStartMs=0;  // #92: warm-up splash gate (hold UI until key sensors live, <=60s)
+lv_obj_t *scrBoot=nullptr,*wBootStat=nullptr,*bcWifi=nullptr,*bcMqtt=nullptr,*bcOat=nullptr,*bcRoom=nullptr;
 lv_obj_t *scrWelcome=nullptr;  // #82: standalone Welcome screen (like scrAmb)
 uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift ring (#70)
 // main-screen widgets
@@ -846,6 +848,36 @@ void buildNavMenu(lv_obj_t*scr){
     lv_obj_t*l=lv_label_create(t); lv_label_set_text_fmt(l,"%s  %s",ic[i],names[i]); lv_obj_set_style_text_font(l,&lv_font_montserrat_28,0); lv_obj_center(l); }
 }
 
+// ---- #92: animated boot / warm-up splash ----
+// Shown on a normal boot (not first-run, not safe-mode) while the key sensors come
+// alive. Holds the UI off Home until BOTH outdoor temp and current (fused) temp are
+// valid, or 60 s elapses — so the control UI never opens on stale 0.0° data. The logo
+// gently breathes (opacity anim, no gradients) and a checklist fills in as each link
+// comes up.
+static void bootFade(void* v,int32_t o){ lv_obj_set_style_img_opa((lv_obj_t*)v,(lv_opa_t)o,0); }
+static void bootRow(lv_obj_t* l,const char* name,bool ok){ if(!l) return;
+  char b[48]; snprintf(b,sizeof(b),"%s   %s",name, ok?"ready":"connecting\xE2\x80\xA6");
+  setTxt(l,b); lv_obj_set_style_text_color(l,lv_color_hex(ok?COL_OK:COL_MUTED),0); }
+void buildBoot(){
+  scrBoot=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrBoot,lv_color_hex(COL_BG),0);
+  lv_obj_set_style_pad_all(scrBoot,0,0); lv_obj_clear_flag(scrBoot,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* mk=lv_img_create(scrBoot); lv_img_set_src(mk,&slymark_img); lv_img_set_zoom(mk,420); lv_obj_align(mk,LV_ALIGN_TOP_MID,0,48);
+  static lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a,mk); lv_anim_set_exec_cb(&a,bootFade);
+  lv_anim_set_values(&a,90,255); lv_anim_set_time(&a,1200); lv_anim_set_playback_time(&a,1200);
+  lv_anim_set_repeat_count(&a,LV_ANIM_REPEAT_INFINITE); lv_anim_set_path_cb(&a,lv_anim_path_ease_in_out); lv_anim_start(&a);
+  lv_obj_t* h=lv_label_create(scrBoot); lv_label_set_text(h,"SlyTherm"); lv_obj_set_style_text_font(h,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(h,lv_color_hex(COL_INK),0); lv_obj_align(h,LV_ALIGN_TOP_MID,0,246);
+  wBootStat=lv_label_create(scrBoot); lv_obj_set_style_text_font(wBootStat,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(wBootStat,lv_color_hex(COL_MUTED),0); lv_obj_align(wBootStat,LV_ALIGN_TOP_MID,0,286);
+  bcWifi=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcWifi,&lv_font_montserrat_16,0); lv_obj_align(bcWifi,LV_ALIGN_TOP_MID,0,330);
+  bcMqtt=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcMqtt,&lv_font_montserrat_16,0); lv_obj_align(bcMqtt,LV_ALIGN_TOP_MID,0,358);
+  bcOat=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcOat,&lv_font_montserrat_16,0); lv_obj_align(bcOat,LV_ALIGN_TOP_MID,0,386);
+  bcRoom=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcRoom,&lv_font_montserrat_16,0); lv_obj_align(bcRoom,LV_ALIGN_TOP_MID,0,414); }
+void renderBoot(const DisplayState& s){
+  bootRow(bcWifi,"Wi-Fi",s.wifiOk);
+  bootRow(bcMqtt,"Home Assistant",s.mqttOk);
+  bootRow(bcOat,"Outdoor temperature",s.outdoorValid);
+  bootRow(bcRoom,"Room sensors",s.fusedTempValid);
+  setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":"Warming up\xE2\x80\xA6"); }
+
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrMain,0,0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrMain,LV_OBJ_FLAG_SCROLLABLE);
   buildTopBar(scrMain);
@@ -857,7 +889,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildAmbient(); buildWelcome(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -1083,6 +1115,7 @@ void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi, bool firstRun)
   if(gReduced){ buildSafeUi(); Serial.println("[ui] SAFE MODE - reduced UI (reset-loop latch, #80)"); }
   else { buildUi();
     if(firstRun){ gWelcomeActive=true; lv_scr_load(scrWelcome); Serial.println("[ui] first run - Welcome onboarding (no saved WiFi)"); }
+    else { gBootActive=true; gBootStartMs=millis(); lv_scr_load(scrBoot); Serial.println("[ui] #92 warm-up splash"); }
     Serial.println("[ui] SlyTherm wall UI up"); }
 }
 
@@ -1099,6 +1132,12 @@ void service(){
         lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF); }   // connected -> Home automatically
       else { if(!gWifiOpen && lv_scr_act()!=scrWelcome) lv_scr_load(scrWelcome);   // backed out of WiFi setup -> Welcome (never a bare screen)
         renderWifi(); screenshotPoll(); lv_timer_handler(); return; } }
+    if(gBootActive){   // #92: warm-up splash — hold Home until outdoor + current temp are live (<=60s)
+      renderBoot(s);
+      if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>60000u){
+        gBootActive=false; lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF);
+        Serial.println("[ui] warm-up complete -> Home"); }   // ready: fall through to render Home this tick (no blank flash)
+      else { screenshotPoll(); lv_timer_handler(); return; } }
     if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
