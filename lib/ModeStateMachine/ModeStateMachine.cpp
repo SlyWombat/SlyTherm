@@ -116,7 +116,11 @@ ModeStateMachine::SetpointResult ModeStateMachine::setCoolSetpoint(
 
 void ModeStateMachine::onManualChange(uint32_t nowS) {
   activePreset_[0] = '\0';  // setpoints no longer match any preset
-  startHold(cfg_.defaultHoldType, nowS);
+  // #91: no schedule exists on-device, so an on-device manual change defaults to a
+  // 4-hour hold (the Home pill counts it down, then it auto-resumes) instead of an
+  // open-ended "until next schedule". The #81 chooser still lets the user pick
+  // 2h / 4h / Forever. (When HA-side scheduling lands, this can become conditional.)
+  startHold(HoldType::kFourHours, nowS);
 }
 
 size_t ModeStateMachine::setPresetRoster(const PresetDef* defs, size_t count) {

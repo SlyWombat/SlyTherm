@@ -1263,13 +1263,16 @@ void consumeCommands(uint32_t nowS) {
   if (p.hasEmHeat) gModeSm->setEmergencyHeat(p.emHeat, nowS);
   if (p.hasSetpoint) {
     // Single setpoint serves the active simple mode (docs/06 topic map).
+    // #91: HA setpoint writes apply WITHOUT creating a device hold (1-arg setter).
+    // A hold is an on-device override only (the UI intent path below); HA owns
+    // scheduling + holds, so a scheduler/automation write must not fabricate one.
     if (gModeSm->mode() == UserMode::kHeat || gModeSm->mode() == UserMode::kEmergencyHeat)
-      gModeSm->setHeatSetpoint(p.setpointC, nowS);
+      gModeSm->setHeatSetpoint(p.setpointC);
     else if (gModeSm->mode() == UserMode::kCool)
-      gModeSm->setCoolSetpoint(p.setpointC, nowS);
+      gModeSm->setCoolSetpoint(p.setpointC);
   }
-  if (p.hasLow) gModeSm->setHeatSetpoint(p.lowC, nowS);
-  if (p.hasHigh) gModeSm->setCoolSetpoint(p.highC, nowS);
+  if (p.hasLow) gModeSm->setHeatSetpoint(p.lowC);    // #91: HA write, no hold
+  if (p.hasHigh) gModeSm->setCoolSetpoint(p.highC);  // #91: HA write, no hold
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
   if (p.hasHold) {
     if (p.hold.clear) gModeSm->clearHold();

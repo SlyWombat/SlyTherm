@@ -817,7 +817,7 @@ void renderMain(const DisplayState& s){ char b[128];
   if(gHoldLbl){ char hb[40];   // hold pill (#81): active hold + remaining, or a prompt to set one
     switch(s.holdType){
       case HoldType::kTwoHours: case HoldType::kFourHours:
-        snprintf(hb,sizeof(hb),"Hold %lu:%02lu",(unsigned long)(s.holdRemainS/3600u),(unsigned long)((s.holdRemainS%3600u)/60u)); break;
+        snprintf(hb,sizeof(hb),"Hold \xE2\x80\xA2 %luh %02lum left",(unsigned long)(s.holdRemainS/3600u),(unsigned long)((s.holdRemainS%3600u)/60u)); break;   // #91: counts down
       case HoldType::kUntilNextPreset: strcpy(hb,"Hold until next schedule"); break;
       case HoldType::kIndefinite: strcpy(hb,"Hold until you change it"); break;
       default: strcpy(hb,"Set a hold"); break; }
