@@ -399,6 +399,7 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,""); }
 
 // ---- ambient (idle) screen ----
+void renderMain(const DisplayState& s);  // fwd: wake repaints Home before the light shows
 // Burn-in guard (#70/#86b/#86c): the WHOLE ambient hero does a smooth ping-pong
 // "walk" across the panel — one step per drift, right to the right clamp, then
 // reverse and walk back left, bouncing at the edges, with a gentle diagonal Y
@@ -443,8 +444,14 @@ void ambientShift(int step){
   if(aTarget)lv_obj_align(aTarget,LV_ALIGN_TOP_LEFT,26+X,220+Y);
   if(aName)  lv_obj_align(aName,  LV_ALIGN_TOP_LEFT,26+X,254+Y); }
 void ambWake(lv_event_t*){ gAmbient=false; gAmbShiftIdx=0; ambientShift(0);
-  if(gBlanked){ ch422O(gCh|kBitBl); gBlanked=false; }   // #86: restore backlight on touch-wake
-  lv_scr_load(scrMain); }
+  // #86 polish: no blank-temperature flash on wake. Load Home, repaint it with
+  // the LATEST model, force a synchronous flush so the temp is fully drawn, and
+  // only THEN turn the backlight on. Runs even when not blanked (touch-wake from
+  // lit ambient) so Home's temp is current the instant scrMain becomes visible.
+  lv_scr_load(scrMain);
+  { DisplayState s; L(); s=gM->state(); U(); renderMain(s); }
+  lv_refr_now(NULL);
+  if(gBlanked){ ch422O(gCh|kBitBl); gBlanked=false; } }
 void buildAmbient(){ scrAmb=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrAmb,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrAmb,0,0);
   lv_obj_add_event_cb(scrAmb,ambWake,LV_EVENT_CLICKED,nullptr); lv_obj_add_flag(scrAmb,LV_OBJ_FLAG_CLICKABLE); lv_obj_clear_flag(scrAmb,LV_OBJ_FLAG_SCROLLABLE);
   // mirror the Home hero: NOW + big fused temp + action + what's being tracked
@@ -986,7 +993,7 @@ void service(){
       const bool night=(hour>=0 && hour<6);
       if(gAmbient && !gBlanked && night && lv_disp_get_inactive_time(NULL)>kNightBlankIdleMs){
         gBlanked=true; ch422O(gCh&~kBitBl); }
-      else if(gBlanked && !night){ ch422O(gCh|kBitBl); gBlanked=false; }  // rolled past 06:00 (or clock lost) -> restore
+      else if(gBlanked && !night){ renderAmbient(s); lv_refr_now(NULL); ch422O(gCh|kBitBl); gBlanked=false; }  // rolled past 06:00 (or clock lost): repaint ambient, THEN light on (no flash)
     }
     if(gAmbient){ if(!gBlanked) renderAmbient(s); }   // skip drawing while blanked (invisible)
     else { renderMain(s); renderWifi(); renderServer(); }
