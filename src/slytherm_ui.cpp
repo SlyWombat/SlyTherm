@@ -906,6 +906,13 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildHome(lv_tabview_add_tab(tv,"Home")); buildPresets(lv_tabview_add_tab(tv,"Presets"));
   buildSensors(lv_tabview_add_tab(tv,"Sensors")); buildSystem(lv_tabview_add_tab(tv,"System"));
   buildSettings(lv_tabview_add_tab(tv,"Settings")); buildDiag(lv_tabview_add_tab(tv,"Diag"));
+  // CRASH FIX (coredump: scroll_throw_predict_y -> lv_anim -> Panel_RGB::writeData): the
+  // tabview swipe's momentum/throw animation re-enters during the RGB panel flush and
+  // panics under fast/repeated swiping. Disable scroll momentum on the tab content —
+  // swipe-to-switch still snaps, just no fling-throw. Also drop elastic overscroll.
+  { lv_obj_t* tvc=lv_tabview_get_content(tv);
+    lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_ELASTIC); }
   buildNavMenu(scrMain);
   buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
 
