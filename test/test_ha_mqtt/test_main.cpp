@@ -800,6 +800,111 @@ static void test_lock_topics_and_discovery() {
   TEST_ASSERT_FALSE(has(d, "command_topic"));
 }
 
+// ---------- Remote link (issue #104) ----------
+
+static void test_remote_link_topics() {
+  TEST_ASSERT_EQUAL_STRING("slytherm/controller/status", topic::kControllerStatus);
+  TEST_ASSERT_EQUAL_STRING("slytherm/remote/state", topic::kRemoteState);
+  TEST_ASSERT_EQUAL_STRING("slytherm/remote/", topic::kRemoteIntentTopicPrefix);
+  TEST_ASSERT_EQUAL_STRING("/intent", topic::kRemoteIntentTopicSuffix);
+  TEST_ASSERT_EQUAL_STRING("slytherm/remote/+/intent",
+                           topic::kRemoteIntentSubscribeWildcard);
+}
+
+static void test_controller_status_json() {
+  std::string j = controllerStatusJson("8d82f4", true, "2026-07-07");
+  assertCoherentJson(j);
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"cid\":\"8d82f4\",\"status\":\"online\",\"version\":\"2026-07-07\"}",
+      j.c_str());
+  j = controllerStatusJson("8d82f4", false, "2026-07-07");
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"status\":\"offline\""));
+}
+
+static void test_remote_state_json_round_trip() {
+  using dettson::HoldType;
+  std::string j = remoteStateJson(21.0f, 25.5f, Mode::kHeat, false,
+                                   HoldType::kTwoHours, 7032, "home",
+                                   21.3f, true);
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"heatC\":21"));
+  TEST_ASSERT_TRUE(has(j, "\"coolC\":25.5"));
+  TEST_ASSERT_TRUE(has(j, "\"mode\":\"heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"emHeat\":false"));
+  TEST_ASSERT_TRUE(has(j, "\"hold\":\"two_hours\""));
+  TEST_ASSERT_TRUE(has(j, "\"holdRemainS\":7032"));
+  TEST_ASSERT_TRUE(has(j, "\"activePreset\":\"home\""));
+  TEST_ASSERT_TRUE(has(j, "\"fusedTempC\":21.3"));
+  TEST_ASSERT_TRUE(has(j, "\"fusedTempValid\":true"));
+
+  j = remoteStateJson(18.0f, 24.0f, Mode::kOff, true, HoldType::kNone, 0,
+                      "none", 0.0f, false);
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"mode\":\"off\""));
+  TEST_ASSERT_TRUE(has(j, "\"emHeat\":true"));
+  TEST_ASSERT_TRUE(has(j, "\"hold\":\"none\""));
+  TEST_ASSERT_TRUE(has(j, "\"fusedTempValid\":false"));
+}
+
+static void test_parse_remote_intent_setpoints_and_mode() {
+  RemoteIntent ri;
+  TEST_ASSERT_TRUE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"setpoints\",\"heatC\":21.0,\"coolC\":25.0}", ri));
+  TEST_ASSERT_EQUAL_UINT32(1, ri.id);
+  TEST_ASSERT_TRUE(ri.type == RemoteIntentType::kSetpoints);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, ri.heatC);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, ri.coolC);
+
+  TEST_ASSERT_TRUE(parseRemoteIntentJson(
+      "{\"id\":2,\"type\":\"mode\",\"mode\":\"cool\"}", ri));
+  TEST_ASSERT_TRUE(ri.type == RemoteIntentType::kMode);
+  TEST_ASSERT_TRUE(ri.mode == Mode::kCool);
+}
+
+static void test_parse_remote_intent_preset_hold_and_clear() {
+  using dettson::HoldType;
+  RemoteIntent ri;
+  TEST_ASSERT_TRUE(parseRemoteIntentJson(
+      "{\"id\":3,\"type\":\"preset\",\"preset\":\"away\"}", ri));
+  TEST_ASSERT_TRUE(ri.type == RemoteIntentType::kPreset);
+  TEST_ASSERT_EQUAL_STRING("away", ri.preset.c_str());
+
+  TEST_ASSERT_TRUE(parseRemoteIntentJson(
+      "{\"id\":4,\"type\":\"hold\",\"hold\":\"indefinite\"}", ri));
+  TEST_ASSERT_TRUE(ri.type == RemoteIntentType::kHold);
+  TEST_ASSERT_TRUE(ri.hold == HoldType::kIndefinite);
+
+  TEST_ASSERT_TRUE(parseRemoteIntentJson("{\"id\":5,\"type\":\"clear_hold\"}", ri));
+  TEST_ASSERT_TRUE(ri.type == RemoteIntentType::kClearHold);
+}
+
+static void test_parse_remote_intent_rejects_junk() {
+  RemoteIntent ri;
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(nullptr, ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("not json", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("{}", ri));
+  // id required, and must be > 0 (0 is the Controller-side dedupe sentinel).
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("{\"type\":\"clear_hold\"}", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":0,\"type\":\"clear_hold\"}", ri));
+  // type required / unknown type rejected.
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("{\"id\":1}", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"vacation\"}", ri));
+  // Missing/out-of-range type-specific fields.
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"setpoints\",\"heatC\":21.0}", ri));  // coolC missing
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"setpoints\",\"heatC\":9.9,\"coolC\":25.0}", ri));  // below min
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"mode\",\"mode\":\"sideways\"}", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson("{\"id\":1,\"type\":\"preset\"}", ri));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":1,\"type\":\"hold\",\"hold\":\"forever\"}", ri));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_topic_map_matches_docs);
@@ -838,5 +943,11 @@ int main() {
   RUN_TEST(test_lock_clear_command_retained_safe);
   RUN_TEST(test_lock_state_json_and_strings);
   RUN_TEST(test_lock_topics_and_discovery);
+  RUN_TEST(test_remote_link_topics);
+  RUN_TEST(test_controller_status_json);
+  RUN_TEST(test_remote_state_json_round_trip);
+  RUN_TEST(test_parse_remote_intent_setpoints_and_mode);
+  RUN_TEST(test_parse_remote_intent_preset_hold_and_clear);
+  RUN_TEST(test_parse_remote_intent_rejects_junk);
   return UNITY_END();
 }

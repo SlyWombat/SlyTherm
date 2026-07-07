@@ -351,6 +351,67 @@ bool parseNextTargetJson(const char* json, NextTarget& out) {
   return true;
 }
 
+bool parseRemoteIntentJson(const char* json, RemoteIntent& out) {
+  out = RemoteIntent{};
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+
+  uint32_t id = 0;
+  const char* idv = findValue(json, "id");
+  // id must be a positive, monotonically increasing sequence number (never 0
+  // — 0 is reserved as the Controller-side dedupe "unset" sentinel).
+  if (idv == nullptr || !uint32Token(idv, id) || id == 0) return false;
+
+  std::string typeStr;
+  const char* tv = findValue(json, "type");
+  if (tv == nullptr || !stringToken(tv, typeStr)) return false;
+
+  RemoteIntent r;
+  r.id = id;
+  if (typeStr == "setpoints") {
+    r.type = RemoteIntentType::kSetpoints;
+    float h = 0.0f, c = 0.0f;
+    const char* hv = findValue(json, "heatC");
+    const char* cv = findValue(json, "coolC");
+    if (hv == nullptr || !numberToken(hv, h) || h < kClimateMinTempC || h > kClimateMaxTempC) return false;
+    if (cv == nullptr || !numberToken(cv, c) || c < kClimateMinTempC || c > kClimateMaxTempC) return false;
+    r.heatC = h;
+    r.coolC = c;
+  } else if (typeStr == "mode") {
+    r.type = RemoteIntentType::kMode;
+    std::string m;
+    const char* mv = findValue(json, "mode");
+    if (mv == nullptr || !stringToken(mv, m)) return false;
+    if (m == "off") r.mode = Mode::kOff;
+    else if (m == "heat") r.mode = Mode::kHeat;
+    else if (m == "cool") r.mode = Mode::kCool;
+    else if (m == "heat_cool") r.mode = Mode::kHeatCool;
+    else return false;
+  } else if (typeStr == "preset") {
+    r.type = RemoteIntentType::kPreset;
+    std::string p;
+    const char* pv = findValue(json, "preset");
+    if (pv == nullptr || !stringToken(pv, p) || p.size() > kPresetNameMaxLen) return false;
+    r.preset = p;
+  } else if (typeStr == "hold") {
+    r.type = RemoteIntentType::kHold;
+    std::string h;
+    const char* hv = findValue(json, "hold");
+    if (hv == nullptr || !stringToken(hv, h)) return false;
+    if (h == "until_next_preset") r.hold = HoldType::kUntilNextPreset;
+    else if (h == "two_hours") r.hold = HoldType::kTwoHours;
+    else if (h == "four_hours") r.hold = HoldType::kFourHours;
+    else if (h == "indefinite") r.hold = HoldType::kIndefinite;
+    else return false;
+  } else if (typeStr == "clear_hold") {
+    r.type = RemoteIntentType::kClearHold;
+  } else {
+    return false;
+  }
+  out = r;
+  return true;
+}
+
 bool parsePresetRosterJson(const char* json, std::vector<PresetEntry>& out) {
   out.clear();
   if (json == nullptr) return false;
@@ -750,6 +811,32 @@ std::string lockStateJson(LockState s, LockLevel l, bool userPinSet) {
       .str("state", toString(s))
       .str("level", toString(l))
       .raw("pin_set", userPinSet ? "true" : "false")
+      .close();
+}
+
+std::string controllerStatusJson(const std::string& cid, bool online,
+                                  const std::string& version) {
+  return Obj()
+      .str("cid", cid)
+      .str("status", online ? payload::kOnline : payload::kOffline)
+      .str("version", version)
+      .close();
+}
+
+std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
+                             HoldType holdType, uint32_t holdRemainS,
+                             const std::string& activePreset,
+                             float fusedTempC, bool fusedTempValid) {
+  return Obj()
+      .num("heatC", heatC)
+      .num("coolC", coolC)
+      .str("mode", toString(mode))
+      .raw("emHeat", emHeat ? "true" : "false")
+      .str("hold", toString(holdType))
+      .num("holdRemainS", holdRemainS)
+      .str("activePreset", activePreset)
+      .num("fusedTempC", fusedTempC)
+      .raw("fusedTempValid", fusedTempValid ? "true" : "false")
       .close();
 }
 

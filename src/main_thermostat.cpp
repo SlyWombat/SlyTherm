@@ -597,6 +597,50 @@ uint8_t findSensor(const char* name) {  // gCmdMux held
   return 0xFF;
 }
 
+#ifdef SLYTHERM_REMOTE_LINK
+// #104: Controller identity for the Remote-link heartbeat — last 3 MAC bytes,
+// lowercase hex, no colons (MQTT-topic-safe; docs/11 "cid derivation").
+std::string controllerCid() {
+  static std::string cid;
+  if (!cid.empty()) return cid;
+  std::string mac = WiFi.macAddress().c_str();  // "AA:BB:CC:DD:EE:FF"
+  for (size_t i = 9; i < mac.size(); ++i) {
+    if (mac[i] == ':') continue;
+    char c = mac[i];
+    if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    cid += c;
+  }
+  return cid;
+}
+
+// #104: dedupe Remote UiIntents by (remoteId, monotonic id) — a Remote's own
+// retry-on-no-ack can redeliver the same intent; a stale/reordered redelivery
+// must not reapply after the user has moved on. Small fixed table (a handful
+// of Remotes per system, docs/11 "multi-Remote"); table-full fails open
+// (this is a comfort dedupe, not a safety gate — see gCmdMux callers below).
+struct RemoteIntentDedupe { bool used = false; char id[kSensorNameLen] = {}; uint32_t lastId = 0; };
+RemoteIntentDedupe gRemoteDedupe[4];  // gCmdMux held
+
+bool remoteIntentIsDuplicate(const char* remoteId, uint32_t id) {  // gCmdMux held
+  for (auto& d : gRemoteDedupe) {
+    if (d.used && strncmp(d.id, remoteId, sizeof(d.id)) == 0) {
+      if (d.lastId != 0 && id <= d.lastId) return true;
+      d.lastId = id;
+      return false;
+    }
+  }
+  for (auto& d : gRemoteDedupe) {
+    if (!d.used) {
+      d.used = true;
+      strlcpy(d.id, remoteId, sizeof(d.id));
+      d.lastId = id;
+      return false;
+    }
+  }
+  return false;  // table full: process anyway rather than silently drop
+}
+#endif  // SLYTHERM_REMOTE_LINK
+
 void handleSensorRoster(const char* json) {
   std::vector<hm::SensorRosterEntry> entries;
   if (!hm::parseSensorRosterJson(json, entries)) return;
@@ -643,6 +687,60 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (len >= sizeof(buf)) return;
   memcpy(buf, payload, len);
   buf[len] = '\0';
+
+#ifdef SLYTHERM_REMOTE_LINK
+  // #104: slytherm/remote/<id>/intent — Remote -> Controller UiIntent.
+  // Ingested into the same gPending mailbox the HA cmd/* topics use, so it is
+  // re-validated by the control task exactly like any other inbound command
+  // (docs/11 "Authority": the Remote never invents authoritative state).
+  {
+    const char* riPrefix = hm::topic::kRemoteIntentTopicPrefix;
+    const size_t riPrefixLen = strlen(riPrefix);
+    if (strncmp(topic, riPrefix, riPrefixLen) == 0) {
+      const char* id = topic + riPrefixLen;
+      const char* slash = strchr(id, '/');
+      if (slash != nullptr && strcmp(slash, hm::topic::kRemoteIntentTopicSuffix) == 0) {
+        char remoteId[kSensorNameLen];
+        size_t n = static_cast<size_t>(slash - id);
+        if (n == 0 || n >= sizeof(remoteId)) return;
+        memcpy(remoteId, id, n);
+        remoteId[n] = '\0';
+        hm::RemoteIntent ri;
+        if (hm::parseRemoteIntentJson(buf, ri)) {
+          xSemaphoreTake(gCmdMux, portMAX_DELAY);
+          if (!remoteIntentIsDuplicate(remoteId, ri.id)) {
+            switch (ri.type) {
+              case hm::RemoteIntentType::kSetpoints:
+                gPending.hasLow = true; gPending.lowC = ri.heatC;
+                gPending.hasHigh = true; gPending.highC = ri.coolC;
+                break;
+              case hm::RemoteIntentType::kMode:
+                gPending.hasMode = true; gPending.mode = ri.mode;
+                break;
+              case hm::RemoteIntentType::kPreset:
+                gPending.hasPreset = true;
+                strlcpy(gPending.preset, ri.preset.c_str(), sizeof(gPending.preset));
+                break;
+              case hm::RemoteIntentType::kHold:
+                gPending.hasHold = true;
+                gPending.hold = hm::HoldCommand{};
+                gPending.hold.type = ri.hold;
+                break;
+              case hm::RemoteIntentType::kClearHold:
+                gPending.hasHold = true;
+                gPending.hold = hm::HoldCommand{};
+                gPending.hold.clear = true;
+                break;
+            }
+            gPending.anyInbound = true;
+          }
+          xSemaphoreGive(gCmdMux);
+        }
+        return;
+      }
+    }
+  }
+#endif  // SLYTHERM_REMOTE_LINK
 
   // Wildcard topics first.
   const char* sensPrefix = "slytherm/sensors/";
@@ -916,6 +1014,9 @@ void subscribeAll() {
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sleep"};
   for (const char* t : topics) gMqtt.subscribe(t);
+#ifdef SLYTHERM_REMOTE_LINK
+  gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
+#endif
 }
 
 // State publish cache: one slot per fixed topic (diff suppression).
@@ -936,6 +1037,23 @@ void pubState(PubIdx i, const char* topic, const char* val, bool force) {
   strlcpy(gPubCache[i], val, sizeof(gPubCache[i]));
   gMqtt.publish(topic, val);
 }
+
+#ifdef SLYTHERM_REMOTE_LINK
+// #104: retained authoritative echo (docs/11 "Authority"). Unlike pubState(),
+// this MUST publish retained (a reconnecting Remote restores from it) — still
+// diff-suppressed so a steady state doesn't hammer the broker with retained
+// writes every 500 ms tick.
+std::string gRemoteEchoCache;  // mqttTask-owned only; "" forces a republish
+
+void publishRemoteEcho(const Snapshot& s, bool force) {
+  const std::string j = hm::remoteStateJson(
+      s.heatSp, s.coolSp, s.mode, s.emHeat, s.holdType, s.holdRemainS,
+      s.preset[0] ? s.preset : "none", s.tempC, s.tempValid);
+  if (!force && j == gRemoteEchoCache) return;
+  gRemoteEchoCache = j;
+  gMqtt.publish(hm::topic::kRemoteState, j.c_str(), true);
+}
+#endif  // SLYTHERM_REMOTE_LINK
 
 void publishSnapshot(bool force) {
   Snapshot s;
@@ -1010,6 +1128,9 @@ void publishSnapshot(bool force) {
     // Retained empty message deletes any retained lock_clear copy (docs/06).
     gMqtt.publish(hm::topic::kCmdLockClear, "", true);
   }
+#ifdef SLYTHERM_REMOTE_LINK
+  publishRemoteEcho(s, force);
+#endif
 }
 
 void mqttTask(void*) {
@@ -1105,10 +1226,21 @@ void mqttTask(void*) {
       if (gMqtt.connect(cfg::kMqttClientId, muser, mpass,
                         hm::topic::kAvailability, 0, true, hm::payload::kOffline)) {
         gMqtt.publish(hm::topic::kAvailability, hm::payload::kOnline, true);
+#ifdef SLYTHERM_REMOTE_LINK
+        // #104: retained identity heartbeat. Liveness for a Remote is
+        // kAvailability (above) — this topic carries cid/version only (see
+        // the kControllerStatus comment in HaMqtt.h for why).
+        gMqtt.publish(hm::topic::kControllerStatus,
+                      hm::controllerStatusJson(controllerCid(), true, __DATE__).c_str(),
+                      true);
+#endif
         publishDiscovery();
         gDiscoveryDirty = false;
         subscribeAll();
         memset(gPubCache, 0, sizeof(gPubCache));  // full republish after reconnect
+#ifdef SLYTHERM_REMOTE_LINK
+        gRemoteEchoCache.clear();  // force a full retained-echo republish too
+#endif
 #ifdef SLYTHERM_UI
         telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
 #else
