@@ -1350,6 +1350,11 @@ void consumeCommands(uint32_t nowS) {
                    s.occ < 0 ? Occupancy::kUnknown
                              : (s.occ ? Occupancy::kOccupied : Occupancy::kVacant),
                    nowS);
+    // #88 robustness: a live state 'occ' also feeds the presence ledger, so normal
+    // sensor activity keeps a room Present even if the retained .../presence topic
+    // lags or isn't published. occ:true -> "seen now" (advances last_seen);
+    // occ:false -> reporting-but-vacant (ledger is monotonic, so no time bump).
+    if (s.occ >= 0) gFusion.updatePresence(s.idx, s.occ != 0, nowS, s.occ != 0, nowS);
   }
   for (size_t i = 0; i < p.presenceCount; ++i) {  // #88: HA last_seen presence ledger
     const auto& pr = p.presence[i];
