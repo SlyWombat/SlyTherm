@@ -18,6 +18,13 @@ bool SleepState::inNightWindow(int hour, uint8_t startH, uint8_t endH) {
 
 bool SleepState::update(bool clockValid, int hour, bool present,
                         bool anyReporting, uint32_t nowS) {
+  // #90 DISABLED pending a proper rewrite: this implementation crashed on the
+  // sleep-preset edge (panic reproduced only while sleep was transitioning),
+  // slept on stale/absent presence, and didn't honor the force override. Neutralize
+  // it (never asleep) so the panel is stable; re-enable with a presence-aware rewrite.
+  (void)clockValid; (void)hour; (void)present; (void)anyReporting; (void)nowS; (void)override_;
+  asleep_ = false;
+  return false;
   bool want;
   switch (override_) {
     case SleepOverride::kForceAsleep: want = true;  break;
