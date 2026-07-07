@@ -856,7 +856,7 @@ void buildNavMenu(lv_obj_t*scr){
 // comes up.
 static void bootFade(void* v,int32_t o){ lv_obj_set_style_img_opa((lv_obj_t*)v,(lv_opa_t)o,0); }
 static void bootRow(lv_obj_t* l,const char* name,bool ok){ if(!l) return;
-  char b[48]; snprintf(b,sizeof(b),"%s   %s",name, ok?"ready":"connecting\xE2\x80\xA6");
+  char b[48]; snprintf(b,sizeof(b),"%s   %s",name, ok?"ready":"connecting...");   // ASCII dots: montserrat subset has no U+2026 ellipsis (tofu)
   setTxt(l,b); lv_obj_set_style_text_color(l,lv_color_hex(ok?COL_OK:COL_MUTED),0); }
 void buildBoot(){
   scrBoot=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrBoot,lv_color_hex(COL_BG),0);
@@ -876,7 +876,7 @@ void renderBoot(const DisplayState& s){
   bootRow(bcMqtt,"Home Assistant",s.mqttOk);
   bootRow(bcOat,"Outdoor temperature",s.outdoorValid);
   bootRow(bcRoom,"Room sensors",s.fusedTempValid);
-  setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":"Warming up\xE2\x80\xA6"); }
+  setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":"Warming up..."); }
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrMain,0,0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrMain,LV_OBJ_FLAG_SCROLLABLE);
