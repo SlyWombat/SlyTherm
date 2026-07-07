@@ -809,9 +809,14 @@ void screenshotPoll(){
     // Hard deadline: a slow/dead client (e.g. a slyshot that timed out mid-transfer over
     // laggy WiFi) must NOT block the UI task here, or the whole UI + server freezes and
     // won't accept the next capture until reboot. Abort the send after 3s and drop it.
-    uint32_t total=(uint32_t)dsc.header.w*dsc.header.h*2, sent=0, deadline=millis()+3000;
+    // Robust send: overall 15s cap + a 2.5s no-progress stall detector. A slow-but-alive
+    // client (laggy WiFi) still completes the 768KB image; a truly dead one aborts in
+    // ~2.5s so it can't freeze the UI task/server (the ~1-capture-per-boot stall).
+    uint32_t total=(uint32_t)dsc.header.w*dsc.header.h*2, sent=0, deadline=millis()+15000, lastProg=millis();
     while(sent<total && c.connected() && (int32_t)(millis()-deadline)<0){ uint32_t ch=total-sent; if(ch>1460) ch=1460;
-      int w=c.write(sbuf+sent,ch); if(w<=0) break; sent+=(uint32_t)w; }
+      int w=c.write(sbuf+sent,ch);
+      if(w<=0){ if(millis()-lastProg>2500) break; delay(2); continue; }
+      sent+=(uint32_t)w; lastProg=millis(); }
   } else c.print("SLYSHOT ERR\n");
   c.stop();
 }
