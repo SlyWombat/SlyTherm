@@ -133,8 +133,8 @@ lv_obj_t *scrMain=nullptr, *scrAmb=nullptr, *gTabview=nullptr;
 bool gAmbient=false;
 bool gBlanked=false;  // #86: deep-screensaver latch — backlight bit cleared, restore on wake
 bool gWelcomeActive=false;  // #82: first-run onboarding gate (no saved WiFi)
-bool gBootActive=false; uint32_t gBootStartMs=0;  // #92: warm-up splash gate (hold UI until key sensors live, <=60s)
-lv_obj_t *scrBoot=nullptr,*wBootStat=nullptr,*bcWifi=nullptr,*bcMqtt=nullptr,*bcOat=nullptr,*bcRoom=nullptr;
+bool gBootActive=false,gBootExiting=false; uint32_t gBootStartMs=0;  // #92: warm-up splash gate (hold UI until key sensors live, <=60s)
+lv_obj_t *scrBoot=nullptr,*gBootMark=nullptr,*wBootStat=nullptr,*bcWifi=nullptr,*bcMqtt=nullptr,*bcOat=nullptr,*bcRoom=nullptr;
 lv_obj_t *scrWelcome=nullptr;  // #82: standalone Welcome screen (like scrAmb)
 uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift ring (#70)
 // main-screen widgets
@@ -855,16 +855,20 @@ void buildNavMenu(lv_obj_t*scr){
 // gently breathes (opacity anim, no gradients) and a checklist fills in as each link
 // comes up.
 static void bootFade(void* v,int32_t o){ lv_obj_set_style_img_opa((lv_obj_t*)v,(lv_opa_t)o,0); }
+static void bootZoom(void* v,int32_t z){ lv_img_set_zoom((lv_obj_t*)v,(uint16_t)z); }   // #92: size breathe
 static void bootRow(lv_obj_t* l,const char* name,bool ok){ if(!l) return;
   char b[48]; snprintf(b,sizeof(b),"%s   %s",name, ok?"ready":"connecting...");   // ASCII dots: montserrat subset has no U+2026 ellipsis (tofu)
   setTxt(l,b); lv_obj_set_style_text_color(l,lv_color_hex(ok?COL_OK:COL_MUTED),0); }
 void buildBoot(){
   scrBoot=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrBoot,lv_color_hex(COL_BG),0);
   lv_obj_set_style_pad_all(scrBoot,0,0); lv_obj_clear_flag(scrBoot,LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_t* mk=lv_img_create(scrBoot); lv_img_set_src(mk,&slymark_img); lv_img_set_zoom(mk,420); lv_obj_align(mk,LV_ALIGN_TOP_MID,0,48);
-  static lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a,mk); lv_anim_set_exec_cb(&a,bootFade);
-  lv_anim_set_values(&a,90,255); lv_anim_set_time(&a,1200); lv_anim_set_playback_time(&a,1200);
+  gBootMark=lv_img_create(scrBoot); lv_img_set_src(gBootMark,&slymark_img); lv_img_set_zoom(gBootMark,420); lv_obj_align(gBootMark,LV_ALIGN_TOP_MID,0,48);
+  static lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a,gBootMark); lv_anim_set_exec_cb(&a,bootFade);
+  lv_anim_set_values(&a,150,255); lv_anim_set_time(&a,1300); lv_anim_set_playback_time(&a,1300);
   lv_anim_set_repeat_count(&a,LV_ANIM_REPEAT_INFINITE); lv_anim_set_path_cb(&a,lv_anim_path_ease_in_out); lv_anim_start(&a);
+  static lv_anim_t az; lv_anim_init(&az); lv_anim_set_var(&az,gBootMark); lv_anim_set_exec_cb(&az,bootZoom);   // #92: size breathe (grow/shrink) synced to the fade
+  lv_anim_set_values(&az,384,468); lv_anim_set_time(&az,1300); lv_anim_set_playback_time(&az,1300);
+  lv_anim_set_repeat_count(&az,LV_ANIM_REPEAT_INFINITE); lv_anim_set_path_cb(&az,lv_anim_path_ease_in_out); lv_anim_start(&az);
   lv_obj_t* h=lv_label_create(scrBoot); lv_label_set_text(h,"SlyTherm"); lv_obj_set_style_text_font(h,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(h,lv_color_hex(COL_INK),0); lv_obj_align(h,LV_ALIGN_TOP_MID,0,246);
   wBootStat=lv_label_create(scrBoot); lv_obj_set_style_text_font(wBootStat,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(wBootStat,lv_color_hex(COL_MUTED),0); lv_obj_align(wBootStat,LV_ALIGN_TOP_MID,0,286);
   bcWifi=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcWifi,&lv_font_montserrat_16,0); lv_obj_align(bcWifi,LV_ALIGN_TOP_MID,0,330);
@@ -877,6 +881,20 @@ void renderBoot(const DisplayState& s){
   bootRow(bcOat,"Outdoor temperature",s.outdoorValid);
   bootRow(bcRoom,"Room sensors",s.fusedTempValid);
   setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":"Warming up..."); }
+// #92: warm-up done -> roll the logo across + off the right edge, spinning, then Home.
+static void bootMoveX(void* v,int32_t x){ lv_obj_set_style_translate_x((lv_obj_t*)v,(lv_coord_t)x,0); }
+static void bootSpin(void* v,int32_t a){ lv_img_set_angle((lv_obj_t*)v,(int16_t)a); }
+static void bootDoneCb(lv_anim_t*){ gBootActive=false; gBootExiting=false;
+  lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF);
+  Serial.println("[ui] warm-up complete -> Home"); }
+void bootExit(){
+  if(!gBootMark){ bootDoneCb(nullptr); return; }
+  lv_anim_del(gBootMark,nullptr);   // stop the breathing (fade+zoom) anims
+  static lv_anim_t ex; lv_anim_init(&ex); lv_anim_set_var(&ex,gBootMark); lv_anim_set_exec_cb(&ex,bootMoveX);
+  lv_anim_set_values(&ex,0,900); lv_anim_set_time(&ex,600); lv_anim_set_path_cb(&ex,lv_anim_path_ease_in);
+  lv_anim_set_ready_cb(&ex,bootDoneCb); lv_anim_start(&ex);   // ready_cb loads Home when it's off-screen
+  static lv_anim_t sp; lv_anim_init(&sp); lv_anim_set_var(&sp,gBootMark); lv_anim_set_exec_cb(&sp,bootSpin);
+  lv_anim_set_values(&sp,0,3600); lv_anim_set_time(&sp,600); lv_anim_start(&sp); }   // one full roll on the way out
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrMain,0,0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrMain,LV_OBJ_FLAG_SCROLLABLE);
@@ -1133,11 +1151,9 @@ void service(){
       else { if(!gWifiOpen && lv_scr_act()!=scrWelcome) lv_scr_load(scrWelcome);   // backed out of WiFi setup -> Welcome (never a bare screen)
         renderWifi(); screenshotPoll(); lv_timer_handler(); return; } }
     if(gBootActive){   // #92: warm-up splash — hold Home until outdoor + current temp are live (<=60s)
-      renderBoot(s);
-      if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>60000u){
-        gBootActive=false; lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF);
-        Serial.println("[ui] warm-up complete -> Home"); }   // ready: fall through to render Home this tick (no blank flash)
-      else { screenshotPoll(); lv_timer_handler(); return; } }
+      if(!gBootExiting){ renderBoot(s);
+        if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>60000u){ gBootExiting=true; bootExit(); } }   // ready: roll the logo off; its ready_cb loads Home
+      screenshotPoll(); lv_timer_handler(); return; }   // stay on the splash through the roll-off anim
     if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
