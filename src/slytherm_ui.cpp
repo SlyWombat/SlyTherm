@@ -806,8 +806,11 @@ void screenshotPoll(){
   if(lv_snapshot_take_to_buf(lv_scr_act(),LV_IMG_CF_TRUE_COLOR,&dsc,sbuf,(uint32_t)800*480*2+64)==LV_RES_OK){
     char hdr[48]; int hn=snprintf(hdr,sizeof(hdr),"SLYSHOT %u %u\n",(unsigned)dsc.header.w,(unsigned)dsc.header.h);
     c.write((const uint8_t*)hdr,hn);
-    uint32_t total=(uint32_t)dsc.header.w*dsc.header.h*2, sent=0;
-    while(sent<total && c.connected()){ uint32_t ch=total-sent; if(ch>1460) ch=1460;
+    // Hard deadline: a slow/dead client (e.g. a slyshot that timed out mid-transfer over
+    // laggy WiFi) must NOT block the UI task here, or the whole UI + server freezes and
+    // won't accept the next capture until reboot. Abort the send after 3s and drop it.
+    uint32_t total=(uint32_t)dsc.header.w*dsc.header.h*2, sent=0, deadline=millis()+3000;
+    while(sent<total && c.connected() && (int32_t)(millis()-deadline)<0){ uint32_t ch=total-sent; if(ch>1460) ch=1460;
       int w=c.write(sbuf+sent,ch); if(w<=0) break; sent+=(uint32_t)w; }
   } else c.print("SLYSHOT ERR\n");
   c.stop();
