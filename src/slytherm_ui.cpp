@@ -154,6 +154,7 @@ lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPrese
 lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): "Vacation until <date>"
+lv_obj_t *gPresetHold=nullptr;                   // Presets page: centered hold status ("On hold - Xh Ym left")
 lv_obj_t *gHoldSheet=nullptr;                    // hold-duration chooser overlay (#81)
 lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
 // System 12 h trend graph (#76): ~5-min RAM ring, 144 pts (temps x10 as lv_coord_t).
@@ -349,6 +350,17 @@ void buildVacationSheet(lv_obj_t*scr){ gVacSheet=lv_obj_create(scr); lv_obj_set_
   { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
   vacRefresh(); lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
 
+// #90/preset-highlight: title-case a stored preset id for DISPLAY only ("home"->"Home",
+// "night sleep"->"Night Sleep"). The stored lowercase name stays the HA preset_mode
+// identifier and roster key — never mutated here.
+static void presetLabel(const char* src, char* dst, size_t n){
+  size_t j=0; bool up=true;
+  for(size_t i=0; src && src[i] && j+1<n; ++i){ char c=src[i];
+    if(c==' '||c=='-'||c=='_'){ up=true; dst[j++]=c; continue; }
+    dst[j++] = (up && c>='a' && c<='z') ? (char)(c-32) : c; up=false; }
+  dst[j]=0;
+}
+
 // #74: build up to kMaxPresets cards once (3-wide grid); renderMain fills the
 // name/values from the LIVE roster (DisplayState.presets) and shows/hides by
 // presetCount. Card index == roster index == the value passed to presetEvt.
@@ -356,6 +368,11 @@ void buildVacationSheet(lv_obj_t*scr){ gVacSheet=lv_obj_create(scr); lv_obj_set_
 // stage retained slytherm/config/presets via mqttTask). Displaying the live
 // roster is done; editing is PARTIAL.
 void buildPresets(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Presets");
+  // Centered hold indicator above the preset cards: shows the active hold + time remaining
+  // (or hidden when no hold). Sits at top-mid; the "Presets" header is left-aligned so no clash.
+  gPresetHold=lv_label_create(tab); lv_obj_set_style_text_font(gPresetHold,&lv_font_montserrat_20,0);
+  lv_obj_set_style_text_color(gPresetHold,lv_color_hex(COL_WARN),0); lv_label_set_text(gPresetHold,"");
+  lv_obj_align(gPresetHold,LV_ALIGN_TOP_MID,0,6); lv_obj_add_flag(gPresetHold,LV_OBJ_FLAG_HIDDEN);
   for(int i=0;i<(int)kMaxPresets;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,236,116);
     lv_obj_align(b,LV_ALIGN_TOP_LEFT,6+(i%3)*256,52+(i/3)*128);
     lv_obj_set_style_bg_color(b,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(b,lv_color_hex(COL_BORDER),0); lv_obj_set_style_border_width(b,1,0);  // #fix2: dim hairline, not wireframe
@@ -1028,13 +1045,28 @@ void renderMain(const DisplayState& s){ char b[128];
   { const bool optHeld=gPresetSel>=0 && millis()-gPresetSelMs<4000u;   // #75: optimistic highlight rides until the echo lands
     for(int i=0;i<(int)kMaxPresets;i++){ if(!gPresetBtns[i]) continue;
       if(i>=(int)s.presetCount){ lv_obj_add_flag(gPresetBtns[i],LV_OBJ_FLAG_HIDDEN); continue; }   // #74: only show live presets
-      setTxt(gPresetName[i], s.presets[i].name);   // #74: name + values from the LIVE roster
+      char plbl[kUiPresetNameLen+4]; presetLabel(s.presets[i].name,plbl,sizeof(plbl));   // #90: Title-Case for display only
+      setTxt(gPresetName[i], plbl);
       char pvv[40]; snprintf(pvv,sizeof(pvv),"heat %.0f\xC2\xB0   cool %.0f\xC2\xB0",(double)s.presets[i].heatC,(double)s.presets[i].coolC); setTxt(gPresetVal[i],pvv);
-      bool match=fabsf(s.heatSetpointC-s.presets[i].heatC)<0.3f && fabsf(s.coolSetpointC-s.presets[i].coolC)<0.3f;
-      if(match && gPresetSel==i) gPresetSel=-1;   // setpoints caught up -> drop the optimistic latch, keep the match
+      // #90/preset-highlight: match the AUTHORITATIVE active preset by name (empty once a
+      // manual change clears it) — not by setpoint proximity, which lit the wrong card and
+      // dropped out when a hold/schedule nudged the setpoints off the preset's exact values.
+      bool match = s.activePreset[0] && strcmp(s.activePreset, s.presets[i].name)==0;
+      if(match && gPresetSel==i) gPresetSel=-1;   // echo landed -> drop the optimistic latch, keep the match
       bool act=match || (optHeld && gPresetSel==i);
       lv_obj_set_style_border_color(gPresetBtns[i],lv_color_hex(act?COL_OK:COL_BORDER),0); lv_obj_set_style_border_width(gPresetBtns[i],act?2:1,0);
       lv_obj_clear_flag(gPresetBtns[i],LV_OBJ_FLAG_HIDDEN); } }
+  // Presets page: centered hold indicator above the cards — active hold + time remaining,
+  // hidden when no hold. (Tapping a preset overrides the hold, so this clears on selection.)
+  if(gPresetHold){ char hb[48]; const bool held=s.holdType!=HoldType::kNone && s.mode!=UserMode::kOff;
+    switch(s.holdType){
+      case HoldType::kTwoHours: case HoldType::kFourHours:
+        snprintf(hb,sizeof(hb),LV_SYMBOL_WARNING "  On hold - %luh %02lum left",(unsigned long)(s.holdRemainS/3600u),(unsigned long)((s.holdRemainS%3600u)/60u)); break;
+      case HoldType::kUntilNextPreset: strcpy(hb,LV_SYMBOL_WARNING "  On hold until next schedule"); break;
+      case HoldType::kIndefinite: strcpy(hb,LV_SYMBOL_WARNING "  On hold until you change it"); break;
+      default: hb[0]=0; break; }
+    if(held){ setTxt(gPresetHold,hb); lv_obj_align(gPresetHold,LV_ALIGN_TOP_MID,0,6); lv_obj_clear_flag(gPresetHold,LV_OBJ_FLAG_HIDDEN); }
+    else lv_obj_add_flag(gPresetHold,LV_OBJ_FLAG_HIDDEN); }
   for(int i=0;i<7;i++){ SensorRowUi&ro=gSensorRows[i]; if(!ro.row) continue;
     if(i<(int)s.sensorCount){ const SensorRow&r=s.sensors[i];
       strlcpy(gRowName[i],r.name,sizeof(gRowName[i]));

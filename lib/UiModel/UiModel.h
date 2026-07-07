@@ -143,6 +143,10 @@ struct DisplayState {
   struct PresetView { char name[kUiPresetNameLen] = {}; float heatC = 0.0f; float coolC = 0.0f; };
   PresetView presets[kMaxPresets] = {};
   uint8_t    presetCount = 0;
+  // #90/preset-highlight: authoritative active preset name from ModeStateMachine
+  // (empty once a manual setpoint change clears it). The Presets screen highlights
+  // the matching card by NAME, not by setpoint proximity.
+  char activePreset[kUiPresetNameLen] = {};
 
   Alarm   alarms[kMaxAlarms] = {};
   uint8_t alarmCount    = 0;
@@ -297,6 +301,12 @@ class UiModel : public UiCommands {
     if (n > kMaxPresets) n = kMaxPresets;
     for (uint8_t i = 0; i < n; ++i) state_.presets[i] = p[i];
     state_.presetCount = n;
+  }
+  // #90/preset-highlight: authoritative active preset name (ModeStateMachine::activePreset()).
+  void setActivePreset(const char* name) {
+    size_t i = 0;
+    if (name) while (name[i] && i < sizeof(state_.activePreset) - 1) { state_.activePreset[i] = name[i]; ++i; }
+    state_.activePreset[i] = 0;
   }
 
   // --- UiCommands (screen event handlers call these) ---

@@ -1421,7 +1421,11 @@ void consumeCommands(uint32_t nowS) {
         // #74: preset is carried as a roster INDEX (UI cards map 1:1 to the live
         // roster), resolved to a name against the authoritative roster.
         const PresetDef* d = gModeSm->presetAt(static_cast<uint8_t>(intent.preset));
-        if (d) gModeSm->applyPreset(d->name, nowS);
+        // #91/preset-fix: an on-device preset TAP is an explicit user command, so it
+        // overrides any active hold (incl. the auto 4h manual hold) instead of being
+        // silently swallowed. applyPreset() keeps its hold-respecting semantics for
+        // HA/programmatic callers; we clear the hold here first, at the UI layer only.
+        if (d) { gModeSm->clearHold(); gModeSm->applyPreset(d->name, nowS); }
         break;
       }
       case ui::IntentType::kAckAlarms:
@@ -1888,7 +1892,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       strlcpy(pv[pn].name, d->name, sizeof(pv[pn].name));
       pv[pn].heatC = d->heatC; pv[pn].coolC = d->coolC; ++pn;
     }
-    gUi.setPresets(pv, pn); }
+    gUi.setPresets(pv, pn);
+    gUi.setActivePreset(gModeSm->activePreset()); }  // #90/preset-highlight: authoritative
   // Per-sensor rows for the Sensors screen + ambient "driving sensor".
   {
     ui::SensorRow rows[ui::kMaxSensorRows];
