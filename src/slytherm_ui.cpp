@@ -891,10 +891,10 @@ void bootExit(){
   if(!gBootMark){ bootDoneCb(nullptr); return; }
   lv_anim_del(gBootMark,nullptr);   // stop the breathing (fade+zoom) anims
   static lv_anim_t ex; lv_anim_init(&ex); lv_anim_set_var(&ex,gBootMark); lv_anim_set_exec_cb(&ex,bootMoveX);
-  lv_anim_set_values(&ex,0,900); lv_anim_set_time(&ex,600); lv_anim_set_path_cb(&ex,lv_anim_path_ease_in);
+  lv_anim_set_values(&ex,0,900); lv_anim_set_time(&ex,850); lv_anim_set_path_cb(&ex,lv_anim_path_ease_in);   // starts slow (roll reads) then accelerates off
   lv_anim_set_ready_cb(&ex,bootDoneCb); lv_anim_start(&ex);   // ready_cb loads Home when it's off-screen
   static lv_anim_t sp; lv_anim_init(&sp); lv_anim_set_var(&sp,gBootMark); lv_anim_set_exec_cb(&sp,bootSpin);
-  lv_anim_set_values(&sp,0,3600); lv_anim_set_time(&sp,600); lv_anim_start(&sp); }   // one full roll on the way out
+  lv_anim_set_values(&sp,0,7200); lv_anim_set_time(&sp,850); lv_anim_set_path_cb(&sp,lv_anim_path_linear); lv_anim_start(&sp); }   // TWO full turns -> clearly rolls
 
 void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,lv_color_hex(COL_BG),0); lv_obj_set_style_pad_all(scrMain,0,0);
   lv_obj_set_style_text_font(scrMain,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(scrMain,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrMain,LV_OBJ_FLAG_SCROLLABLE);
