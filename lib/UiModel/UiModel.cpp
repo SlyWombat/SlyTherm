@@ -146,11 +146,13 @@ void UiModel::clearAlarms() {
   setDirty(kDirtyAlarms);
 }
 
-void UiModel::setLinkHealth(bool wifi, bool mqtt, bool bus) {
-  if (state_.wifiOk == wifi && state_.mqttOk == mqtt && state_.busOk == bus) return;
+void UiModel::setLinkHealth(bool wifi, bool mqtt, bool bus, int8_t rssiDbm) {
+  if (state_.wifiOk == wifi && state_.mqttOk == mqtt && state_.busOk == bus &&
+      state_.wifiRssi == rssiDbm) return;
   state_.wifiOk = wifi;
   state_.mqttOk = mqtt;
   state_.busOk = bus;
+  state_.wifiRssi = rssiDbm;
   setDirty(kDirtyHealth);
 }
 

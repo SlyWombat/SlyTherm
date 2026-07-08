@@ -31,6 +31,7 @@ struct SensorRowUi{ lv_obj_t*row,*name,*temp,*pres,*btn,*btnlbl; }; SensorRowUi 
 #define SR_PRES_W   260
 char gRowName[7][16]={};
 lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
+lv_obj_t *wRssiBox=nullptr,*wRssiBar[4]={};  // #127 top-bar RSSI indicator
 lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): "Vacation until <date>"
@@ -254,6 +255,16 @@ void buildTopBar(lv_obj_t*scr){
   wCaret=lv_label_create(brand); lv_label_set_text(wCaret,LV_SYMBOL_DOWN); lv_obj_set_style_text_color(wCaret,lv_color_hex(COL_TEXT3),0); lv_obj_align(wCaret,LV_ALIGN_LEFT_MID,158,0);
   wOnline=lv_obj_create(bar); lv_obj_set_size(wOnline,8,8); lv_obj_set_style_radius(wOnline,LV_RADIUS_CIRCLE,0); lv_obj_set_style_border_width(wOnline,0,0); lv_obj_align(wOnline,LV_ALIGN_RIGHT_MID,-232,0);  // #fix8: 8px dot, re-pinned just left of "Outside" in renderMain
   wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-178,0);
+  // #127: WiFi RSSI bars between Outside and the clock; tap opens WiFi status.
+  wRssiBox=lv_btn_create(bar); lv_obj_set_size(wRssiBox,28,24); lv_obj_align(wRssiBox,LV_ALIGN_RIGHT_MID,-140,0);
+  lv_obj_set_style_bg_opa(wRssiBox,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(wRssiBox,0,0);
+  lv_obj_set_style_pad_all(wRssiBox,0,0); lv_obj_add_event_cb(wRssiBox,openWifi,LV_EVENT_CLICKED,nullptr);
+  for(int i=0;i<4;i++){ const int h=4+3*i;  // 4/7/10/13px ascending
+    wRssiBar[i]=lv_obj_create(wRssiBox); lv_obj_set_size(wRssiBar[i],3,h);
+    lv_obj_set_style_radius(wRssiBar[i],1,0); lv_obj_set_style_border_width(wRssiBar[i],0,0);
+    lv_obj_set_style_bg_color(wRssiBar[i],lv_color_hex(COL_RAISED),0);
+    lv_obj_clear_flag(wRssiBar[i],LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(wRssiBar[i],LV_ALIGN_BOTTOM_LEFT,3+5*i,-4); }
   wClock=lv_label_create(bar); lv_obj_set_style_text_color(wClock,lv_color_hex(COL_MUTED),0); lv_obj_align(wClock,LV_ALIGN_RIGHT_MID,-12,0);
 }
 void buildNavMenu(lv_obj_t*scr){
@@ -374,6 +385,17 @@ void renderMain(const DisplayState& s){ char b[128];
   lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);
   if(s.outdoorValid){ snprintf(b,sizeof(b),"Outside %.0f\xC2\xB0",(double)s.outdoorTempC); setTxt(wOat,b);} else setTxt(wOat,"Outside --");
   if(wOnline&&wOat) lv_obj_align_to(wOnline,wOat,LV_ALIGN_OUT_LEFT_MID,-8,0);  // #fix8: dot rides just left of the OAT label
+  // #127 RSSI bars. Thresholds from real bench data on this hardware (P4
+  // mesh: association fails ~-75, solid at -59) — keep as named constants.
+  { constexpr int8_t kRssi4=-55, kRssi3=-65, kRssi2=-75;
+    int lvl = !s.wifiOk||s.wifiRssi==0 ? 0
+              : s.wifiRssi>=kRssi4 ? 4 : s.wifiRssi>=kRssi3 ? 3
+              : s.wifiRssi>=kRssi2 ? 2 : 1;
+    static int lastLvl=-1;
+    if(lvl!=lastLvl && wRssiBox){ lastLvl=lvl;
+      for(int i=0;i<4;i++)
+        lv_obj_set_style_bg_color(wRssiBar[i], lv_color_hex(
+            i<lvl ? (lvl==1?COL_WARN:COL_OK) : COL_RAISED), 0); } }
   if(wClock) setTxt(wClock, s.clockStr[0]?s.clockStr:"");
   { const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto, au=s.mode==UserMode::kAuto;
     if(sh){ layoutCard(gHeatCard,wHeatSp,!au,COL_EMBER); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,au?6:84); lv_obj_clear_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);} else lv_obj_add_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);

@@ -155,6 +155,7 @@ struct DisplayState {
   bool wifiOk = false;
   bool mqttOk = false;
   bool busOk  = false;
+  int8_t wifiRssi = 0;             // dBm; 0 = unknown/disconnected (#127 bars)
   bool degradedMode = false;       // DS18B20-only degraded mode banner
 
   // #101/#114 persona capability: true on the furnace-wired Controller (CT-485
@@ -276,7 +277,8 @@ class UiModel : public UiCommands {
   void setGasModulationPct(float pct);
   void pushAlarm(const char* text, uint16_t code);
   void clearAlarms();
-  void setLinkHealth(bool wifi, bool mqtt, bool bus);
+  // rssiDbm: live WiFi RSSI (0 = unknown); default keeps sim/host callers valid.
+  void setLinkHealth(bool wifi, bool mqtt, bool bus, int8_t rssiDbm = 0);
   // #101/#114: persona capability (see DisplayState.hasBus). Boot-time set.
   void setHasBus(bool b) { state_.hasBus = b; }
   // CT-485 bus monitor (Diag). Rendered every tick, so no dirty bit needed.

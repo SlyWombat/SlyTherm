@@ -2261,7 +2261,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
                  : oat.rung == OatRung::kHaWeather ? ui::OutdoorSource::kHaWeather
                                                    : ui::OutdoorSource::kNone);
   gUi.setGasModulationPct(out.gasHeatPct);
-  gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive);
+  gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive,
+                    gWifiConnected ? static_cast<int8_t>(WiFi.RSSI()) : 0);  // #127
   { struct tm ti; char cb[24] = "";  // top-bar clock (#69); blank until NTP syncs
     if (getLocalTime(&ti, 0)) {
       if (gClock24) strftime(cb, sizeof(cb), "%a %H:%M", &ti);

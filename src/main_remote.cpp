@@ -189,7 +189,8 @@ void loop() {
                            remote_mqtt::controllerOnline(),
                            wifi_prov::attempts() + remote_mqtt::attempts());
     xSemaphoreTake(gUiMux, portMAX_DELAY);
-    gUi.setLinkHealth(wifi_prov::connected(), remote_mqtt::connected(), false);
+    gUi.setLinkHealth(wifi_prov::connected(), remote_mqtt::connected(), false,
+                      wifi_prov::connected() ? static_cast<int8_t>(WiFi.RSSI()) : 0);  // #127
     struct tm ti;
     if (getLocalTime(&ti, 0)) {
       char c[24];
