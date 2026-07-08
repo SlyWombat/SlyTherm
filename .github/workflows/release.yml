@@ -80,7 +80,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           cp firmware/catalog.json /tmp/catalog.json
           git fetch origin main
-          git checkout -B main origin/main
+          # The build dirties the tracked catalog.json (and web/installer) —
+          # discard the working tree (the catalog is already saved to /tmp,
+          # assets are already uploaded) or the checkout refuses to switch.
+          git checkout -f -B main origin/main
           cp /tmp/catalog.json firmware/catalog.json
           if git diff --quiet -- firmware/catalog.json; then
             echo "catalog unchanged"
