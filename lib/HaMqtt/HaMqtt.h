@@ -84,6 +84,46 @@ constexpr const char* kStateBlower    = SLYTHERM_TOPIC_PREFIX "state/blower";
 constexpr const char* kStateHealth    = SLYTHERM_TOPIC_PREFIX "state/health";
 constexpr const char* kStateLastError = SLYTHERM_TOPIC_PREFIX "state/last_error";
 
+// ---------- Remote link (issue #104; docs/11-remote-node-plan.md) ----------
+// Controller-internal protocol for one or more Remote (ESP32-P4 wall unit)
+// nodes — never the HA contract. Used only when the Controller firmware is
+// built with -DSLYTHERM_REMOTE_LINK (src/); the topic/JSON contract itself
+// lives here unconditionally since it is pure Tier-1 logic.
+//
+// PubSubClient supports exactly one Will per connection, and it is already
+// bound to kAvailability (see main_thermostat.cpp). So kControllerStatus
+// carries IDENTITY ONLY (cid + version), retained, republished on every
+// connect — it has NO Will/offline half. A Remote's LIVENESS signal is
+// kAvailability (existing online/offline + LWT), not this topic; a Remote
+// binds its cid here on first sight and then tracks liveness via
+// kAvailability. (This is a deliberate, documented deviation from the
+// per-cid-topic-with-its-own-LWT sketch in docs/11 — PubSubClient cannot
+// support a second Will without a second broker connection.)
+constexpr const char* kControllerStatus = SLYTHERM_TOPIC_PREFIX "controller/status";
+// Retained authoritative echo (DisplayState subset). ONE shared topic, not
+// per-Remote: every Remote mirrors the same Controller-owned setpoint/mode/
+// hold/preset/fused-temp truth (hub-and-spoke, docs/11 "Authority"), so there
+// is nothing to distinguish per Remote. A reconnecting Remote reads this
+// retained message and restores instantly.
+constexpr const char* kRemoteState = SLYTHERM_TOPIC_PREFIX "remote/state";
+// Remote -> Controller UiIntent, per Remote: slytherm/remote/<id>/intent
+// (NOT retained — intents are live-only, docs/11 "NO intent queuing").
+// Subscribe with the wildcard "slytherm/remote/+/intent".
+constexpr const char* kRemoteIntentTopicPrefix = SLYTHERM_TOPIC_PREFIX "remote/";
+constexpr const char* kRemoteIntentTopicSuffix = "/intent";
+constexpr const char* kRemoteIntentSubscribeWildcard = SLYTHERM_TOPIC_PREFIX "remote/+/intent";
+
+// ---------- OTA (issues #61/#65; docs/10) ----------
+// Live client status (NOT retained — stale "downloading" after a reboot would
+// mislead; the client republishes on every MQTT reconnect). Payload:
+// otaStateJson() below.
+constexpr const char* kStateOta = SLYTHERM_TOPIC_PREFIX "state/ota";
+// Commands: check the catalog now / apply the staged-or-available update.
+// Payload is ignored (any message triggers); both are no-ops while an OTA
+// phase is already in flight.
+constexpr const char* kCmdOtaCheck = SLYTHERM_TOPIC_PREFIX "cmd/ota_check";
+constexpr const char* kCmdOtaApply = SLYTHERM_TOPIC_PREFIX "cmd/ota_apply";
+
 constexpr const char* kDiscoveryPrefix = "homeassistant";
 
 }  // namespace topic
@@ -248,6 +288,34 @@ constexpr uint32_t kNextTargetMaxInS = 7 * 86400;
 // zeroed — never a half-applied target.
 bool parseNextTargetJson(const char* json, NextTarget& out);
 
+// ---------- Remote UiIntent (issue #104; docs/11 "Override-with-hold flow") ----------
+// Wire mirror of ui::IntentType / ui::UiIntent (lib/UiModel) — HaMqtt must not
+// depend on the UiModel lib (same isolation rule as the LockState/LockLevel
+// mirrors above); the src/ glue maps this struct onto ui::UiIntent /
+// ModeStateMachine calls. Vacation intents are out of scope for #104 (no
+// Remote consumer yet); extend here when that lands.
+enum class RemoteIntentType : uint8_t { kSetpoints, kMode, kPreset, kHold, kClearHold };
+
+struct RemoteIntent {
+  uint32_t id = 0;   // Remote-local monotonic sequence number, for dedupe;
+                     // MUST start at 1 (0 is rejected — reserved as the
+                     // Controller-side dedupe "unset" sentinel)
+  RemoteIntentType type = RemoteIntentType::kSetpoints;
+  float heatC = 0.0f;  // kSetpoints
+  float coolC = 0.0f;  // kSetpoints
+  Mode mode = Mode::kOff;   // kMode
+  std::string preset;       // kPreset
+  HoldType hold = HoldType::kNone;  // kHold
+};
+
+// {"id":<uint32>,"type":"setpoints"|"mode"|"preset"|"hold"|"clear_hold", ...}
+// extra fields required per type: setpoints->heatC/coolC, mode->mode,
+// preset->preset, hold->hold, clear_hold-> none. "id" and "type" are always
+// required; "id" must be > 0 (see RemoteIntent::id); an invalid/missing
+// type-specific field rejects the whole intent (never a half-applied one) —
+// same tolerance philosophy as the other flat-object parsers in this file.
+bool parseRemoteIntentJson(const char* json, RemoteIntent& out);
+
 // ---------- Preset roster config (docs/06 "Schedules and presets") ----------
 // Retained JSON at slytherm/config/presets:
 //   {"presets":[{"name":"home","heat":21.0,"cool":25.0}, ...]}
@@ -299,6 +367,35 @@ std::string holdStateJson(HoldType t, uint32_t remainingS);
 //   {"state":"user_locked","level":"settings","pin_set":true}
 // pin_set = a user PIN exists (tells HA whether lock_clear has anything to do).
 std::string lockStateJson(LockState s, LockLevel l, bool userPinSet);
+
+// ---------- Remote link JSON (issue #104) ----------
+// slytherm/controller/status payload (retained, republished on every
+// connect): {"cid":"8d82f4","status":"online","version":"Jul  7 2026"}.
+// version is informational only (currently the firmware build timestamp).
+std::string controllerStatusJson(const std::string& cid, bool online,
+                                  const std::string& version);
+
+// slytherm/state/ota payload (#61):
+//   {"state":"downloading","progress":42,"running":"0.3.0",
+//    "available":"0.4.0","error":""}
+// state ∈ idle|checking|up_to_date|update_available|downloading|verifying|
+// staged|rebooting|failed|rolled_back; "available"/"error" are "" when not
+// applicable; progress is 0-100 (download phase only, else 0).
+std::string otaStateJson(const char* state, uint8_t progressPct,
+                          const std::string& runningVersion,
+                          const std::string& availableVersion,
+                          const std::string& error);
+
+// slytherm/remote/state payload (retained authoritative echo):
+//   {"heatC":21.0,"coolC":25.0,"mode":"heat","emHeat":false,
+//    "hold":"two_hours","holdRemainS":7032,"activePreset":"home",
+//    "fusedTempC":21.3,"fusedTempValid":true}
+// Mirrors docs/11 "Authority": setpoints/mode/hold/active preset/fused-temp
+// are exactly what the Controller owns and a Remote must reconcile to.
+std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
+                             HoldType holdType, uint32_t holdRemainS,
+                             const std::string& activePreset,
+                             float fusedTempC, bool fusedTempValid);
 
 // Discovery payloads for the diagnostic entities (docs/06 "Entities" table).
 std::string activeEquipmentDiscoveryJson();      // sensor

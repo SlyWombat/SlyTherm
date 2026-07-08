@@ -2,6 +2,7 @@
 .env
 src/thermostat_secrets.h
 src/sniffer_secrets.h
+src/remote_secrets.h
 
 # PlatformIO
 .pio/
@@ -18,6 +19,7 @@ src/sniffer_secrets.h
 *.hex
 *.o
 *.a
+src/esp32c6_fw_blob.h
 
 # Captures / logs (raw bus dumps can be large; keep curated ones under docs/captures/)
 captures/*.raw
