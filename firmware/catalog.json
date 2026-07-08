@@ -6,28 +6,28 @@
       "name": "SlyTherm Controller (Waveshare ESP32-S3-4.3B)",
       "chipFamily": "ESP32-S3",
       "hwRev": "s3-43b-r1.1",
-      "version": "0.5.4",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.5.4/wall-s3-0.5.4.app.bin",
-      "appSize": 1762880,
-      "sha256": "79402f345d8ded6f66494a2c7ad5140316f3de2db14ac78356b7816134808258",
-      "sig": "MEUCIDfx8znJsy7REf0P/YCny2fvYEeGI+cFrljE7PYwb4BBAiEAy+5vV9vGag1o6LjTzd7QIMEix7dvz6yYheSIZpRQNp8=",
+      "version": "0.5.5",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.5.5/wall-s3-0.5.5.app.bin",
+      "appSize": 1764000,
+      "sha256": "1a4f6a09db973c757773e0860ac8bf8a82e04b95a18ac024acc1590f3574ef46",
+      "sig": "MEUCIC2LVu3lUBQ02M8QsB3XnCIgnTOnAIPddzce3h8yrKgnAiEAiJrIji42omIXIAcG0zVZUqyTlg7GevaaAlps0knY4DY=",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.5.4"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.5.5"
     },
     {
       "id": "remote-p4",
       "name": "SlyTherm Remote (Guition JC-ESP32P4-M3)",
       "chipFamily": "ESP32-P4",
       "hwRev": "p4-m3-r1",
-      "version": "0.5.4",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.5.4/remote-p4-0.5.4.app.bin",
+      "version": "0.5.5",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.5.5/remote-p4-0.5.5.app.bin",
       "appSize": 1750096,
-      "sha256": "e4e5f300551be4bce0b2ce7635b04a612394a872bd9e92225004dec175c9d5f7",
-      "sig": "MEUCIHpZ74LRGo0H5XB5ZhXaJ9psP8QeGX9Ry43X2M46hr5aAiEAn3QqSlwa7x0/hw5ED+c2Ul5RP/7pCdWGsL4ZWTJe2wA=",
+      "sha256": "868a8ac8dcad033058eabbab668a91729fec85468ec97545652d16001876b5a2",
+      "sig": "MEYCIQD0flTDo5l35OgzfEY7WB9FWsZJWplnMR6ohWSgu2NMjwIhAOKdGvb7ginqrFIZut/ayDJP8b9VKvPseNfkZ0TYfJIy",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.5.4"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.5.5"
     }
   ]
 }
