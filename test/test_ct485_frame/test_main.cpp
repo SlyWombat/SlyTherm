@@ -198,26 +198,79 @@ static void test_accumulator_two_frames_with_gaps() {
   const size_t lenB = ct485::encode(b, rawB);
 
   ct485::FrameAccumulator acc;
-  // Frame A bytes; nothing completes mid-frame.
-  TEST_ASSERT_FALSE(feedAll(acc, rawA, lenA));
-  // First byte of B arrives after a gap -> A completes on that feed.
-  TEST_ASSERT_TRUE(acc.feed(rawB[0], true));
+  // Length-based framing: A completes the moment its declared last byte
+  // lands — no trailing gap needed.
+  for (size_t i = 0; i < lenA - 1; i++) TEST_ASSERT_FALSE(acc.feed(rawA[i], i == 0));
+  TEST_ASSERT_TRUE(acc.feed(rawA[lenA - 1], false));
   TEST_ASSERT_EQUAL_UINT32(lenA, acc.frameLen());
   TEST_ASSERT_EQUAL_UINT8_ARRAY(rawA, acc.frame(), lenA);
   ct485::Frame outA;
   TEST_ASSERT_TRUE(ct485::decode(acc.frame(), acc.frameLen(), outA));
   TEST_ASSERT_EQUAL_UINT8(a.msgType, outA.msgType);
 
-  for (size_t i = 1; i < lenB; i++) TEST_ASSERT_FALSE(acc.feed(rawB[i], false));
-  // Bus goes idle -> B completes on flush.
-  TEST_ASSERT_TRUE(acc.flush());
+  // B after a real gap completes the same way; the gap byte closes nothing
+  // (A already closed at length).
+  for (size_t i = 0; i < lenB - 1; i++) TEST_ASSERT_FALSE(acc.feed(rawB[i], i == 0));
+  TEST_ASSERT_TRUE(acc.feed(rawB[lenB - 1], false));
   TEST_ASSERT_EQUAL_UINT32(lenB, acc.frameLen());
   TEST_ASSERT_EQUAL_UINT8_ARRAY(rawB, acc.frame(), lenB);
+  TEST_ASSERT_FALSE(acc.flush());  // nothing left in progress
 
   TEST_ASSERT_EQUAL_UINT32(2, acc.counters().framesOk);
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badChecksum);
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength);
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().overruns);
+}
+
+static void test_accumulator_poll_boundary_fake_gap_does_not_slice() {
+  // THE 2026-07-08 field bug: bytes of ONE frame read across two UART polls
+  // produce a fake >=3.5ms "gap" mid-frame. Length-based framing must ignore
+  // it... but a gap only manifests as gapBefore=true on the NEXT byte, and
+  // by then the frame already closed at its declared length. Simulate the
+  // pathological ordering anyway: gapBefore mid-frame on a REAL torn stream
+  // still rejects (resync path).
+  ct485::Frame g = makeDemandFrame();
+  uint8_t raw[ct485::kMaxFrame];
+  const size_t len = ct485::encode(g, raw);
+
+  ct485::FrameAccumulator acc;
+  // Full frame arrives, then the next frame's first byte carries the fake
+  // gap flag (read-batching): frame 1 already closed at length; the gap
+  // close finds an empty buffer and rejects nothing.
+  for (size_t i = 0; i < len - 1; i++) acc.feed(raw[i], i == 0);
+  TEST_ASSERT_TRUE(acc.feed(raw[len - 1], false));
+  TEST_ASSERT_FALSE(acc.feed(raw[0], true));   // new frame starts clean
+  for (size_t i = 1; i < len; i++) {
+    const bool done = acc.feed(raw[i], false);
+    TEST_ASSERT_EQUAL(i == len - 1, done);
+  }
+  TEST_ASSERT_EQUAL_UINT32(2, acc.counters().framesOk);
+  TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength);
+}
+
+static void test_accumulator_back_to_back_frames_no_merge() {
+  // Gapless join used to merge both frames into one badLength reject; with
+  // length framing each closes at its own boundary.
+  ct485::Frame a = makeDemandFrame();
+  ct485::Frame b = makeDemandFrame();
+  b.msgType = static_cast<uint8_t>(ct485::MsgType::kGetStatus);
+  b.payloadLen = 0;
+  uint8_t rawA[ct485::kMaxFrame], rawB[ct485::kMaxFrame];
+  const size_t lenA = ct485::encode(a, rawA);
+  const size_t lenB = ct485::encode(b, rawB);
+  uint8_t joined[2 * ct485::kMaxFrame];
+  std::memcpy(joined, rawA, lenA);
+  std::memcpy(joined + lenA, rawB, lenB);
+
+  ct485::FrameAccumulator acc;
+  int completions = 0;
+  for (size_t i = 0; i < lenA + lenB; i++)
+    if (acc.feed(joined[i], i == 0)) completions++;
+  TEST_ASSERT_EQUAL_INT(2, completions);
+  TEST_ASSERT_EQUAL_UINT32(2, acc.counters().framesOk);
+  TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawB, acc.frame(), lenB);  // last completed = B
+  TEST_ASSERT_EQUAL_UINT32(0, acc.takeRejected(joined));    // nothing salvaged
 }
 
 static void test_accumulator_torn_frame_then_good() {
@@ -226,13 +279,16 @@ static void test_accumulator_torn_frame_then_good() {
   const size_t len = ct485::encode(g, raw);
 
   ct485::FrameAccumulator acc;
-  // Torn frame: only the first 8 bytes arrive before the bus goes quiet.
+  // Torn frame: only the first 8 bytes arrive before the bus goes quiet
+  // (header incomplete -> no length close possible).
   feedAll(acc, raw, 8);
   // Next frame starts after the gap; torn fragment is rejected, not emitted.
   TEST_ASSERT_FALSE(acc.feed(raw[0], true));
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().badLength);
-  for (size_t i = 1; i < len; i++) acc.feed(raw[i], false);
-  TEST_ASSERT_TRUE(acc.flush());
+  // The good frame completes at its declared length (last byte, no flush).
+  for (size_t i = 1; i < len - 1; i++) TEST_ASSERT_FALSE(acc.feed(raw[i], false));
+  TEST_ASSERT_TRUE(acc.feed(raw[len - 1], false));
+  TEST_ASSERT_FALSE(acc.flush());
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().framesOk);
   TEST_ASSERT_EQUAL_UINT32(len, acc.frameLen());
   ct485::Frame out;
@@ -255,51 +311,49 @@ static void test_accumulator_bad_checksum_counted() {
 
 static void test_accumulator_overrun_counted_once_then_recovers() {
   ct485::FrameAccumulator acc;
-  // 300 gapless bytes: > kMaxFrame (252) -> one overrun, extra bytes dropped.
-  for (size_t i = 0; i < 300; i++) acc.feed(0x55, i == 0);
+  // 300 gapless 0xFF bytes: declared payload 0xFF > kMaxPayload disables the
+  // length close, so gap framing accumulates past kMaxFrame (252) -> one
+  // overrun, extra bytes dropped. (0x55 filler would declare a plausible
+  // 85-byte payload and get chopped into badChecksum rejects instead.)
+  for (size_t i = 0; i < 300; i++) acc.feed(0xFF, i == 0);
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().overruns);
 
-  // Recovery: a good frame after the next gap still parses.
+  // Recovery: a good frame after the next gap still parses (completes at its
+  // declared length; the gap-close of the overrun emits nothing).
   ct485::Frame g = makeDemandFrame();
   uint8_t raw[ct485::kMaxFrame];
   const size_t len = ct485::encode(g, raw);
-  TEST_ASSERT_FALSE(feedAll(acc, raw, len));  // gap-close of overrun emits nothing
-  TEST_ASSERT_TRUE(acc.flush());
+  TEST_ASSERT_TRUE(feedAll(acc, raw, len));   // completes on the last byte
+  TEST_ASSERT_FALSE(acc.flush());
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().framesOk);
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().overruns);  // not double-counted
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength); // overrun != badLength
 }
 
-static void test_accumulator_salvages_merged_burst() {
-  // Two frames back-to-back with NO gap: gap framing must reject the merged
-  // buffer (badLength) but stash the raw bytes for PC-side resync recovery.
-  ct485::Frame a = makeDemandFrame();
-  ct485::Frame b = makeDemandFrame();
-  b.msgType = static_cast<uint8_t>(ct485::MsgType::kGetStatus);
-  b.payloadLen = 0;
-  uint8_t rawA[ct485::kMaxFrame], rawB[ct485::kMaxFrame];
-  const size_t lenA = ct485::encode(a, rawA);
-  const size_t lenB = ct485::encode(b, rawB);
+static void test_accumulator_salvages_rejected_bytes() {
+  // The salvage stash (PC-side resync recovery) keeps working for what the
+  // length framing can't fix: torn fragments and checksum-corrupt frames.
+  ct485::Frame g = makeDemandFrame();
+  uint8_t raw[ct485::kMaxFrame];
+  const size_t len = ct485::encode(g, raw);
 
   ct485::FrameAccumulator acc;
-  feedAll(acc, rawA, lenA);
-  for (size_t i = 0; i < lenB; i++) acc.feed(rawB[i], false);  // gapless join
-  TEST_ASSERT_FALSE(acc.flush());
+  // Torn fragment: 8 bytes then a gap-close -> badLength, bytes stashed.
+  feedAll(acc, raw, 8);
+  TEST_ASSERT_FALSE(acc.feed(raw[0], true));
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().badLength);
-
   uint8_t rej[ct485::kMaxFrame];
-  const size_t n = acc.takeRejected(rej);
-  TEST_ASSERT_EQUAL_UINT32(lenA + lenB, n);
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawA, rej, lenA);          // both frames intact
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawB, rej + lenA, lenB);
+  TEST_ASSERT_EQUAL_UINT32(8, acc.takeRejected(rej));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(raw, rej, 8);
   TEST_ASSERT_EQUAL_UINT32(0, acc.takeRejected(rej));      // take clears the slot
+  acc.reset();
 
-  // A bad-checksum reject is stashed too.
+  // Checksum-corrupt frame: closes at its declared length, fails Fletcher,
+  // bytes stashed.
   uint8_t rawC[ct485::kMaxFrame];
-  const size_t lenC = ct485::encode(a, rawC);
+  const size_t lenC = ct485::encode(g, rawC);
   rawC[ct485::kHeaderLen] ^= 0x40;
-  feedAll(acc, rawC, lenC);
-  TEST_ASSERT_FALSE(acc.flush());
+  TEST_ASSERT_FALSE(feedAll(acc, rawC, lenC));
   TEST_ASSERT_EQUAL_UINT32(1, acc.counters().badChecksum);
   TEST_ASSERT_EQUAL_UINT32(lenC, acc.takeRejected(rej));
   TEST_ASSERT_EQUAL_UINT8_ARRAY(rawC, rej, lenC);
@@ -329,7 +383,9 @@ int main() {
   RUN_TEST(test_accumulator_torn_frame_then_good);
   RUN_TEST(test_accumulator_bad_checksum_counted);
   RUN_TEST(test_accumulator_overrun_counted_once_then_recovers);
-  RUN_TEST(test_accumulator_salvages_merged_burst);
+  RUN_TEST(test_accumulator_poll_boundary_fake_gap_does_not_slice);
+  RUN_TEST(test_accumulator_back_to_back_frames_no_merge);
+  RUN_TEST(test_accumulator_salvages_rejected_bytes);
   RUN_TEST(test_accumulator_empty_gap_is_not_a_frame);
   return UNITY_END();
 }

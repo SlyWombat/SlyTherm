@@ -1301,8 +1301,8 @@ void mqttTask(void*) {
       if (!sMdnsUp) sMdnsUp = MDNS.begin("slytherm");
       IPAddress ip; uint16_t pt = 0;
       int n = MDNS.queryService("mqtt", "tcp");                       // 1: advertised broker
-      if (n > 0) { ip = MDNS.IP(0); pt = MDNS.port(0); }
-      else { n = MDNS.queryService("home-assistant", "tcp"); if (n > 0) { ip = MDNS.IP(0); pt = 1883; } }  // 2: HA host
+      if (n > 0) { ip = MDNS.address(0); pt = MDNS.port(0); }  // core 3.3.x: IP() -> address()
+      else { n = MDNS.queryService("home-assistant", "tcp"); if (n > 0) { ip = MDNS.address(0); pt = 1883; } }  // 2: HA host
       if (n <= 0) {                                                    // 3: well-known HA hostname
         IPAddress hip = MDNS.queryHost("homeassistant");
         if (hip != IPAddress(0, 0, 0, 0)) { ip = hip; pt = 1883; n = 1; }

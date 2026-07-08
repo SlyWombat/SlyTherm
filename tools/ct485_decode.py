@@ -372,14 +372,16 @@ class TelnetAssembler:
         """(handled, completed_frames) for one input line."""
         m = REJ_RE.search(line)
         if m:
-            out: list[Frame] = []
-            if m.group(2) == "0" or self.rej_ms != m.group(1):
-                out = self._flush_rej()          # new group starts
-                self.rej_ms = m.group(1)
+            # Pool ALL consecutive rej lines into one blob before resync: the
+            # firmware's poll-boundary gap detection slices frames into
+            # multiple rejections (fw <= 0.5.2), so fragments of one frame
+            # arrive as separate rej events. The bytes are contiguous bus
+            # order; the Fletcher-validated slider finds the real frames.
+            if not self.rej_blob:
                 self.rej_ts = _parse_iso_ms(line) or float(m.group(1))
                 self.rej_line = line_no
             self.rej_blob.extend(int(t, 16) for t in m.group(3).split())
-            return True, out
+            return True, []
 
         out = self._flush_rej()                  # any other line ends a group
 

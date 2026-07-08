@@ -63,7 +63,12 @@ namespace {
 constexpr uint32_t kTaskStack = 16384;   // TLS handshake + parse headroom
 constexpr UBaseType_t kTaskPrio = 1;     // below MQTT/control
 constexpr uint32_t kCheckIntervalMs = 24u * 60u * 60u * 1000u;  // daily
-constexpr uint32_t kCheckRetryMs = 5u * 60u * 1000u;  // retry cadence after a failure
+constexpr uint32_t kCheckRetryMs = 5u * 60u * 1000u;  // base retry after a failure
+// #129: a check that crashes the P4's hosted-WiFi transport must not re-fire
+// seconds after boot (observed crash-loop: panic at 10s uptime, bootCount 3).
+// Auto checks wait out this grace; an operator's explicit check does not.
+constexpr uint32_t kBootCheckGraceMs = 2u * 60u * 1000u;
+constexpr uint32_t kCheckRetryMaxMs = 60u * 60u * 1000u;  // backoff ceiling
 constexpr uint32_t kSelfTestTimeoutMs = 5u * 60u * 1000u;       // 5 min
 constexpr uint8_t kMaxBootAttempts = 3;
 constexpr uint8_t kMaxApplyAttempts = 3;  // mid-apply resets before going manual-only
@@ -343,6 +348,15 @@ bool doApply() {
     }
     lastDataMs = millis();
     size_t chunk = avail > sizeof(buf) ? sizeof(buf) : avail;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    // #129: pace the download so the esp-hosted SDIO drainer keeps up. The
+    // RX pool asserts (sdio_drv.c:953) when inbound TLS data outruns the
+    // sdio_read task — cap the per-iteration read and yield between reads
+    // (~500 KB/s ceiling; a 2 MB image gains a few seconds, the transport
+    // survives).
+    if (chunk > 2048) chunk = 2048;
+    vTaskDelay(pdMS_TO_TICKS(4));
+#endif
     if (ram && written + chunk > expect) chunk = expect - written;
     if (ram && chunk == 0) break;  // server sent more than expected
     const int n = stream->readBytes(
@@ -455,16 +469,26 @@ void otaTask(void*) {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-      // Daily cadence after a good check; 5-min retry after a failed one
-      // (first boot attempt races WiFi/NTP — don't wait a day to recover).
+      // Daily cadence after a good check; backed-off retry after failures
+      // (first boot attempt races WiFi/NTP — don't wait a day to recover,
+      // but #129: repeated failures must not hammer a transport that may be
+      // crashing under the TLS load: 5 -> 10 -> 20 -> 40 -> 60 min cap).
       static bool lastCheckOk = false;
-      const uint32_t interval = lastCheckOk ? kCheckIntervalMs : kCheckRetryMs;
-      const bool auto_due = lastAutoCheckMs == 0 ||
-                            millis() - lastAutoCheckMs >= interval;
+      static uint8_t checkFails = 0;
+      uint32_t interval = kCheckIntervalMs;
+      if (!lastCheckOk) {
+        const uint8_t shift = checkFails > 4 ? 4 : checkFails;
+        interval = kCheckRetryMs << shift;
+        if (interval > kCheckRetryMaxMs) interval = kCheckRetryMaxMs;
+      }
+      const bool auto_due = (lastAutoCheckMs == 0 ||
+                             millis() - lastAutoCheckMs >= interval) &&
+                            millis() - gBootMs >= kBootCheckGraceMs;  // #129
       if (gCheckReq || (auto_due && !staged)) {
         gCheckReq = false;
         lastAutoCheckMs = millis();
         lastCheckOk = doCheck();
+        checkFails = lastCheckOk ? 0 : static_cast<uint8_t>(checkFails + (checkFails < 10));
         // Auto-apply: a found update stages itself (downloads + verifies)
         // without an operator. The REBOOT is still gated (furnace idle on
         // the Controller); the crash-loop guard in doApply() keeps a
