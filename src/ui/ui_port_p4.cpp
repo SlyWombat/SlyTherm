@@ -1,8 +1,17 @@
-#include "remote_board_p4.h"
+// ui_port_p4.cpp — Remote board port (#114/#101): GUITION JC4880P443C_I_W
+// (ESP32-P4, 4.3" 480x800 ST7701 over MIPI-DSI, GT911 touch @0x5D).
+// Panel + touch bring-up moved verbatim from the #97-validated
+// remote_board_p4.cpp; what's new here is the ui_port.h contract glue: the
+// glass is PORTRAIT 480x800, so the LVGL display registers with sw_rotate +
+// LV_DISP_ROT_90 to present the LOGICAL 800x480 landscape the shared screens
+// were designed for, and the GT911's native portrait coordinates are mapped
+// into that rotated space in touchCb.
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <lvgl.h>
+
+#include "ui_port.h"
 
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_io.h"
@@ -10,7 +19,9 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_ldo_regulator.h"
 
-namespace remote_board {
+extern "C" void uiNoteTouch();   // #90 sleep-state touch note (press edge)
+
+namespace slytherm_ui {
 namespace {
 
 // ---- pins (JC4880P443C_I_W, confirmed via schreibfaul1/ESP32-MiniWebRadio
@@ -21,14 +32,14 @@ constexpr int kI2cSda = 7;
 constexpr int kI2cScl = 8;
 constexpr uint8_t kGt911Addr = 0x5D;  // no reset pin on this board (TP_IRQ unwired)
 
-constexpr int kHRes = 480;
+constexpr int kHRes = 480;   // native (portrait) — logical UI is 800x480 via ROT_90
 constexpr int kVRes = 800;
 
 esp_lcd_panel_handle_t gPanel = nullptr;
 bool gPanelOk = false;
 
 // ---- GT911 raw I2C (same register protocol as the Controller's validated
-// recipe, src/slytherm_ui.cpp -- this board has no CH422G, so no reset dance) ----
+// recipe, ui_port_s3.cpp -- this board has no CH422G, so no reset dance) ----
 bool gTouchOk = false;
 
 int gtReg(uint16_t reg, uint8_t* buf, uint8_t n) {
@@ -64,7 +75,7 @@ bool gtRead(uint16_t& x, uint16_t& y) {
     Wire.write(0);
     Wire.endTransmission();
   } else if (down && millis() - readyMs > 150) {
-    down = false;
+    down = false;  // no fresh GT911 sample -> released (frees LVGL idle timer)
   }
   x = lx;
   y = ly;
@@ -207,56 +218,65 @@ void initPanel() {
 }
 
 // ---- LVGL glue ----
+// Registered NATIVE 480x800 with sw_rotate + LV_DISP_ROT_90: the shared
+// screens see the logical 800x480 landscape; LVGL rotates each rendered
+// chunk in software and hands flushCb native-orientation areas.
 lv_disp_draw_buf_t gDrawBuf;
 lv_color_t gLineBuf[kHRes * 40];  // internal RAM, matches the Controller's recipe
 lv_disp_drv_t gDispDrv;
 lv_indev_drv_t gIndevDrv;
 
+// The DPI panel's draw_bitmap is ASYNC (DMA2D copy into the framebuffer);
+// signalling flush_ready immediately let LVGL start the next chunk while the
+// previous copy was in flight -> "previous draw operation is not finished"
+// errors + dropped draws under the full UI's flush rate. And signalling it
+// from the done-ISR alone fed LVGL's sw-rotate busy-wait
+// (while(draw_buf->flushing)) which starves IDLE0 -> task WDT abort whenever
+// a done event goes missing. So: flush SYNCHRONOUSLY — block on a semaphore
+// the done-ISR gives, with a bounded timeout as the lost-event escape hatch.
+SemaphoreHandle_t gFlushDone = nullptr;
+
+bool drawDoneCb(esp_lcd_panel_handle_t, esp_lcd_dpi_panel_event_data_t*, void*) {
+  BaseType_t hp = pdFALSE;
+  xSemaphoreGiveFromISR(gFlushDone, &hp);
+  return hp == pdTRUE;
+}
+
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* px) {
+  xSemaphoreTake(gFlushDone, 0);  // drain a stale give from a timed-out flush
   esp_lcd_panel_draw_bitmap(gPanel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px);
+  xSemaphoreTake(gFlushDone, pdMS_TO_TICKS(100));  // done-ISR, or bounded bail-out
   lv_disp_flush_ready(drv);
 }
 
 void touchCb(lv_indev_drv_t*, lv_indev_data_t* data) {
   uint16_t x, y;
+  static bool wasDown = false;
   if (gTouchOk && gtRead(x, y)) {
     data->state = LV_INDEV_STATE_PR;
-    data->point.x = x;
-    data->point.y = y;
-    Serial.printf("[touch] x=%u y=%u\n", x, y);
+    // GT911 reports native portrait coords (x 0..479, y 0..799); LVGL v8 does
+    // NOT rotate pointer input with the display, so invert its ROT_90 flush
+    // mapping (lv_refr.c: logical(x,y) -> native(y, ver_res-1-x)) by hand:
+    data->point.x = (kVRes - 1) - y;
+    data->point.y = x;
+    if (!wasDown) { wasDown = true; uiNoteTouch(); }   // #90: press edge -> sleep-state wake
   } else {
     data->state = LV_INDEV_STATE_REL;
+    wasDown = false;
   }
-}
-
-// Unambiguous R/G/B/white full-screen cycle (#97's acceptance bar: "I see the
-// colors") plus a dot that follows touch, so an owner glancing at the panel
-// gets immediate visual confirmation of both flush and touch.
-lv_obj_t* gTouchDot = nullptr;
-
-void tickColorCycle() {
-  static uint32_t lastMs = 0;
-  static int idx = 0;
-  const uint32_t nowMs = millis();
-  if (nowMs - lastMs < 1500) return;
-  lastMs = nowMs;
-  static const lv_color_t kColors[] = {
-      lv_color_hex(0xFF0000), lv_color_hex(0x00FF00), lv_color_hex(0x0000FF), lv_color_hex(0xFFFFFF)};
-  lv_obj_set_style_bg_color(lv_scr_act(), kColors[idx], LV_PART_MAIN);
-  idx = (idx + 1) % 4;
 }
 
 }  // namespace
 
-void begin() {
-  Serial.println("[remote_board] begin() entered");
+bool portInit() {
+  gFlushDone = xSemaphoreCreateBinary();
   initBacklight();
   initPanel();
 
   Wire.begin(kI2cSda, kI2cScl, 400000U);
   uint8_t probe = 0;
   gTouchOk = gtReg(0x814E, &probe, 1) == 1;
-  Serial.printf("[touch] GT911 %s\n", gTouchOk ? "present" : "NO ACK");
+  Serial.printf("[ui] GT911 %s\n", gTouchOk ? "present" : "NO ACK");
 
   lv_init();
   lv_disp_draw_buf_init(&gDrawBuf, gLineBuf, nullptr, kHRes * 40);
@@ -265,38 +285,26 @@ void begin() {
   gDispDrv.ver_res = kVRes;
   gDispDrv.flush_cb = flushCb;
   gDispDrv.draw_buf = &gDrawBuf;
+  gDispDrv.sw_rotate = 1;
+  gDispDrv.rotated = LV_DISP_ROT_90;   // portrait glass -> logical 800x480 landscape
   lv_disp_drv_register(&gDispDrv);
+  esp_lcd_dpi_panel_event_callbacks_t cbs = {};
+  cbs.on_color_trans_done = drawDoneCb;
+  esp_lcd_dpi_panel_register_event_callbacks(gPanel, &cbs, &gDispDrv);
 
   lv_indev_drv_init(&gIndevDrv);
   gIndevDrv.type = LV_INDEV_TYPE_POINTER;
   gIndevDrv.read_cb = touchCb;
   lv_indev_drv_register(&gIndevDrv);
 
-  gTouchDot = lv_obj_create(lv_scr_act());
-  lv_obj_set_size(gTouchDot, 40, 40);
-  lv_obj_set_style_radius(gTouchDot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(gTouchDot, lv_color_hex(0x000000), LV_PART_MAIN);
-  lv_obj_set_pos(gTouchDot, kHRes / 2 - 20, kVRes / 2 - 20);
-
-  Serial.println("[panel] LVGL up");
+  Serial.printf("[ui] panel %s, LVGL up (logical %dx%d)\n",
+                gPanelOk ? "OK" : "FAIL", (int)lv_disp_get_hor_res(nullptr),
+                (int)lv_disp_get_ver_res(nullptr));
+  return gPanelOk;
 }
 
-void loop() {
-  static uint32_t lastTickMs = 0;
-  const uint32_t nowMs = millis();
-  lv_tick_inc(nowMs - lastTickMs);
-  lastTickMs = nowMs;
-  lv_timer_handler();
+void portBacklight(bool on) { ledcWrite(kBacklight, on ? 200 : 0); }
 
-  tickColorCycle();
+bool portTouchOk() { return gTouchOk; }
 
-  uint16_t x, y;
-  if (gTouchOk && gtRead(x, y)) {
-    lv_obj_set_pos(gTouchDot, x - 20, y - 20);
-  }
-}
-
-bool panelOk() { return gPanelOk; }
-bool touchOk() { return gTouchOk; }
-
-}  // namespace remote_board
+}  // namespace slytherm_ui

@@ -1,16 +1,85 @@
-// SlyTherm Remote entrypoint (issue #94 epic, #95 P0 toolchain gate).
+// SlyTherm Remote entrypoint (issue #94 epic; #100 skeleton).
 // Wall-mounted ESP32-P4 node: NO CT-485/RS-485, NO furnace demand pipeline —
-// see docs/11-remote-node-plan.md. #97 adds panel/touch bring-up
-// (remote_board_p4.cpp); #96 adds hosted-WiFi bring-up (remote_wifi.cpp);
-// #98 adds MQTT bring-up (remote_mqtt.cpp); the real UI lands in #100-101 on
-// top of this entrypoint.
+// suppression IS this file never constructing those tasks (same convention as
+// sniffer-vs-thermostat mains). See docs/11-remote-node-plan.md.
+//
+// Task layout: WiFi + MQTT service from the Arduino loop task; the wall UI
+// (the full shared slytherm_ui stack, #101/#114) runs in its own pinned task,
+// mirroring the Controller's uiTask. The UiModel here renders a DEMO
+// DisplayState with hasBus=false (proves every tab draws on the P4 panel,
+// Diag shows no RS-485 UI) — the real Controller-fed replica arrives with
+// #102/#103.
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
+#include <time.h>
 
-#include "remote_board_p4.h"
+#include "UiModel.h"
 #include "remote_mqtt.h"
 #include "remote_wifi.h"
+#include "slytherm_ui.h"
+#include "ui/ui_port.h"
+
+using namespace dettson;
+using namespace dettson::ui;
+
+namespace {
+
+UiModel gUi;
+SemaphoreHandle_t gUiMux = nullptr;
+Preferences gPrefs;
+bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS "clk24"
+
+// Demo DisplayState (#101 acceptance): static-but-plausible content so every
+// tab has something real to draw. Replaced by the Controller echo in #102.
+void fillDemoState() {
+  gUi.setFusedTemp(21.5f, true);
+  gUi.setSetpoints(20.0f, 24.0f);
+  gUi.setUserMode(UserMode::kAuto);
+  gUi.setHvacAction(HvacAction::kIdle);
+  gUi.setOutdoor(12.0f, true, OutdoorSource::kHaWeather);
+  SensorRow rows[2] = {};
+  strlcpy(rows[0].name, "Wall unit", sizeof(rows[0].name));
+  rows[0].tempC = 21.5f; rows[0].participating = true; rows[0].healthy = true; rows[0].dominant = true; rows[0].occupied = true;
+  strlcpy(rows[1].name, "Bedroom", sizeof(rows[1].name));
+  rows[1].tempC = 20.1f; rows[1].participating = true; rows[1].healthy = true; rows[1].lastOccAgeS = 5400;
+  gUi.setSensorRows(rows, 2);
+  DisplayState::PresetView pv[3] = {};
+  strlcpy(pv[0].name, "home", sizeof(pv[0].name));  pv[0].heatC = 20.0f; pv[0].coolC = 24.0f;
+  strlcpy(pv[1].name, "away", sizeof(pv[1].name));  pv[1].heatC = 16.0f; pv[1].coolC = 28.0f;
+  strlcpy(pv[2].name, "sleep", sizeof(pv[2].name)); pv[2].heatC = 18.0f; pv[2].coolC = 22.0f;
+  gUi.setPresets(pv, 3);
+  gUi.setActivePreset("home");
+}
+
+// Wall-UI task (core 0), mirroring the Controller's uiTask: renders gUi and
+// routes touch into it. Never touches the network.
+void uiTask(void*) {
+  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/false, /*firstRun=*/false);
+  for (;;) {
+    slytherm_ui::service();
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
+}  // namespace
+
+// ---- extern "C" hooks the shared UI expects (#100) ----
+// Clock format is real (persisted like the Controller's). The sensor toggle
+// will forward a UiIntent to the Controller in #102; the RS-485 sniffer hooks
+// are dead code on a busless Remote (hasBus=false hides the LISTEN UI) but
+// must link.
+extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
+extern "C" bool uiClock24() { return gClock24; }
+extern "C" void uiToggleSensor(const char*) {}   // #102: forward to Controller
+extern "C" void uiSniffStart() {}
+extern "C" void uiSniffStop() {}
+extern "C" bool uiSniffActive() { return false; }
+extern "C" uint32_t uiSniffFrames() { return 0; }
+extern "C" int uiSniffLines(char[10][56]) { return 0; }
+extern "C" void uiClearReducedMode() { ESP.restart(); }  // no reset-loop latch here yet
+extern "C" void uiNoteTouch() {}                 // #90 sleep state is Controller-side
 
 void setup() {
   Serial.begin(115200);
@@ -24,26 +93,49 @@ void setup() {
                 ESP.getChipRevision() % 100, ESP.getFlashChipSize() / (1024 * 1024),
                 psramFound() ? "OK" : "NOT FOUND");
 
-  remote_board::begin();
+  gPrefs.begin("remote", false);
+  gClock24 = gPrefs.getBool("clk24", false);
+
+  gUiMux = xSemaphoreCreateMutex();
+  gUi.setHasBus(false);   // #101: busless persona — no RS-485/CT-485 UI
+  fillDemoState();
+
   remote_wifi::begin();
   remote_mqtt::begin();
+
+  xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
-  remote_board::loop();
   remote_wifi::loop();
   remote_mqtt::loop();
 
-  static uint32_t lastMs = 0;
+  // Feed link health + wall clock into the model (the UI renders these live).
+  static uint32_t lastTickMs = 0;
   const uint32_t nowMs = millis();
-  if (nowMs - lastMs >= 5000) {
-    lastMs = nowMs;
-    Serial.printf("alive t=%lus heap=%u panel=%s touch=%s wifi=%s ip=%s mqtt=%s\n", nowMs / 1000,
+  if (nowMs - lastTickMs >= 1000) {
+    lastTickMs = nowMs;
+    xSemaphoreTake(gUiMux, portMAX_DELAY);
+    gUi.setLinkHealth(remote_wifi::connected(), remote_mqtt::connected(), false);
+    struct tm ti;
+    if (getLocalTime(&ti, 0)) {
+      char c[24];
+      strftime(c, sizeof(c), gClock24 ? "%a  %H:%M" : "%a  %I:%M %p", &ti);
+      gUi.setClock(c);
+    }
+    gUi.tick(nowMs / 1000);
+    xSemaphoreGive(gUiMux);
+  }
+
+  static uint32_t lastBeatMs = 0;
+  if (nowMs - lastBeatMs >= 5000) {
+    lastBeatMs = nowMs;
+    Serial.printf("alive t=%lus heap=%u touch=%s wifi=%s ip=%s mqtt=%s\n", nowMs / 1000,
                   static_cast<unsigned>(ESP.getFreeHeap()),
-                  remote_board::panelOk() ? "OK" : "FAIL",
-                  remote_board::touchOk() ? "OK" : "FAIL",
+                  slytherm_ui::portTouchOk() ? "OK" : "FAIL",
                   remote_wifi::connected() ? "OK" : "FAIL",
                   remote_wifi::connected() ? WiFi.localIP().toString().c_str() : "-",
                   remote_mqtt::connected() ? "OK" : "FAIL");
   }
+  delay(2);
 }
