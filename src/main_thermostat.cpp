@@ -58,11 +58,22 @@
 
 #include <esp_system.h>
 #include <esp_timer.h>
+
+// #113: injected by tools/version_flag.py (VERSION file + git sha). Fallbacks
+// keep ad-hoc builds (e.g. PLATFORMIO_BUILD_FLAGS-only invocations) compiling.
+#ifndef SLYTHERM_FW_VERSION
+#define SLYTHERM_FW_VERSION "0.0.0-dev"
+#endif
+#ifndef SLYTHERM_FW_BUILD
+#define SLYTHERM_FW_BUILD SLYTHERM_FW_VERSION
+#endif
 // IDF >= 5 (Arduino core 3.x) moved esp_efuse_mac_get_default() out of
 // esp_system.h; older cores have no esp_mac.h at all.
 #if __has_include(<esp_mac.h>)
 #include <esp_mac.h>
 #endif
+
+#include "ota_client.h"  // #61: no-op inlines unless -DSLYTHERM_OTA
 
 #include "CompressorGuard.h"
 #include "Ct485Core.h"
@@ -83,10 +94,15 @@
 #include "SleepState.h"
 #include "UiModel.h"
 
+// Running-partition app hash (reset-loop latch clear on a new flash) + the
+// #64/#61 OTA capability/rollback calls in setup() — needed on EVERY target,
+// not just the UI build (the bench env broke silently while this sat under
+// SLYTHERM_UI).
+#include <esp_ota_ops.h>
+
 #ifdef SLYTHERM_UI
 #include <ESPmDNS.h>      // mDNS broker auto-discovery (silent home-system connect)
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
-#include <esp_ota_ops.h>  // running-partition app hash, to clear the reset-loop latch on a new flash
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
 #include "telnet_log.h"   // WiFi-accessible debug log (port 23)
@@ -597,6 +613,50 @@ uint8_t findSensor(const char* name) {  // gCmdMux held
   return 0xFF;
 }
 
+#ifdef SLYTHERM_REMOTE_LINK
+// #104: Controller identity for the Remote-link heartbeat — last 3 MAC bytes,
+// lowercase hex, no colons (MQTT-topic-safe; docs/11 "cid derivation").
+std::string controllerCid() {
+  static std::string cid;
+  if (!cid.empty()) return cid;
+  std::string mac = WiFi.macAddress().c_str();  // "AA:BB:CC:DD:EE:FF"
+  for (size_t i = 9; i < mac.size(); ++i) {
+    if (mac[i] == ':') continue;
+    char c = mac[i];
+    if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    cid += c;
+  }
+  return cid;
+}
+
+// #104: dedupe Remote UiIntents by (remoteId, monotonic id) — a Remote's own
+// retry-on-no-ack can redeliver the same intent; a stale/reordered redelivery
+// must not reapply after the user has moved on. Small fixed table (a handful
+// of Remotes per system, docs/11 "multi-Remote"); table-full fails open
+// (this is a comfort dedupe, not a safety gate — see gCmdMux callers below).
+struct RemoteIntentDedupe { bool used = false; char id[kSensorNameLen] = {}; uint32_t lastId = 0; };
+RemoteIntentDedupe gRemoteDedupe[4];  // gCmdMux held
+
+bool remoteIntentIsDuplicate(const char* remoteId, uint32_t id) {  // gCmdMux held
+  for (auto& d : gRemoteDedupe) {
+    if (d.used && strncmp(d.id, remoteId, sizeof(d.id)) == 0) {
+      if (d.lastId != 0 && id <= d.lastId) return true;
+      d.lastId = id;
+      return false;
+    }
+  }
+  for (auto& d : gRemoteDedupe) {
+    if (!d.used) {
+      d.used = true;
+      strlcpy(d.id, remoteId, sizeof(d.id));
+      d.lastId = id;
+      return false;
+    }
+  }
+  return false;  // table full: process anyway rather than silently drop
+}
+#endif  // SLYTHERM_REMOTE_LINK
+
 void handleSensorRoster(const char* json) {
   std::vector<hm::SensorRosterEntry> entries;
   if (!hm::parseSensorRosterJson(json, entries)) return;
@@ -643,6 +703,60 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (len >= sizeof(buf)) return;
   memcpy(buf, payload, len);
   buf[len] = '\0';
+
+#ifdef SLYTHERM_REMOTE_LINK
+  // #104: slytherm/remote/<id>/intent — Remote -> Controller UiIntent.
+  // Ingested into the same gPending mailbox the HA cmd/* topics use, so it is
+  // re-validated by the control task exactly like any other inbound command
+  // (docs/11 "Authority": the Remote never invents authoritative state).
+  {
+    const char* riPrefix = hm::topic::kRemoteIntentTopicPrefix;
+    const size_t riPrefixLen = strlen(riPrefix);
+    if (strncmp(topic, riPrefix, riPrefixLen) == 0) {
+      const char* id = topic + riPrefixLen;
+      const char* slash = strchr(id, '/');
+      if (slash != nullptr && strcmp(slash, hm::topic::kRemoteIntentTopicSuffix) == 0) {
+        char remoteId[kSensorNameLen];
+        size_t n = static_cast<size_t>(slash - id);
+        if (n == 0 || n >= sizeof(remoteId)) return;
+        memcpy(remoteId, id, n);
+        remoteId[n] = '\0';
+        hm::RemoteIntent ri;
+        if (hm::parseRemoteIntentJson(buf, ri)) {
+          xSemaphoreTake(gCmdMux, portMAX_DELAY);
+          if (!remoteIntentIsDuplicate(remoteId, ri.id)) {
+            switch (ri.type) {
+              case hm::RemoteIntentType::kSetpoints:
+                gPending.hasLow = true; gPending.lowC = ri.heatC;
+                gPending.hasHigh = true; gPending.highC = ri.coolC;
+                break;
+              case hm::RemoteIntentType::kMode:
+                gPending.hasMode = true; gPending.mode = ri.mode;
+                break;
+              case hm::RemoteIntentType::kPreset:
+                gPending.hasPreset = true;
+                strlcpy(gPending.preset, ri.preset.c_str(), sizeof(gPending.preset));
+                break;
+              case hm::RemoteIntentType::kHold:
+                gPending.hasHold = true;
+                gPending.hold = hm::HoldCommand{};
+                gPending.hold.type = ri.hold;
+                break;
+              case hm::RemoteIntentType::kClearHold:
+                gPending.hasHold = true;
+                gPending.hold = hm::HoldCommand{};
+                gPending.hold.clear = true;
+                break;
+            }
+            gPending.anyInbound = true;
+          }
+          xSemaphoreGive(gCmdMux);
+        }
+        return;
+      }
+    }
+  }
+#endif  // SLYTHERM_REMOTE_LINK
 
   // Wildcard topics first.
   const char* sensPrefix = "slytherm/sensors/";
@@ -722,6 +836,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, hm::topic::kConfigSensors) == 0) { handleSensorRoster(buf); return; }
   if (strcmp(topic, hm::topic::kConfigPresets) == 0) { handlePresetRoster(buf); return; }
+#ifdef SLYTHERM_OTA
+  // #61: payload deliberately ignored — any message triggers; the OTA task
+  // no-ops requests that arrive mid-phase.
+  if (strcmp(topic, hm::topic::kCmdOtaCheck) == 0) { ota::requestCheck(); return; }
+  if (strcmp(topic, hm::topic::kCmdOtaApply) == 0) { ota::requestApply(); return; }
+#endif
 
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   bool accepted = true;
@@ -916,6 +1036,13 @@ void subscribeAll() {
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sleep"};
   for (const char* t : topics) gMqtt.subscribe(t);
+#ifdef SLYTHERM_REMOTE_LINK
+  gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
+#endif
+#ifdef SLYTHERM_OTA
+  gMqtt.subscribe(hm::topic::kCmdOtaCheck);  // #61
+  gMqtt.subscribe(hm::topic::kCmdOtaApply);
+#endif
 }
 
 // State publish cache: one slot per fixed topic (diff suppression).
@@ -927,6 +1054,9 @@ enum PubIdx : uint8_t {
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
+#ifdef SLYTHERM_OTA
+  PUB_OTA,
+#endif
   PUB_COUNT
 };
 char gPubCache[PUB_COUNT][192];
@@ -937,12 +1067,49 @@ void pubState(PubIdx i, const char* topic, const char* val, bool force) {
   gMqtt.publish(topic, val);
 }
 
+#ifdef SLYTHERM_REMOTE_LINK
+// #104: retained authoritative echo (docs/11 "Authority"). Unlike pubState(),
+// this MUST publish retained (a reconnecting Remote restores from it) — still
+// diff-suppressed so a steady state doesn't hammer the broker with retained
+// writes every 500 ms tick.
+std::string gRemoteEchoCache;  // mqttTask-owned only; "" forces a republish
+
+void publishRemoteEcho(const Snapshot& s, bool force) {
+  const std::string j = hm::remoteStateJson(
+      s.heatSp, s.coolSp, s.mode, s.emHeat, s.holdType, s.holdRemainS,
+      s.preset[0] ? s.preset : "none", s.tempC, s.tempValid);
+  if (!force && j == gRemoteEchoCache) return;
+  gRemoteEchoCache = j;
+  gMqtt.publish(hm::topic::kRemoteState, j.c_str(), true);
+}
+#endif  // SLYTHERM_REMOTE_LINK
+
+// #62: furnace-busy clock for the OTA reboot gate. Updated every snapshot
+// publish (<=500 ms cadence on the mqttTask); otaSafeToReboot() below demands
+// a SUSTAINED idle window measured against this, so an OTA staged moments
+// after a heat call ends still waits the full window.
+volatile uint32_t gOtaLastBusyMs = 0;
+constexpr uint32_t kOtaIdleWindowMs = 5u * 60u * 1000u;
+
+extern "C" bool otaSafeToReboot() {
+  xSemaphoreTake(gSnapMux, portMAX_DELAY);
+  const bool idle = (strcmp(gSnap.action, "idle") == 0 ||
+                     strcmp(gSnap.action, "off") == 0) &&
+                    strcmp(gSnap.equipment, "idle") == 0;
+  xSemaphoreGive(gSnapMux);
+  if (!idle) { gOtaLastBusyMs = millis(); return false; }  // stamp even if MQTT is down
+  return millis() - gOtaLastBusyMs >= kOtaIdleWindowMs;  // idle-since-boot counts
+}
+
 void publishSnapshot(bool force) {
   Snapshot s;
   xSemaphoreTake(gSnapMux, portMAX_DELAY);
   s = gSnap;
   gSnap.lockTombstone = false;  // consumed below
   xSemaphoreGive(gSnapMux);
+  if ((strcmp(s.action, "idle") != 0 && strcmp(s.action, "off") != 0) ||
+      strcmp(s.equipment, "idle") != 0)
+    gOtaLastBusyMs = millis();
 
   char b[192];
   using namespace hm;
@@ -993,6 +1160,13 @@ void publishSnapshot(bool force) {
 #ifdef SLYTHERM_ACTUATOR_RELAY
   pubState(PUB_RELAYS, "slytherm/state/relays", s.relaysJson, force);
 #endif
+#ifdef SLYTHERM_OTA
+  { const ota::Status os = ota::status();  // #61 live client status
+    pubState(PUB_OTA, topic::kStateOta,
+             otaStateJson(ota::toString(os.state), os.progressPct,
+                          SLYTHERM_FW_VERSION, os.available, os.error).c_str(),
+             force); }
+#endif
 
   if (force) {  // per-sensor diagnostics on the heartbeat only (age ticks anyway)
     for (const auto& sp : s.sensors) {
@@ -1010,6 +1184,9 @@ void publishSnapshot(bool force) {
     // Retained empty message deletes any retained lock_clear copy (docs/06).
     gMqtt.publish(hm::topic::kCmdLockClear, "", true);
   }
+#ifdef SLYTHERM_REMOTE_LINK
+  publishRemoteEcho(s, force);
+#endif
 }
 
 void mqttTask(void*) {
@@ -1105,10 +1282,25 @@ void mqttTask(void*) {
       if (gMqtt.connect(cfg::kMqttClientId, muser, mpass,
                         hm::topic::kAvailability, 0, true, hm::payload::kOffline)) {
         gMqtt.publish(hm::topic::kAvailability, hm::payload::kOnline, true);
+#ifdef SLYTHERM_REMOTE_LINK
+        // #104: retained identity heartbeat. Liveness for a Remote is
+        // kAvailability (above) — this topic carries cid/version only (see
+        // the kControllerStatus comment in HaMqtt.h for why).
+        gMqtt.publish(hm::topic::kControllerStatus,
+                      hm::controllerStatusJson(controllerCid(), true,
+                                               SLYTHERM_FW_VERSION).c_str(),
+                      true);
+#endif
         publishDiscovery();
         gDiscoveryDirty = false;
         subscribeAll();
         memset(gPubCache, 0, sizeof(gPubCache));  // full republish after reconnect
+#ifdef SLYTHERM_REMOTE_LINK
+        gRemoteEchoCache.clear();  // force a full retained-echo republish too
+#endif
+        // #61: broker connectivity = the post-OTA self-test (network stack +
+        // app alive). Confirms a pending update; no-op otherwise.
+        ota::noteSelfTestPass();
 #ifdef SLYTHERM_UI
         telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
 #else
@@ -1991,6 +2183,7 @@ void setup() {
                  "DISABLED (logging/stub build)"
 #endif
   );
+  Serial.println("fw " SLYTHERM_FW_BUILD);  // #113: VERSION file + git sha
 
   if (cfg::kWdtPetPin >= 0) { pinMode(cfg::kWdtPetPin, OUTPUT); digitalWrite(cfg::kWdtPetPin, LOW); }
 
@@ -2013,6 +2206,18 @@ void setup() {
         gShadow.hold = 0xFF;
         Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch + hold");
       } } }
+  // #64: OTA-capability check. Both stock tables (default_8MB/S3,
+  // default_16MB/P4) are dual-app; if next is NULL the table has no second
+  // slot and the OTA client (#61) must hard-disable with a visible reason.
+  { const esp_partition_t* run = esp_ota_get_running_partition();
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+    Serial.printf("[boot] OTA %s: running=%s next=%s\n",
+                  next ? "capable" : "NOT capable (single-app table)",
+                  run ? run->label : "?", next ? next->label : "none"); }
+  // #61: pending-update validation — arms the self-test (confirmed on MQTT
+  // connect) or rolls back a crash-looping new image. No-op without
+  // -DSLYTHERM_OTA or when no update is pending.
+  ota::bootValidate();
   gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
   // Monotonic clock: resume from the persisted base (never backwards).
@@ -2189,6 +2394,8 @@ void setup() {
   // the control cadence and future TX turnaround (docs/03 §8, issue #28).
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 #endif
+  // #61: OTA task (core 0, below MQTT). No-op without -DSLYTHERM_OTA.
+  ota::begin();
 }
 
 void loop() {

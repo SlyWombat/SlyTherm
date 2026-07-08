@@ -1,5 +1,12 @@
-# Release: on tag v* build merged firmware images + manifests and attach them
-# (plus the two manual PDFs) to the GitHub release.
+# Release: on tag v* run the native test gate, build all targets (merged USB
+# images + OTA app images + manifests), sign OTA images, regenerate
+# firmware/catalog.json, attach everything (plus the two manual PDFs) to the
+# GitHub release, and commit the refreshed catalog back to main (issue #59).
+#
+# The tag MUST equal v<VERSION file> — release.py --require-tag enforces it
+# (issue #113). OTA image signing uses the OTA_SIGNING_KEY_PEM secret
+# (issue #62); when the secret is absent images ship unsigned with a warning
+# (bench only — the Controller refuses to apply unsigned images).
 #
 # NOTE: hosting web/installer on GitHub Pages is a manual follow-up — do NOT
 # configure Pages in this workflow. Until then the installer page is served
@@ -13,10 +20,10 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # create the release / upload assets
+  contents: write   # create the release / upload assets / push catalog.json
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +35,34 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build merged images + manifests
-        run: python3 tools/release.py
+      - name: Native test gate
+        run: pio test -e native
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need main to push the catalog back
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Build images + manifests + catalog
+        env:
+          OTA_SIGNING_KEY_PEM: ${{ secrets.OTA_SIGNING_KEY_PEM }}
+        run: python3 tools/release.py --require-tag "${GITHUB_REF_NAME}"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -37,5 +70,25 @@ jobs:
           files: |
             web/installer/firmware/*.bin
             web/installer/firmware/manifest_*.json
+            firmware/catalog.json
             docs/manuals/USER_MANUAL.pdf
             docs/manuals/INSTALLATION_MANUAL.pdf
+
+      - name: Commit catalog.json to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp firmware/catalog.json /tmp/catalog.json
+          git fetch origin main
+          # The build dirties the tracked catalog.json (and web/installer) —
+          # discard the working tree (the catalog is already saved to /tmp,
+          # assets are already uploaded) or the checkout refuses to switch.
+          git checkout -f -B main origin/main
+          cp /tmp/catalog.json firmware/catalog.json
+          if git diff --quiet -- firmware/catalog.json; then
+            echo "catalog unchanged"
+          else
+            git add firmware/catalog.json
+            git commit -m "release ${GITHUB_REF_NAME}: refresh firmware/catalog.json [skip ci]"
+            git push origin main
+          fi
