@@ -1406,6 +1406,7 @@ void mqttTask(void*) {
 // ============================================================================
 volatile uint32_t gLastBusRxS = 0;   // 0 = never
 volatile uint32_t gCtTxSuppressed = 0;
+volatile uint32_t gCtRxBytes = 0;    // raw UART RX bytes (stats: dead-pin vs framing)
 
 #ifdef SLYTHERM_CT485_UART
 ct485::FrameAccumulator gCtAcc;
@@ -1466,6 +1467,11 @@ void ct485Task(void*) {
     pinMode(cfg::kCt485DePin, OUTPUT);
     digitalWrite(cfg::kCt485DePin, LOW);  // receive; hardware pulldown agrees
   }
+  // Core 3.x (pioarduino 55.03.39): the IDF console owns UART0, and UART0's
+  // default pins ARE this board's RS-485 pair (U0TXD=43 / U0RXD=44). Release
+  // UART0 first or Serial2's claim on 43/44 silently loses and RX stays dead
+  // (v0.5.3 field regression right after the core jump: ok=0, bus silent).
+  Serial0.end();
   Serial2.setRxBufferSize(2048);
   Serial2.begin(ct485::kBaudDefault, SERIAL_8N1, cfg::kCt485RxPin, cfg::kCt485TxPin);
   gCtLastByteUs = micros();
@@ -1478,6 +1484,7 @@ void ct485Task(void*) {
     while (avail-- > 0) {
       const int c = Serial2.read();
       if (c < 0) break;
+      gCtRxBytes = gCtRxBytes + 1;
       const uint32_t nowUs = micros();
       const bool gapBefore =
           !gCtInProgress || (nowUs - gCtLastByteUs) >= ct485::kInterFrameGapUs;
@@ -1507,11 +1514,14 @@ void ct485Task(void*) {
       sniffRejects();
     }
     // Capture health: periodic accumulator counters while LISTEN is active.
+    // rx = raw UART bytes read — rx frozen means the UART/pins are dead (the
+    // v0.5.3 regression), rx growing with ok frozen means framing trouble.
     { static uint32_t statsMs = 0;
       if (gSniffActive && nowMs - statsMs >= 30000) { statsMs = nowMs;
         const auto& c = gCtAcc.counters();
-        telnet_log::logf("[ct485-stats] %lu ok=%lu badLen=%lu badCk=%lu over=%lu",
-                         (unsigned long)nowMs, (unsigned long)c.framesOk,
+        telnet_log::logf("[ct485-stats] %lu rx=%lu ok=%lu badLen=%lu badCk=%lu over=%lu",
+                         (unsigned long)nowMs, (unsigned long)gCtRxBytes,
+                         (unsigned long)c.framesOk,
                          (unsigned long)c.badLength, (unsigned long)c.badChecksum,
                          (unsigned long)c.overruns); } }
 #endif
