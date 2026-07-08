@@ -67,6 +67,14 @@ class FrameAccumulator {
   const Counters& counters() const { return counters_; }
   void clearCounters() { counters_ = Counters{}; }
 
+  // Bytes from the most recent REJECTED close (badLength/badChecksum) — a
+  // torn or merged burst that gap framing could not validate. Copies them to
+  // `out` (caller provides >= kMaxFrame), clears the stash, and returns the
+  // length; 0 = nothing pending. Single-slot: a second rejection before the
+  // take overwrites the first (the Counters still record every rejection).
+  // Overrun drops are not stashed — their bytes were never kept.
+  size_t takeRejected(uint8_t* out);
+
   // Drop in-progress bytes and the completed frame; counters are kept.
   void reset();
 
@@ -79,6 +87,9 @@ class FrameAccumulator {
 
   uint8_t done_[kMaxFrame] = {};
   size_t  doneLen_ = 0;
+
+  uint8_t rej_[kMaxFrame] = {};
+  size_t  rejLen_ = 0;
 
   Counters counters_;
 };

@@ -84,10 +84,20 @@ bool FrameAccumulator::feed(uint8_t byte, bool gapBefore) {
 
 bool FrameAccumulator::flush() { return closeFrame(); }
 
+size_t FrameAccumulator::takeRejected(uint8_t* out) {
+  const size_t n = rejLen_;
+  if (n) {
+    std::memcpy(out, rej_, n);
+    rejLen_ = 0;
+  }
+  return n;
+}
+
 void FrameAccumulator::reset() {
   len_ = 0;
   overflowed_ = false;
   doneLen_ = 0;
+  rejLen_ = 0;
 }
 
 bool FrameAccumulator::closeFrame() {
@@ -103,10 +113,14 @@ bool FrameAccumulator::closeFrame() {
       buf_[kOffPayloadLen] > kMaxPayload ||
       len != static_cast<size_t>(buf_[kOffPayloadLen]) + kHeaderLen + kChecksumLen) {
     counters_.badLength++;
+    std::memcpy(rej_, buf_, len);   // salvage: torn/merged burst, PC-side resync
+    rejLen_ = len;
     return false;
   }
   if (!fletcherOk(buf_, buf_[kOffPayloadLen])) {
     counters_.badChecksum++;
+    std::memcpy(rej_, buf_, len);
+    rejLen_ = len;
     return false;
   }
 

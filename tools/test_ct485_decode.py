@@ -388,3 +388,57 @@ def test_cli_decode_with_terminals(capsys):
     assert d.main(["--terminals", str(csv_file), str(cap)]) == 0
     out = capsys.readouterr().out
     assert "24V terminals: Y=0 O-B=0 W=1 G=1 D=0" in out
+
+
+# ---------------------------------------------------------------------------
+# Telnet-mirror ingest (wall-unit LISTEN stream via ct485cap.py, fw >= 0.5.2)
+# ---------------------------------------------------------------------------
+
+def _mirror_lines(frame: bytes, millis: int) -> list[str]:
+    """Render one raw frame the way sniffFrame() mirrors it."""
+    plen = frame[9]
+    payload = frame[10:10 + plen]
+    pv = " ".join(f"{b:02X}" for b in payload[:16])
+    out = [f"[ct485] {millis} {frame[1]:02X}>{frame[0]:02X} t{frame[7]:02X} l{plen}"
+           + (f" {pv}" if pv else "")]
+    for idx, off in enumerate(range(16, plen, 24)):
+        hx = " ".join(f"{b:02X}" for b in payload[off:off + 24])
+        out.append(f"[ct485+] {millis} {idx} {hx}")
+    return out
+
+
+def test_telnet_summary_line_synthesizes_frame(tmp_path):
+    log = tmp_path / "cap.log"
+    log.write_text("2026-07-08T14:52:03 [ct485] 389052 01>FF t03 l4 65 00 60 3C\n")
+    frames = d.read_capture(str(log))
+    assert len(frames) == 1
+    f = frames[0]
+    assert (f.src, f.dst, f.msg_type) == (0x01, 0xFF, 0x03)
+    assert f.synthesized and not f.truncated
+    assert f.command_code() == 0x65
+    assert d.fletcher_ok(f.raw)  # rides the normal validated-frame paths
+
+
+def test_telnet_continuation_completes_long_payload(tmp_path):
+    lines = _mirror_lines(REAL_STATUS, 700123)
+    assert len(lines) == 2  # 24B payload -> preview + one continuation
+    log = tmp_path / "cap.log"
+    log.write_text("\n".join(lines) + "\n")
+    frames = d.read_capture(str(log))
+    assert len(frames) == 1
+    assert frames[0].payload == REAL_STATUS[10:34]
+    assert not frames[0].truncated
+
+
+def test_telnet_rej_burst_recovers_merged_frames(tmp_path):
+    blob = REAL_HEAT_60 + REAL_HEAT_ACK          # merged back-to-back burst
+    lines = [f"[ct485-rej] 800500 {i} " + " ".join(f"{b:02X}" for b in blob[o:o + 24])
+             for i, o in enumerate(range(0, len(blob), 24))]
+    lines.append("[ct485-stats] 801000 ok=5 badLen=1 badCk=0 over=0")
+    log = tmp_path / "cap.log"
+    log.write_text("\n".join(lines) + "\n")
+    stats = d.CaptureStats()
+    frames = d.read_capture(str(log), stats=stats)
+    assert [f.raw for f in frames] == [REAL_HEAT_60, REAL_HEAT_ACK]
+    assert stats.garbage_bytes == 0
+    assert not frames[0].synthesized  # rej bytes are the real wire bytes

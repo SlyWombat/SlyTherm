@@ -714,6 +714,9 @@ void handlePresetRoster(const char* json) {
   xSemaphoreGive(gCmdMux);
 }
 
+extern "C" void uiSniffStart();  // defined with the LISTEN globals below
+extern "C" void uiSniffStop();
+
 void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   static char buf[1100];
   if (len >= sizeof(buf)) return;
@@ -930,6 +933,15 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, cfg::kOatTopic) == 0) {
     auto p = hm::parseSetpoint(buf, cfg::kOatIngestMinC, cfg::kOatIngestMaxC);
     if (p.ok) { gPending.hasOat = true; gPending.oatC = p.value; } else accepted = false;
+  } else if (strcmp(topic, "slytherm/cmd/sniff") == 0) {
+    // Remote LISTEN control (#71 follow-up): start/stop the CT-485 capture
+    // mirror without hands on the glass. Same persisted hooks as the LISTEN
+    // screen buttons; the Diag LISTEN screen stays a live viewer either way.
+    if (strcmp(buf, "on") == 0 || strcmp(buf, "ON") == 0 || strcmp(buf, "1") == 0)
+      uiSniffStart();
+    else if (strcmp(buf, "off") == 0 || strcmp(buf, "OFF") == 0 || strcmp(buf, "0") == 0)
+      uiSniffStop();
+    else accepted = false;
   } else if (strcmp(topic, "slytherm/cmd/sleep") == 0) {
     // #90 HA sleep override (retain-friendly): "on" forces the Sleep state
     // (e.g. a bedroom sensor / HA sleep mode), "off" forces awake, "auto"
@@ -1012,9 +1024,11 @@ struct SniffLine { char s[56]; };
 SniffLine gSniffRing[10] = {};
 volatile uint8_t gSniffHead = 0;   // next write slot (0..9), wraps at 10
 
-// Hooks: the UI task flips gSniffActive and reads the volatiles/ring above.
-extern "C" void uiSniffStart() { gSniffActive = true; }
-extern "C" void uiSniffStop()  { gSniffActive = false; }
+// Hooks: the UI task (LISTEN buttons) and the MQTT cmd handler flip
+// gSniffActive; the UI reads the volatiles/ring above. Persisted so a power
+// blip mid-capture-campaign resumes capturing on boot (restored in setup()).
+extern "C" void uiSniffStart() { gSniffActive = true;  gPrefs.putBool("sniff", true); }
+extern "C" void uiSniffStop()  { gSniffActive = false; gPrefs.putBool("sniff", false); }
 extern "C" bool uiSniffActive() { return gSniffActive; }
 extern "C" uint32_t uiSniffFrames() { return gSniffFrames; }
 extern "C" int uiSniffLines(char out[10][56]) {  // newest-first; returns count
@@ -1081,7 +1095,7 @@ void subscribeAll() {
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sensor/+/participating",
-      "slytherm/cmd/sleep"};
+      "slytherm/cmd/sleep", "slytherm/cmd/sniff"};
   for (const char* t : topics) gMqtt.subscribe(t);
 #ifdef SLYTHERM_REMOTE_LINK
   gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
@@ -1403,15 +1417,46 @@ bool gCtInProgress = false;
 void sniffFrame(const ct485::Frame& f) {
   if (!gSniffActive) return;
   gSniffFrames = gSniffFrames + 1;
+  const unsigned long ms = millis();
   char line[96];
   int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u",
-                   (unsigned long)millis(), f.src, f.dst, f.msgType, f.payloadLen);
+                   ms, f.src, f.dst, f.msgType, f.payloadLen);
   int nb = f.payloadLen; if (nb > 16) nb = 16;
   for (int i = 0; i < nb && n < (int)sizeof(line) - 3; ++i)
     n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
   telnet_log::logf("[ct485] %s", line);
   strlcpy(gSniffRing[gSniffHead].s, line, sizeof(gSniffRing[0].s));
   gSniffHead = (gSniffHead + 1) % 10;
+  // Payload bytes past the 16-byte preview go out as continuation lines
+  // ("[ct485+] <same millis> <chunk#> <hex...>", 24 B/chunk under the
+  // 128-char telnet line cap) so status blocks / config TLVs reach the
+  // PC-side decoder complete. The UI ring keeps only the preview line.
+  for (int off = 16, idx = 0; off < (int)f.payloadLen; off += 24, ++idx) {
+    n = snprintf(line, sizeof(line), "%lu %d", ms, idx);
+    for (int i = off; i < (int)f.payloadLen && i < off + 24; ++i)
+      n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
+    telnet_log::logf("[ct485+] %s", line);
+  }
+}
+
+// Mirror salvaged torn/merged bursts (FrameAccumulator::takeRejected) as
+// chunked hex — the PC decoder's resync slider recovers the frames inside.
+// Drained even while sniffing is off so a stale stash never leaks into a
+// later session's timeline.
+void sniffRejects() {
+  static uint8_t rej[ct485::kMaxFrame];  // ct485Task-only
+  size_t n;
+  while ((n = gCtAcc.takeRejected(rej)) != 0) {
+    if (!gSniffActive) continue;
+    const unsigned long ms = millis();
+    char line[96];
+    for (size_t off = 0, idx = 0; off < n; off += 24, ++idx) {
+      int p = snprintf(line, sizeof(line), "%lu %u", ms, (unsigned)idx);
+      for (size_t i = off; i < n && i < off + 24; ++i)
+        p += snprintf(line + p, sizeof(line) - p, " %02X", rej[i]);
+      telnet_log::logf("[ct485-rej] %s", line);
+    }
+  }
 }
 #endif
 
@@ -1446,6 +1491,7 @@ void ct485Task(void*) {
           sniffFrame(f);
         }
       }
+      sniffRejects();  // drain per byte: the salvage stash is single-slot
     }
     if (gCtInProgress &&
         static_cast<uint32_t>(micros() - gCtLastByteUs) >= ct485::kInterFrameGapUs) {
@@ -1458,7 +1504,16 @@ void ct485Task(void*) {
           sniffFrame(f);
         }
       }
+      sniffRejects();
     }
+    // Capture health: periodic accumulator counters while LISTEN is active.
+    { static uint32_t statsMs = 0;
+      if (gSniffActive && nowMs - statsMs >= 30000) { statsMs = nowMs;
+        const auto& c = gCtAcc.counters();
+        telnet_log::logf("[ct485-stats] %lu ok=%lu badLen=%lu badCk=%lu over=%lu",
+                         (unsigned long)nowMs, (unsigned long)c.framesOk,
+                         (unsigned long)c.badLength, (unsigned long)c.badChecksum,
+                         (unsigned long)c.overruns); } }
 #endif
     gCt->tick(nowMs);
     ct485::Frame txf;
@@ -2297,6 +2352,11 @@ void setup() {
         gShadow.hold = 0xFF;
         Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch + hold");
       } } }
+  // Restore the persisted LISTEN capture state (survives power loss so a
+  // capture campaign resumes without hands on the glass; set via the LISTEN
+  // buttons or slytherm/cmd/sniff).
+  gSniffActive = gPrefs.getBool("sniff", false);
+  if (gSniffActive) Serial.println("[boot] CT-485 LISTEN capture restored: active");
   // #64: OTA-capability check. Both stock tables (default_8MB/S3,
   // default_16MB/P4) are dual-app; if next is NULL the table has no second
   // slot and the OTA client (#61) must hard-disable with a visible reason.

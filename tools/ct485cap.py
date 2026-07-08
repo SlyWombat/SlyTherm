@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """ct485cap.py — capture the SlyTherm RS-485 LISTEN stream (issue #71).
 
-The wall unit mirrors every decoded CT-485 frame to its telnet log on TCP :23
-as a `[ct485] <millis> <src>><dst> t<msgType> l<len> <hex...>` line while the
-"LISTEN on RS-485" capture screen is active (Diag tab -> LISTEN -> Start).
+While LISTEN capture is active (Diag -> LISTEN -> Start, `slytherm/cmd/sniff on`
+over MQTT, or restored from NVS at boot — the capture runs regardless of which
+screen is showing), the wall unit mirrors the CT-485 bus to its telnet log on
+TCP :23 as:
+
+    [ct485] <millis> <src>><dst> t<msgType> l<len> <hex...>   decoded frame
+                                                              (first 16 payload B)
+    [ct485+] <millis> <chunk#> <hex...>                       payload continuation
+    [ct485-rej] <millis> <chunk#> <hex...>                    salvaged torn/merged
+                                                              burst (raw bytes)
+    [ct485-stats] <millis> ok=N badLen=N badCk=N over=N       accumulator counters
 
 This connects to that port, keeps only the `[ct485]` lines, appends them to a
 log file AND prints them live. Pure stdlib (socket) — no dependencies.
@@ -51,11 +59,12 @@ def main() -> int:
                 while b"\n" in buf:
                     raw, buf = buf.split(b"\n", 1)
                     line = raw.decode("utf-8", "replace").rstrip("\r")
-                    if "[ct485]" not in line:
+                    if "[ct485" not in line:  # [ct485] / [ct485+] / [ct485-rej] / [ct485-stats]
                         continue
                     n += 1
-                    print(line)
-                    f.write(line + "\n")
+                    stamped = time.strftime("%Y-%m-%dT%H:%M:%S") + " " + line
+                    print(stamped)
+                    f.write(stamped + "\n")
         except KeyboardInterrupt:
             print()
         finally:

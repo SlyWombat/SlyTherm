@@ -270,6 +270,41 @@ static void test_accumulator_overrun_counted_once_then_recovers() {
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength); // overrun != badLength
 }
 
+static void test_accumulator_salvages_merged_burst() {
+  // Two frames back-to-back with NO gap: gap framing must reject the merged
+  // buffer (badLength) but stash the raw bytes for PC-side resync recovery.
+  ct485::Frame a = makeDemandFrame();
+  ct485::Frame b = makeDemandFrame();
+  b.msgType = static_cast<uint8_t>(ct485::MsgType::kGetStatus);
+  b.payloadLen = 0;
+  uint8_t rawA[ct485::kMaxFrame], rawB[ct485::kMaxFrame];
+  const size_t lenA = ct485::encode(a, rawA);
+  const size_t lenB = ct485::encode(b, rawB);
+
+  ct485::FrameAccumulator acc;
+  feedAll(acc, rawA, lenA);
+  for (size_t i = 0; i < lenB; i++) acc.feed(rawB[i], false);  // gapless join
+  TEST_ASSERT_FALSE(acc.flush());
+  TEST_ASSERT_EQUAL_UINT32(1, acc.counters().badLength);
+
+  uint8_t rej[ct485::kMaxFrame];
+  const size_t n = acc.takeRejected(rej);
+  TEST_ASSERT_EQUAL_UINT32(lenA + lenB, n);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawA, rej, lenA);          // both frames intact
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawB, rej + lenA, lenB);
+  TEST_ASSERT_EQUAL_UINT32(0, acc.takeRejected(rej));      // take clears the slot
+
+  // A bad-checksum reject is stashed too.
+  uint8_t rawC[ct485::kMaxFrame];
+  const size_t lenC = ct485::encode(a, rawC);
+  rawC[ct485::kHeaderLen] ^= 0x40;
+  feedAll(acc, rawC, lenC);
+  TEST_ASSERT_FALSE(acc.flush());
+  TEST_ASSERT_EQUAL_UINT32(1, acc.counters().badChecksum);
+  TEST_ASSERT_EQUAL_UINT32(lenC, acc.takeRejected(rej));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(rawC, rej, lenC);
+}
+
 static void test_accumulator_empty_gap_is_not_a_frame() {
   ct485::FrameAccumulator acc;
   TEST_ASSERT_FALSE(acc.feed(0x01, true));  // first byte ever, nothing to close
@@ -294,6 +329,7 @@ int main() {
   RUN_TEST(test_accumulator_torn_frame_then_good);
   RUN_TEST(test_accumulator_bad_checksum_counted);
   RUN_TEST(test_accumulator_overrun_counted_once_then_recovers);
+  RUN_TEST(test_accumulator_salvages_merged_burst);
   RUN_TEST(test_accumulator_empty_gap_is_not_a_frame);
   return UNITY_END();
 }

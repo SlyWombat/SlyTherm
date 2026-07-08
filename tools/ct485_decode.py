@@ -15,6 +15,9 @@ Usage examples:
   ct485_decode.py --terminals cap.terminals.csv cap.log   # annotate with 24V terminal states
   ct485_decode.py --field-dict dict.md capture.log  # emit/update field-dictionary markdown
   ct485_decode.py --no-gap-split blob.txt           # continuous hex blob, resync across lines
+  ct485_decode.py ct485-capture.log                 # wall-unit telnet mirror lines
+                                                    # ("[ct485] ..." via ct485cap.py) are
+                                                    # auto-detected alongside hex captures
 """
 from __future__ import annotations
 
@@ -190,6 +193,10 @@ class Frame:
     source: str = ""
     index: int = 0                  # ordinal across the whole run
     terminals: str | None = None    # 24V annotation, filled by --terminals
+    synthesized: bool = False       # built from a telnet [ct485] summary line —
+                                    # subnet/sendMethod/param/nodeType/pktNum are
+                                    # zero-filled, checksum recomputed
+    truncated: bool = False         # telnet mirror clips payloads at 16 bytes
 
     @property
     def dst(self) -> int: return self.raw[OFF_DST]
@@ -276,6 +283,20 @@ ISO_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 HEX_PAIR_RE = re.compile(r"^[0-9A-Fa-f]{2}$")
 LONG_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
+# Wall-unit telnet mirror (ct485cap.py): "[ct485] <millis> <SS>><DD> t<TT> l<N> <hex...>",
+# optionally prefixed with an ISO wall-clock stamp. Pre-parsed summary, not a raw
+# frame: header metadata beyond src/dst/msgType is absent and the preview line
+# clips payloads at 16 bytes (main_thermostat.cpp sniffFrame). Firmware >= 0.5.2
+# follows the preview with "[ct485+]" payload-continuation chunks, mirrors
+# gap-framing rejects (torn/merged bursts) as raw "[ct485-rej]" chunks, and
+# emits periodic "[ct485-stats]" counter lines.
+SUMMARY_RE = re.compile(
+    r"\[ct485\]\s+(\d+)\s+([0-9A-Fa-f]{2})>([0-9A-Fa-f]{2})"
+    r"\s+t([0-9A-Fa-f]{2})\s+l(\d+)((?:\s+[0-9A-Fa-f]{2})*)\s*$")
+CONT_RE = re.compile(r"\[ct485\+\]\s+(\d+)\s+(\d+)((?:\s+[0-9A-Fa-f]{2})+)\s*$")
+REJ_RE = re.compile(r"\[ct485-rej\]\s+(\d+)\s+(\d+)((?:\s+[0-9A-Fa-f]{2})+)\s*$")
+STATS_RE = re.compile(r"\[ct485-stats\]\s")
+
 
 def _parse_iso_ms(line: str) -> float | None:
     m = ISO_TS_RE.search(line)
@@ -286,6 +307,107 @@ def _parse_iso_ms(line: str) -> float | None:
         return dt.timestamp() * 1000.0
     except ValueError:
         return None
+
+
+def parse_summary_line(line: str) -> Frame | None:
+    """Build a Frame from one telnet-mirror summary line, or None if not one.
+
+    The summary already carries src/dst/msgType/payload, so a raw frame is
+    synthesized around them (zero-filled header metadata, recomputed Fletcher)
+    to ride the normal decode/summary/diff/field-dict paths. ts_ms is the ISO
+    wall stamp when present (epoch ms), else the device millis."""
+    m = SUMMARY_RE.search(line)
+    if not m:
+        return None
+    declared = int(m.group(5))
+    payload = bytes(int(t, 16) for t in m.group(6).split())
+    header = bytes((
+        int(m.group(3), 16),          # dst
+        int(m.group(2), 16),          # src
+        0, 0, 0, 0, 0,                # subnet/sendMethod/param/nodeType: not mirrored
+        int(m.group(4), 16),          # msgType
+        0,                            # packetNum: not mirrored
+        len(payload)))
+    ts_ms = _parse_iso_ms(line)
+    if ts_ms is None:
+        ts_ms = float(m.group(1))
+    return Frame(raw=build_frame(header, payload), ts_ms=ts_ms,
+                 synthesized=True, truncated=declared > len(payload))
+
+
+class TelnetAssembler:
+    """Stateful reassembly of the telnet-mirror line family.
+
+    feed() returns frames completed BY that line (rej-group flushes); the
+    summary frame itself is appended immediately by the caller and then
+    extended in place by later [ct485+] continuations (same device millis).
+    [ct485-rej] chunks accumulate until their group ends (chunk# restarts or a
+    different line type arrives) and are then re-framed with the resync
+    slider — recovering the valid frames a merged burst contains. finish()
+    flushes a trailing rej group at end of input."""
+
+    def __init__(self, source: str, stats: CaptureStats):
+        self.source = source
+        self.stats = stats
+        self.last_summary: Frame | None = None
+        self.last_summary_ms: str | None = None
+        self.declared: int = 0
+        self.rej_ms: str | None = None
+        self.rej_ts: float | None = None
+        self.rej_line: int | None = None
+        self.rej_blob = bytearray()
+
+    def _flush_rej(self) -> list[Frame]:
+        if not self.rej_blob:
+            return []
+        found, garbage = extract_frames(bytes(self.rej_blob))
+        self.stats.garbage_bytes += garbage
+        out = [Frame(raw=raw, ts_ms=self.rej_ts, line_no=self.rej_line,
+                     source=self.source) for _, raw in found]
+        self.rej_blob = bytearray()
+        self.rej_ms = None
+        return out
+
+    def feed(self, line: str, line_no: int) -> tuple[bool, list[Frame]]:
+        """(handled, completed_frames) for one input line."""
+        m = REJ_RE.search(line)
+        if m:
+            out: list[Frame] = []
+            if m.group(2) == "0" or self.rej_ms != m.group(1):
+                out = self._flush_rej()          # new group starts
+                self.rej_ms = m.group(1)
+                self.rej_ts = _parse_iso_ms(line) or float(m.group(1))
+                self.rej_line = line_no
+            self.rej_blob.extend(int(t, 16) for t in m.group(3).split())
+            return True, out
+
+        out = self._flush_rej()                  # any other line ends a group
+
+        m = CONT_RE.search(line)
+        if m:
+            f = self.last_summary
+            if f is not None and self.last_summary_ms == m.group(1):
+                payload = f.payload + bytes(int(t, 16) for t in m.group(3).split())
+                header = f.raw[:OFF_PAYLOAD_LEN] + bytes((len(payload),))
+                f.raw = build_frame(header, payload)
+                f.truncated = self.declared > len(payload)
+            return True, out                     # orphan continuation: dropped
+
+        sf = parse_summary_line(line)
+        if sf is not None:
+            sf.line_no, sf.source = line_no, self.source
+            sm = SUMMARY_RE.search(line)
+            self.last_summary = sf
+            self.last_summary_ms = sm.group(1)
+            self.declared = int(sm.group(5))
+            return True, out + [sf]
+
+        if STATS_RE.search(line):
+            return True, out
+        return False, out
+
+    def finish(self) -> list[Frame]:
+        return self._flush_rej()
 
 
 def parse_line(line: str) -> tuple[float | None, int | None, bytes]:
@@ -361,9 +483,14 @@ def read_capture(path: str, gap_split: bool = True,
     text = Path(path).read_text(errors="replace")
     frames: list[Frame] = []
 
+    asm = TelnetAssembler(path, stats)
     if gap_split:
         for line_no, line in enumerate(text.splitlines(), 1):
             stats.lines += 1
+            handled, done = asm.feed(line, line_no)
+            frames.extend(done)
+            if handled:
+                continue
             ts_ms, gap_us, data = parse_line(line)
             if not data:
                 continue
@@ -377,6 +504,10 @@ def read_capture(path: str, gap_split: bool = True,
         meta: list[tuple[float | None, int | None]] = []  # per byte: (ts, line)
         for line_no, line in enumerate(text.splitlines(), 1):
             stats.lines += 1
+            handled, done = asm.feed(line, line_no)  # mirror lines never join the blob
+            frames.extend(done)
+            if handled:
+                continue
             ts_ms, _gap, data = parse_line(line)
             buf.extend(data)
             meta.extend([(ts_ms, line_no)] * len(data))
@@ -386,6 +517,7 @@ def read_capture(path: str, gap_split: bool = True,
             ts_ms, line_no = meta[off]
             frames.append(Frame(raw=raw, ts_ms=ts_ms, line_no=line_no, source=path))
 
+    frames.extend(asm.finish())
     stats.frames += len(frames)
     return frames
 
@@ -573,6 +705,11 @@ def decode_frame(frame: Frame) -> list[str]:
         f" pktNum=0x{pn:02X}(dataflow={1 if pn & 0x80 else 0},"
         f"ver={'1.0' if pn & 0x20 else '2.0'},chunk={pn & 0x1F})"
         f" payloadLen={f.raw[OFF_PAYLOAD_LEN]}")
+    if f.synthesized:
+        out.append("  (from telnet summary: subnet/sendMethod/param/nodeType/pktNum"
+                   " not mirrored, zero-filled"
+                   + (f"; payload clipped at {len(f.payload)}B by the mirror"
+                      if f.truncated else "") + ")")
     if f.gap_us is not None:
         out.append(f"  bus gap before frame: {f.gap_us} us")
     if f.terminals:
