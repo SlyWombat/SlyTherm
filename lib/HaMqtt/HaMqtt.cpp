@@ -827,6 +827,11 @@ std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
                              HoldType holdType, uint32_t holdRemainS,
                              const std::string& activePreset,
                              float fusedTempC, bool fusedTempValid) {
+  // Quantize the fused temp to 0.1 °C (display granularity). The glue
+  // diff-suppresses on the serialized string, and this topic is RETAINED —
+  // full-precision fusion wobble would defeat the diff and re-write the
+  // retained echo every control tick (measured 1 Hz on the bench).
+  fusedTempC = std::round(fusedTempC * 10.0f) / 10.0f;
   return Obj()
       .num("heatC", heatC)
       .num("coolC", coolC)

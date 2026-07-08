@@ -838,6 +838,18 @@ static void test_remote_state_json_round_trip() {
   TEST_ASSERT_TRUE(has(j, "\"fusedTempC\":21.3"));
   TEST_ASSERT_TRUE(has(j, "\"fusedTempValid\":true"));
 
+  // Retained-echo churn guard: fusedTempC is quantized to 0.1 °C so fusion
+  // wobble below display granularity serializes identically (the glue
+  // diff-suppresses on the string).
+  std::string a = remoteStateJson(21.0f, 25.5f, Mode::kHeat, false,
+                                   HoldType::kTwoHours, 7032, "home",
+                                   23.2933f, true);
+  std::string b = remoteStateJson(21.0f, 25.5f, Mode::kHeat, false,
+                                   HoldType::kTwoHours, 7032, "home",
+                                   23.3141f, true);
+  TEST_ASSERT_TRUE(has(a, "\"fusedTempC\":23.3"));
+  TEST_ASSERT_EQUAL_STRING(a.c_str(), b.c_str());
+
   j = remoteStateJson(18.0f, 24.0f, Mode::kOff, true, HoldType::kNone, 0,
                       "none", 0.0f, false);
   assertCoherentJson(j);
