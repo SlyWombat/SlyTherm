@@ -105,7 +105,9 @@
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
-#include "telnet_log.h"   // WiFi-accessible debug log (port 23)
+#include "telnet_log.h"
+#include "boot_guard.h"       // #122/#123: boot counter + crash telemetry
+#include "coredump_server.h"  // #124: LAN coredump pull   // WiFi-accessible debug log (port 23)
 #endif
 
 #include "thermostat_config.h"
@@ -219,6 +221,13 @@ struct Pending {
   PresenceSample presence[16]; size_t presenceCount = 0;
   // #90: HA sleep override (retained slytherm/cmd/sleep: on/off/auto).
   bool hasSleepOverride = false; SleepOverride sleepOverride = SleepOverride::kAuto;
+  // #118: Remote vacation/ack intents (applied via the same control-task
+  // functions the local UI's popIntent path uses).
+  bool hasVacation = false;
+  uint16_t vacStartDays = 0, vacNights = 1;
+  float vacHeatC = 0, vacCoolC = 0;
+  bool hasClearVacation = false;
+  bool hasAckAlarms = false;
   bool anyInbound = false;  // any accepted MQTT traffic (setpoint-staleness clock)
 };
 Pending gPending;
@@ -236,13 +245,20 @@ struct Snapshot {
   char equipment[12] = "idle";
   float modulationPct = 0;
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
-  char fusionJson[176] = "{}";
+  char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
   uint32_t compMinOffRemainS = 0;
   bool compLockedOut = false;
   char changeReason[24] = "none";
   bool asleep = false;  // #90: night Sleep state (slytherm/state/sleep)
   bool healthProblem = false;
   char lastError[safety::kAlarmTextLen] = {};
+  // #116/#118: Remote-echo extras — alarm summary (count + first two RAW
+  // texts; the Remote renders them through friendlyAlarm()) + vacation banner.
+  uint8_t alarmN = 0;
+  char alarm1[safety::kAlarmTextLen] = {};
+  char alarm2[safety::kAlarmTextLen] = {};
+  bool vacationActive = false;
+  char vacBanner[32] = {};
   hm::LockState lockState = hm::LockState::kUnlocked;
   hm::LockLevel lockLevel = hm::LockLevel::kSettingsOnly;
   bool pinSet = false;
@@ -747,6 +763,19 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
                 gPending.hold = hm::HoldCommand{};
                 gPending.hold.clear = true;
                 break;
+              case hm::RemoteIntentType::kVacation:  // #118
+                gPending.hasVacation = true;
+                gPending.vacStartDays = ri.vacStartDays;
+                gPending.vacNights = ri.vacNights;
+                gPending.vacHeatC = ri.heatC;
+                gPending.vacCoolC = ri.coolC;
+                break;
+              case hm::RemoteIntentType::kClearVacation:  // #118
+                gPending.hasClearVacation = true;
+                break;
+              case hm::RemoteIntentType::kAckAlarms:  // #118
+                gPending.hasAckAlarms = true;
+                break;
             }
             gPending.anyInbound = true;
           }
@@ -817,11 +846,28 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (strncmp(topic, offPrefix, strlen(offPrefix)) == 0) {
     const char* id = topic + strlen(offPrefix);
     const char* slash = strchr(id, '/');
-    if (!slash || strcmp(slash, "/offset") != 0) return;
+    if (!slash) return;
     char name[kSensorNameLen];
     size_t n = static_cast<size_t>(slash - id);
     if (n == 0 || n >= sizeof(name)) return;
     memcpy(name, id, n); name[n] = '\0';
+    // #119: slytherm/cmd/sensor/<id>/participating (ON/OFF) — absolute set,
+    // same roster-dirty path uiToggleSensor uses (re-validated by control).
+    if (strcmp(slash, "/participating") == 0) {
+      const bool on = strcmp(buf, "ON") == 0;
+      if (!on && strcmp(buf, "OFF") != 0) return;  // reject junk payloads
+      xSemaphoreTake(gCmdMux, portMAX_DELAY);
+      uint8_t idx = findSensor(name);
+      if (idx != 0 && idx != 0xFF && idx < kFusionSlots && gSensorTable[idx].used) {
+        gSensorTable[idx].inRoster = on;
+        gPending.sensorRosterDirty = true;
+        gPending.anyInbound = true;
+        gDiscoveryDirty = true;
+      }
+      xSemaphoreGive(gCmdMux);
+      return;
+    }
+    if (strcmp(slash, "/offset") != 0) return;
     auto p = hm::parseSensorOffset(buf);
     if (!p.ok) return;
     xSemaphoreTake(gCmdMux, portMAX_DELAY);
@@ -1034,7 +1080,8 @@ void subscribeAll() {
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
-      "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sleep"};
+      "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sensor/+/participating",
+      "slytherm/cmd/sleep"};
   for (const char* t : topics) gMqtt.subscribe(t);
 #ifdef SLYTHERM_REMOTE_LINK
   gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
@@ -1077,7 +1124,9 @@ std::string gRemoteEchoCache;  // mqttTask-owned only; "" forces a republish
 void publishRemoteEcho(const Snapshot& s, bool force) {
   const std::string j = hm::remoteStateJson(
       s.heatSp, s.coolSp, s.mode, s.emHeat, s.holdType, s.holdRemainS,
-      s.preset[0] ? s.preset : "none", s.tempC, s.tempValid);
+      s.preset[0] ? s.preset : "none", s.tempC, s.tempValid,
+      s.action, s.equipment, s.alarmN, s.alarm1, s.alarm2,   // #116
+      s.vacationActive, s.vacBanner);                        // #118
   if (!force && j == gRemoteEchoCache) return;
   gRemoteEchoCache = j;
   gMqtt.publish(hm::topic::kRemoteState, j.c_str(), true);
@@ -1226,6 +1275,8 @@ void mqttTask(void*) {
 #ifdef SLYTHERM_UI
     wifi_prov::service(nowMs);
     telnet_log::poll();
+    coredump_server::poll();          // #124: LAN coredump pull (:8082)
+    boot_guard::healthyTick(millis());  // #122/#123: clears the counter after sustained uptime
     gWifiConnected = wifi_prov::connected();
     (void)haveWifi; (void)haveMqtt; (void)lastWifiTryMs;
     // Silent auto-discovery: Wi-Fi up but no broker saved -> browse mDNS for the
@@ -1298,6 +1349,8 @@ void mqttTask(void*) {
 #ifdef SLYTHERM_REMOTE_LINK
         gRemoteEchoCache.clear();  // force a full retained-echo republish too
 #endif
+        // #123: retained boot/crash telemetry (built once at boot).
+        gMqtt.publish("slytherm/boot", boot_guard::statusJson(), true);
         // #61: broker connectivity = the post-OTA self-test (network stack +
         // app alive). Confirms a pending update; no-op otherwise.
         ota::noteSelfTestPass();
@@ -1581,6 +1634,29 @@ void consumeCommands(uint32_t nowS) {
     if (p.hold.clear) gModeSm->clearHold();
     else gModeSm->startHold(p.hold.type, nowS);
   }
+  if (p.hasVacation) {  // #118: mirror of ui::IntentType::kSetVacation
+    gVac = VacationState{};
+    gVac.on = true;
+    gVac.startDays = p.vacStartDays;
+    gVac.nights = p.vacNights < 1 ? 1 : p.vacNights;
+    gVac.heatC = p.vacHeatC;
+    gVac.coolC = p.vacCoolC;
+    if (clockIsSynced()) anchorVacation();
+    saveVacation();
+    Serial.printf("[vac] remote request start+%ud len %un heat %.1f cool %.1f\n",
+                  (unsigned)gVac.startDays, (unsigned)gVac.nights,
+                  (double)gVac.heatC, (double)gVac.coolC);
+  }
+  if (p.hasClearVacation) {  // #118: mirror of kClearVacation
+    if (gVac.applied && gModeSm) {
+      gModeSm->setHeatSetpoint(gVac.priorHeatC);
+      gModeSm->setCoolSetpoint(gVac.priorCoolC);
+    }
+    gVac = VacationState{};
+    saveVacation();
+    Serial.println("[vac] remote cancel -> resume normal operation");
+  }
+  if (p.hasAckAlarms) gSup->alarms().ackAll();  // #118
   if (p.hasFan) gFanMode = p.fan;
   if (p.lockClear) {
     uiLock(); gUi.clearUserPin(); uiUnlock();  // saveLockBlob() self-locks below
@@ -1800,10 +1876,17 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
     sp.offsetC = st.offsetC;
   }
   xSemaphoreGive(gCmdMux);
+  // #117: name the dominant participant so a Remote can mark "Following".
+  char domId[kSensorNameLen] = "";
+  { const uint8_t dom = gFusion.dominantParticipant();
+    xSemaphoreTake(gCmdMux, portMAX_DELAY);
+    if (dom < kFusionSlots && gSensorTable[dom].used)
+      strlcpy(domId, gSensorTable[dom].name, sizeof(domId));
+    xSemaphoreGive(gCmdMux); }
   snprintf(s.fusionJson, sizeof(s.fusionJson),
-           "{\"temp\":%.2f,\"tier\":\"%s\",\"participants\":[%s],\"occupied\":%s}",
+           "{\"temp\":%.2f,\"tier\":\"%s\",\"participants\":[%s],\"occupied\":%s,\"dominant\":\"%s\"}",
            static_cast<double>(fused.value), tierName(fused.tier), parts,
-           occupied ? "true" : "false");
+           occupied ? "true" : "false", domId);
 
   // Compressor diagnostics (glue estimate; the guard owns the real timers).
   if (gGuard.running()) s.compMinOffRemainS = 0;
@@ -1818,6 +1901,13 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   strlcpy(s.changeReason, changeReason, sizeof(s.changeReason));
   s.healthProblem = gSup->healthProblem();
   strlcpy(s.lastError, gSup->alarms().lastErrorText(), sizeof(s.lastError));
+  // #116: alarm summary for the Remote echo — same registry the wall UI renders.
+  s.alarmN = gSup->alarms().count();
+  if (s.alarmN > 0) strlcpy(s.alarm1, gSup->alarms().at(0).text, sizeof(s.alarm1));
+  if (s.alarmN > 1) strlcpy(s.alarm2, gSup->alarms().at(1).text, sizeof(s.alarm2));
+  // #118: vacation banner (same source as gUi.setVacation below).
+  s.vacationActive = gVacUiActive;
+  strlcpy(s.vacBanner, gVacBanner, sizeof(s.vacBanner));
   uiLock();
   s.lockState = static_cast<hm::LockState>(gUi.lockState());
   s.lockLevel = static_cast<hm::LockLevel>(gUi.lockLevel());
@@ -2184,6 +2274,7 @@ void setup() {
 #endif
   );
   Serial.println("fw " SLYTHERM_FW_BUILD);  // #113: VERSION file + git sha
+  boot_guard::begin("bootg");  // #122/#123: count this boot + capture reason/coredump
 
   if (cfg::kWdtPetPin >= 0) { pinMode(cfg::kWdtPetPin, OUTPUT); digitalWrite(cfg::kWdtPetPin, LOW); }
 

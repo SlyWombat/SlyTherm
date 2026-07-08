@@ -294,7 +294,12 @@ bool parseNextTargetJson(const char* json, NextTarget& out);
 // mirrors above); the src/ glue maps this struct onto ui::UiIntent /
 // ModeStateMachine calls. Vacation intents are out of scope for #104 (no
 // Remote consumer yet); extend here when that lands.
-enum class RemoteIntentType : uint8_t { kSetpoints, kMode, kPreset, kHold, kClearHold };
+enum class RemoteIntentType : uint8_t {
+  kSetpoints, kMode, kPreset, kHold, kClearHold,
+  // #118: vacation + alarm-ack round-trip from a Remote (same re-validated
+  // control-task path as the local UI's intents).
+  kVacation, kClearVacation, kAckAlarms
+};
 
 struct RemoteIntent {
   uint32_t id = 0;   // Remote-local monotonic sequence number, for dedupe;
@@ -306,6 +311,8 @@ struct RemoteIntent {
   Mode mode = Mode::kOff;   // kMode
   std::string preset;       // kPreset
   HoldType hold = HoldType::kNone;  // kHold
+  uint16_t vacStartDays = 0;  // kVacation: start offset in days (0-30)
+  uint16_t vacNights = 1;     // kVacation: length in nights (1-60); eco setpoints ride heatC/coolC
 };
 
 // {"id":<uint32>,"type":"setpoints"|"mode"|"preset"|"hold"|"clear_hold", ...}
@@ -392,10 +399,30 @@ std::string otaStateJson(const char* state, uint8_t progressPct,
 //    "fusedTempC":21.3,"fusedTempValid":true}
 // Mirrors docs/11 "Authority": setpoints/mode/hold/active preset/fused-temp
 // are exactly what the Controller owns and a Remote must reconcile to.
+// #116 additions: action/equipment reuse the exact wire strings of
+// slytherm/state/action + state/active_equipment; up to two raw alarm texts
+// (the Remote's UI applies friendlyAlarm() at render, same as the Controller
+// panel); #118 adds the vacation banner. A Remote parses ALL of these as
+// OPTIONAL (defaults idle/idle/0/none) so a new Remote accepts an old
+// Controller's echo during a mixed-version OTA window.
 std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
                              HoldType holdType, uint32_t holdRemainS,
                              const std::string& activePreset,
-                             float fusedTempC, bool fusedTempValid);
+                             float fusedTempC, bool fusedTempValid,
+                             const char* action = "idle",
+                             const char* equipment = "idle",
+                             uint8_t alarmN = 0,
+                             const char* alarm1 = "", const char* alarm2 = "",
+                             bool vacationActive = false,
+                             const char* vacBanner = "");
+
+// #123: retained boot/crash telemetry (slytherm/boot, slytherm/remote/<id>/boot):
+//   {"reason":"panic","coredump":true,"prevUptimeS":8130,"version":"0.4.3","bootCount":17}
+// reason is the fixed esp_reset_reason() mapping in src/boot_guard.cpp;
+// prevUptimeS==0 means unknown (RTC lost, e.g. true power cycle).
+std::string bootStatusJson(const char* reason, bool coredump,
+                            uint32_t prevUptimeS, const char* version,
+                            uint32_t bootCount);
 
 // Discovery payloads for the diagnostic entities (docs/06 "Entities" table).
 std::string activeEquipmentDiscoveryJson();      // sensor

@@ -137,7 +137,70 @@ bool parseRemoteStateJson(const char* json, ControllerEcho& out) {
   v = findValue(json, "fusedTempValid");
   if (v == nullptr || !boolToken(v, e.fusedTempValid)) return false;
 
+  // #116/#118 extras — optional (mixed-version tolerance; defaults above).
+  v = findValue(json, "action");
+  if (v != nullptr && !stringToken(v, e.action)) return false;  // present-but-junk still rejects
+  v = findValue(json, "equipment");
+  if (v != nullptr && !stringToken(v, e.equipment)) return false;
+  v = findValue(json, "alarmN");
+  if (v != nullptr) {
+    uint32_t n = 0;
+    if (!uint32Token(v, n)) return false;
+    e.alarmN = static_cast<uint8_t>(n > 255 ? 255 : n);
+  }
+  v = findValue(json, "alarm1");
+  if (v != nullptr && !stringToken(v, e.alarm1)) return false;
+  v = findValue(json, "alarm2");
+  if (v != nullptr && !stringToken(v, e.alarm2)) return false;
+  v = findValue(json, "vacation");
+  if (v != nullptr && !boolToken(v, e.vacationActive)) return false;
+  v = findValue(json, "vacBanner");
+  if (v != nullptr && !stringToken(v, e.vacBanner)) return false;
+
   out = e;
+  return true;
+}
+
+bool parseFusionJson(const char* json, FusionView& out) {
+  out = FusionView{};
+  if (json == nullptr || *skipWs(json) != '{') return false;
+  FusionView f;
+  const char* v = findValue(json, "temp");
+  if (v == nullptr || !numberToken(v, f.temp)) return false;
+  v = findValue(json, "occupied");
+  if (v == nullptr || !boolToken(v, f.occupied)) return false;
+  v = findValue(json, "participants");
+  if (v == nullptr || *v != '[') return false;
+  const char* q = skipWs(v + 1);
+  while (*q && *q != ']' && f.participantCount < kMaxFusionParticipants) {
+    if (*q != '"') return false;
+    std::string id;
+    if (!stringToken(q, id)) return false;
+    strncpy(f.participants[f.participantCount], id.c_str(),
+            sizeof(f.participants[0]) - 1);
+    ++f.participantCount;
+    q += id.size() + 2;  // past the closing quote (contract emits no escapes in ids)
+    q = skipWs(q);
+    if (*q == ',') q = skipWs(q + 1);
+  }
+  v = findValue(json, "dominant");  // optional (older Controllers omit it)
+  if (v != nullptr && !stringToken(v, f.dominant)) return false;
+  out = f;
+  return true;
+}
+
+bool parsePresenceJson(const char* json, PresenceView& out) {
+  out = PresenceView{};
+  if (json == nullptr || *skipWs(json) != '{') return false;
+  PresenceView pv;
+  const char* v = findValue(json, "occupied");
+  if (v == nullptr || !boolToken(v, pv.occupied)) return false;
+  v = findValue(json, "last_seen");
+  if (v != nullptr) {
+    uint32_t t = 0;
+    if (uint32Token(v, t)) pv.lastSeenEpoch = t;  // malformed -> unknown, not reject
+  }
+  out = pv;
   return true;
 }
 
@@ -186,6 +249,24 @@ std::string intentHoldJson(uint32_t id, Hold h) {
 
 std::string intentClearHoldJson(uint32_t id) {
   return idPrefix(id) + "clear_hold\"}";
+}
+
+std::string intentVacationJson(uint32_t id, uint16_t startDays, uint16_t nights,
+                               float heatC, float coolC) {
+  char b[96];
+  snprintf(b, sizeof(b),
+           "vacation\",\"startDays\":%u,\"nights\":%u,\"heatC\":%.1f,\"coolC\":%.1f}",
+           static_cast<unsigned>(startDays), static_cast<unsigned>(nights),
+           static_cast<double>(heatC), static_cast<double>(coolC));
+  return idPrefix(id) + b;
+}
+
+std::string intentClearVacationJson(uint32_t id) {
+  return idPrefix(id) + "clear_vacation\"}";
+}
+
+std::string intentAckAlarmsJson(uint32_t id) {
+  return idPrefix(id) + "ack_alarms\"}";
 }
 
 }  // namespace remote_link

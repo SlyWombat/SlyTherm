@@ -55,12 +55,42 @@ struct ControllerEcho {
   std::string activePreset;  // "none" normalized to "" (no active preset)
   float fusedTempC = 0.0f;
   bool  fusedTempValid = false;
+  // #116/#118 extras — OPTIONAL on the wire (see parse note below):
+  std::string action = "idle";      // idle|heating|cooling|fan|defrosting|off
+  std::string equipment = "idle";   // idle|gas_heat|hp_heat|cool|defrost
+  uint8_t alarmN = 0;               // active alarm count on the Controller
+  std::string alarm1, alarm2;       // first raw texts (render via friendlyAlarm)
+  bool vacationActive = false;
+  std::string vacBanner;
 };
 
-// Strict whole-object parse: every field above is REQUIRED (the Controller
-// always emits all of them); any missing/malformed field rejects the whole
-// echo — a Remote must never reconcile to a half-parsed authority state.
+// Strict whole-object parse for the ORIGINAL fields (any missing/malformed
+// one rejects the whole echo — a Remote must never reconcile to a
+// half-parsed authority state). The #116/#118 extras are the deliberate
+// exception: OPTIONAL with safe defaults, so a new Remote accepts an old
+// Controller's echo during a mixed-version OTA window.
 bool parseRemoteStateJson(const char* json, ControllerEcho& out);
+
+// ---- DOWN: slytherm/state/fusion (#117) ----
+//   {"temp":22.87,"tier":"fused_remotes","participants":["living","bedroom"],
+//    "occupied":false,"dominant":"living"}   (dominant optional, "" if absent)
+constexpr size_t kMaxFusionParticipants = 8;
+struct FusionView {
+  float temp = 0.0f;
+  bool occupied = false;
+  char participants[kMaxFusionParticipants][24] = {};
+  uint8_t participantCount = 0;
+  std::string dominant;  // sensor id currently driving demand ("" = none)
+};
+bool parseFusionJson(const char* json, FusionView& out);
+
+// ---- DOWN: slytherm/sensors/<id>/presence (#117) ----
+//   {"occupied":false, "last_seen":1783481508}
+struct PresenceView {
+  bool occupied = false;
+  uint32_t lastSeenEpoch = 0;  // unix seconds; 0 = absent/unknown
+};
+bool parsePresenceJson(const char* json, PresenceView& out);
 
 // ---- DOWN: slytherm/controller/status ----
 struct ControllerStatus {
@@ -78,6 +108,11 @@ std::string intentModeJson(uint32_t id, Mode m);
 std::string intentPresetJson(uint32_t id, const std::string& preset);
 std::string intentHoldJson(uint32_t id, Hold h);   // h != kNone
 std::string intentClearHoldJson(uint32_t id);
+// #118: vacation window + eco setpoints; clear; alarm acknowledgement.
+std::string intentVacationJson(uint32_t id, uint16_t startDays, uint16_t nights,
+                               float heatC, float coolC);
+std::string intentClearVacationJson(uint32_t id);
+std::string intentAckAlarmsJson(uint32_t id);
 
 const char* toString(Mode m);   // exact wire strings
 const char* toString(Hold h);

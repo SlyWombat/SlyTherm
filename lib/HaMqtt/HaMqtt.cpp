@@ -405,6 +405,26 @@ bool parseRemoteIntentJson(const char* json, RemoteIntent& out) {
     else return false;
   } else if (typeStr == "clear_hold") {
     r.type = RemoteIntentType::kClearHold;
+  } else if (typeStr == "vacation") {  // #118
+    r.type = RemoteIntentType::kVacation;
+    uint32_t sd = 0, ni = 0;
+    const char* sv = findValue(json, "startDays");
+    const char* nv = findValue(json, "nights");
+    if (sv == nullptr || !uint32Token(sv, sd) || sd > 30) return false;
+    if (nv == nullptr || !uint32Token(nv, ni) || ni < 1 || ni > 60) return false;
+    float h = 0.0f, c = 0.0f;
+    const char* hv = findValue(json, "heatC");
+    const char* cv = findValue(json, "coolC");
+    if (hv == nullptr || !numberToken(hv, h) || h < kClimateMinTempC || h > kClimateMaxTempC) return false;
+    if (cv == nullptr || !numberToken(cv, c) || c < kClimateMinTempC || c > kClimateMaxTempC) return false;
+    r.vacStartDays = static_cast<uint16_t>(sd);
+    r.vacNights = static_cast<uint16_t>(ni);
+    r.heatC = h;
+    r.coolC = c;
+  } else if (typeStr == "clear_vacation") {  // #118
+    r.type = RemoteIntentType::kClearVacation;
+  } else if (typeStr == "ack_alarms") {      // #118
+    r.type = RemoteIntentType::kAckAlarms;
   } else {
     return false;
   }
@@ -843,17 +863,32 @@ std::string controllerStatusJson(const std::string& cid, bool online,
       .close();
 }
 
+std::string bootStatusJson(const char* reason, bool coredump,
+                            uint32_t prevUptimeS, const char* version,
+                            uint32_t bootCount) {
+  return Obj()
+      .str("reason", reason ? reason : "unknown")
+      .raw("coredump", coredump ? "true" : "false")
+      .num("prevUptimeS", prevUptimeS)
+      .str("version", version ? version : "")
+      .num("bootCount", bootCount)
+      .close();
+}
+
 std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
                              HoldType holdType, uint32_t holdRemainS,
                              const std::string& activePreset,
-                             float fusedTempC, bool fusedTempValid) {
+                             float fusedTempC, bool fusedTempValid,
+                             const char* action, const char* equipment,
+                             uint8_t alarmN, const char* alarm1, const char* alarm2,
+                             bool vacationActive, const char* vacBanner) {
   // Quantize the fused temp to 0.1 °C (display granularity). The glue
   // diff-suppresses on the serialized string, and this topic is RETAINED —
   // full-precision fusion wobble would defeat the diff and re-write the
   // retained echo every control tick (measured 1 Hz on the bench).
   fusedTempC = std::round(fusedTempC * 10.0f) / 10.0f;
-  return Obj()
-      .num("heatC", heatC)
+  Obj o;
+  o.num("heatC", heatC)
       .num("coolC", coolC)
       .str("mode", toString(mode))
       .raw("emHeat", emHeat ? "true" : "false")
@@ -861,8 +896,13 @@ std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
       .num("holdRemainS", holdRemainS)
       .str("activePreset", activePreset)
       .num("fusedTempC", fusedTempC)
-      .raw("fusedTempValid", fusedTempValid ? "true" : "false")
-      .close();
+      .raw("fusedTempValid", fusedTempValid ? "true" : "false");
+  // #116/#118 (optional on the Remote side — see the header note).
+  o.str("action", action).str("equipment", equipment).num("alarmN", alarmN);
+  if (alarmN > 0 && alarm1 && alarm1[0]) o.str("alarm1", alarm1);
+  if (alarmN > 1 && alarm2 && alarm2[0]) o.str("alarm2", alarm2);
+  o.raw("vacation", vacationActive ? "true" : "false").str("vacBanner", vacBanner);
+  return o.close();
 }
 
 std::string lockDiscoveryJson() {

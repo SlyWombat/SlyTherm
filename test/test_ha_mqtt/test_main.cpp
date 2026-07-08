@@ -882,6 +882,66 @@ static void test_ota_topics_and_state_json() {
   TEST_ASSERT_TRUE(has(j, "\"error\":\"verify: signature rejected\""));
 }
 
+static void test_remote_state_json_extras() {  // #116/#118
+  using dettson::HoldType;
+  std::string j = remoteStateJson(21.0f, 25.5f, Mode::kHeat, false,
+                                   HoldType::kNone, 0, "home", 21.3f, true,
+                                   "heating", "gas_heat", 2,
+                                   "OAT stale: HP paused", "sensor stale",
+                                   true, "Vacation until Jul 12");
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"action\":\"heating\""));
+  TEST_ASSERT_TRUE(has(j, "\"equipment\":\"gas_heat\""));
+  TEST_ASSERT_TRUE(has(j, "\"alarmN\":2"));
+  TEST_ASSERT_TRUE(has(j, "\"alarm1\":\"OAT stale: HP paused\""));
+  TEST_ASSERT_TRUE(has(j, "\"alarm2\":\"sensor stale\""));
+  TEST_ASSERT_TRUE(has(j, "\"vacation\":true"));
+  TEST_ASSERT_TRUE(has(j, "\"vacBanner\":\"Vacation until Jul 12\""));
+  // Defaults (an old-style call): extras still emitted, idle/0/none.
+  j = remoteStateJson(21.0f, 25.5f, Mode::kHeat, false, HoldType::kNone, 0,
+                      "home", 21.3f, true);
+  TEST_ASSERT_TRUE(has(j, "\"action\":\"idle\""));
+  TEST_ASSERT_TRUE(has(j, "\"alarmN\":0"));
+  TEST_ASSERT_FALSE(has(j, "\"alarm1\""));  // no texts when none active
+  TEST_ASSERT_TRUE(has(j, "\"vacation\":false"));
+}
+
+static void test_boot_status_json() {  // #123
+  std::string j = bootStatusJson("panic", true, 8130, "0.5.0", 3);
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"reason\":\"panic\""));
+  TEST_ASSERT_TRUE(has(j, "\"coredump\":true"));
+  TEST_ASSERT_TRUE(has(j, "\"prevUptimeS\":8130"));
+  TEST_ASSERT_TRUE(has(j, "\"version\":\"0.5.0\""));
+  TEST_ASSERT_TRUE(has(j, "\"bootCount\":3"));
+  j = bootStatusJson(nullptr, false, 0, nullptr, 0);
+  TEST_ASSERT_TRUE(has(j, "\"reason\":\"unknown\""));
+  TEST_ASSERT_TRUE(has(j, "\"coredump\":false"));
+}
+
+static void test_parse_remote_intent_vacation_and_ack() {  // #118
+  RemoteIntent r;
+  TEST_ASSERT_TRUE(parseRemoteIntentJson(
+      "{\"id\":21,\"type\":\"vacation\",\"startDays\":2,\"nights\":7,"
+      "\"heatC\":16.0,\"coolC\":28.0}", r));
+  TEST_ASSERT_EQUAL(static_cast<int>(RemoteIntentType::kVacation), static_cast<int>(r.type));
+  TEST_ASSERT_EQUAL_UINT16(2, r.vacStartDays);
+  TEST_ASSERT_EQUAL_UINT16(7, r.vacNights);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 16.0f, r.heatC);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 28.0f, r.coolC);
+  TEST_ASSERT_TRUE(parseRemoteIntentJson("{\"id\":22,\"type\":\"clear_vacation\"}", r));
+  TEST_ASSERT_EQUAL(static_cast<int>(RemoteIntentType::kClearVacation), static_cast<int>(r.type));
+  TEST_ASSERT_TRUE(parseRemoteIntentJson("{\"id\":23,\"type\":\"ack_alarms\"}", r));
+  TEST_ASSERT_EQUAL(static_cast<int>(RemoteIntentType::kAckAlarms), static_cast<int>(r.type));
+  // Bounds: nights 0 and startDays 31 reject whole.
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":24,\"type\":\"vacation\",\"startDays\":0,\"nights\":0,"
+      "\"heatC\":16.0,\"coolC\":28.0}", r));
+  TEST_ASSERT_FALSE(parseRemoteIntentJson(
+      "{\"id\":25,\"type\":\"vacation\",\"startDays\":31,\"nights\":7,"
+      "\"heatC\":16.0,\"coolC\":28.0}", r));
+}
+
 static void test_parse_remote_intent_setpoints_and_mode() {
   RemoteIntent ri;
   TEST_ASSERT_TRUE(parseRemoteIntentJson(
@@ -981,6 +1041,9 @@ int main() {
   RUN_TEST(test_remote_link_topics);
   RUN_TEST(test_controller_status_json);
   RUN_TEST(test_remote_state_json_round_trip);
+  RUN_TEST(test_remote_state_json_extras);
+  RUN_TEST(test_boot_status_json);
+  RUN_TEST(test_parse_remote_intent_vacation_and_ack);
   RUN_TEST(test_ota_topics_and_state_json);
   RUN_TEST(test_parse_remote_intent_setpoints_and_mode);
   RUN_TEST(test_parse_remote_intent_preset_hold_and_clear);

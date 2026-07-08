@@ -80,6 +80,66 @@ static void test_parse_rejects_bad_tokens() {
       "\"fusedTempC\":21,\"fusedTempValid\":true}", e));
 }
 
+static void test_parse_echo_extras_and_old_format() {  // #116/#118
+  // NEW-format echo: extras present.
+  const char* j =
+      "{\"heatC\":19.2,\"coolC\":22,\"mode\":\"cool\",\"emHeat\":false,"
+      "\"hold\":\"none\",\"holdRemainS\":0,\"activePreset\":\"none\","
+      "\"fusedTempC\":22.8,\"fusedTempValid\":true,"
+      "\"action\":\"cooling\",\"equipment\":\"cool\",\"alarmN\":1,"
+      "\"alarm1\":\"OAT stale\",\"vacation\":true,\"vacBanner\":\"Vacation until Jul 12\"}";
+  ControllerEcho e;
+  TEST_ASSERT_TRUE(parseRemoteStateJson(j, e));
+  TEST_ASSERT_EQUAL_STRING("cooling", e.action.c_str());
+  TEST_ASSERT_EQUAL_STRING("cool", e.equipment.c_str());
+  TEST_ASSERT_EQUAL_UINT8(1, e.alarmN);
+  TEST_ASSERT_EQUAL_STRING("OAT stale", e.alarm1.c_str());
+  TEST_ASSERT_TRUE(e.vacationActive);
+  TEST_ASSERT_EQUAL_STRING("Vacation until Jul 12", e.vacBanner.c_str());
+  // OLD-format echo (pre-#116 Controller): extras absent -> defaults, still
+  // parses — the mixed-version OTA-window guarantee.
+  const char* old =
+      "{\"heatC\":19.2,\"coolC\":22,\"mode\":\"cool\",\"emHeat\":false,"
+      "\"hold\":\"none\",\"holdRemainS\":0,\"activePreset\":\"none\","
+      "\"fusedTempC\":22.8,\"fusedTempValid\":true}";
+  TEST_ASSERT_TRUE(parseRemoteStateJson(old, e));
+  TEST_ASSERT_EQUAL_STRING("idle", e.action.c_str());
+  TEST_ASSERT_EQUAL_UINT8(0, e.alarmN);
+  TEST_ASSERT_FALSE(e.vacationActive);
+}
+
+static void test_parse_fusion_and_presence() {  // #117
+  FusionView f;
+  TEST_ASSERT_TRUE(parseFusionJson(
+      "{\"temp\":22.87,\"tier\":\"fused_remotes\",\"participants\":[\"living\",\"bedroom\"],"
+      "\"occupied\":false,\"dominant\":\"living\"}", f));
+  TEST_ASSERT_EQUAL_UINT8(2, f.participantCount);
+  TEST_ASSERT_EQUAL_STRING("living", f.participants[0]);
+  TEST_ASSERT_EQUAL_STRING("bedroom", f.participants[1]);
+  TEST_ASSERT_FALSE(f.occupied);
+  TEST_ASSERT_EQUAL_STRING("living", f.dominant.c_str());
+  // dominant optional (older Controller).
+  TEST_ASSERT_TRUE(parseFusionJson(
+      "{\"temp\":21.0,\"tier\":\"local\",\"participants\":[],\"occupied\":true}", f));
+  TEST_ASSERT_EQUAL_UINT8(0, f.participantCount);
+  TEST_ASSERT_TRUE(f.occupied);
+  TEST_ASSERT_TRUE(f.dominant.empty());
+  PresenceView pv;
+  TEST_ASSERT_TRUE(parsePresenceJson("{\"occupied\":false, \"last_seen\":1783481508}", pv));
+  TEST_ASSERT_FALSE(pv.occupied);
+  TEST_ASSERT_EQUAL_UINT32(1783481508u, pv.lastSeenEpoch);
+}
+
+static void test_intent_vacation_ack_bytes() {  // #118 — byte-exact vs the #104 parser
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"id\":21,\"type\":\"vacation\",\"startDays\":2,\"nights\":7,\"heatC\":16.0,\"coolC\":28.0}",
+      intentVacationJson(21, 2, 7, 16.0f, 28.0f).c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"id\":22,\"type\":\"clear_vacation\"}",
+                           intentClearVacationJson(22).c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"id\":23,\"type\":\"ack_alarms\"}",
+                           intentAckAlarmsJson(23).c_str());
+}
+
 // ---------- controller status ----------
 
 static void test_parse_controller_status() {
@@ -123,6 +183,9 @@ int main() {
   RUN_TEST(test_parse_rejects_missing_field_whole);
   RUN_TEST(test_parse_rejects_bad_tokens);
   RUN_TEST(test_parse_controller_status);
+  RUN_TEST(test_parse_echo_extras_and_old_format);
+  RUN_TEST(test_parse_fusion_and_presence);
+  RUN_TEST(test_intent_vacation_ack_bytes);
   RUN_TEST(test_intent_setpoints_bytes);
   RUN_TEST(test_intent_mode_bytes);
   RUN_TEST(test_intent_preset_hold_clear_bytes);

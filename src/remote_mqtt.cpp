@@ -9,10 +9,12 @@
 #include <WiFi.h>
 
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 #include "HaMqtt.h"        // parsePresetRosterJson (pure, shared with the Controller)
 #include "RemoteLink.h"    // #102 codec: echo/status parsers + intent builders
+#include "boot_guard.h"   // #123: boot/crash telemetry payload
 #include "mqtt_cfg.h"
 #include "remote_wifi.h"
 
@@ -81,6 +83,70 @@ uint32_t gLastIntentMs = 0;
 bool gControllerOnline = false;
 char gControllerCid[16] = {};
 
+// ---- #117: live sensor rows, assembled from the Controller's retained
+// topics (roster gives order+names; per-sensor topics fill the cells). ----
+constexpr const char* kFusionTopic = "slytherm/state/fusion";
+struct RowSrc {
+  bool used = false;
+  char id[24] = {};
+  char name[24] = {};
+  uint32_t maxAgeS = 900;
+  bool hasTemp = false;
+  float tempC = 0.0f;
+  uint32_t ageS = 0xFFFFFFFFu;
+  bool participating = false;
+  bool occupied = false;
+  uint32_t lastSeenEpoch = 0;
+  bool dominant = false;
+};
+RowSrc gRows[kMaxSensorRows] = {};
+uint8_t gRowCount = 0;
+bool gRowsDirty = false;      // rebuild + push into the model on the next loop
+bool gFusionOccupied = false;
+
+RowSrc* rowById(const char* id) {
+  for (uint8_t i = 0; i < gRowCount; ++i)
+    if (strncmp(gRows[i].id, id, sizeof(gRows[i].id)) == 0) return &gRows[i];
+  return nullptr;
+}
+
+// Push the assembled rows + presence into the UiModel (1 Hz max via gRowsDirty).
+void publishRowsToModel() {
+  SensorRow rows[kMaxSensorRows] = {};
+  uint8_t n = 0;
+  const uint32_t nowEpoch = static_cast<uint32_t>(time(nullptr));
+  const bool clockOk = nowEpoch > 1600000000u;  // pre-NTP: ages unknown
+  // Presence line: freshest last_seen across rows (mirrors the Controller).
+  bool anyReporting = false, present = false;
+  uint32_t bestAge = 0xFFFFFFFFu;
+  const char* bestRoom = "";
+  for (uint8_t i = 0; i < gRowCount && n < kMaxSensorRows; ++i) {
+    const RowSrc& r = gRows[i];
+    if (!r.used) continue;
+    SensorRow& o = rows[n++];
+    strlcpy(o.name, r.name, sizeof(o.name));
+    o.tempC = r.tempC;
+    o.occupied = r.occupied;
+    o.ageS = r.ageS == 0xFFFFFFFFu ? 0 : r.ageS;
+    o.participating = r.participating;
+    o.healthy = r.hasTemp && r.ageS != 0xFFFFFFFFu && r.ageS < r.maxAgeS;
+    o.dominant = r.dominant;
+    uint32_t occAge = 0xFFFFFFFFu;
+    if (r.occupied) occAge = 0;
+    else if (clockOk && r.lastSeenEpoch > 0 && nowEpoch >= r.lastSeenEpoch)
+      occAge = nowEpoch - r.lastSeenEpoch;
+    o.lastOccAgeS = occAge;
+    if (r.lastSeenEpoch > 0 || r.occupied) anyReporting = true;
+    if (r.occupied) present = true;
+    if (occAge < bestAge) { bestAge = occAge; bestRoom = r.name; }
+  }
+  L();
+  gModel->setSensorRows(rows, n);
+  gModel->setPresence(anyReporting, present || (bestAge < 3u * 3600u), anyReporting,
+                      bestRoom, bestAge);
+  U();
+}
+
 void applyEcho(const rl::ControllerEcho& e) {
   L();
   gModel->setSetpoints(e.heatC, e.coolC);
@@ -101,6 +167,35 @@ void applyEcho(const rl::ControllerEcho& e) {
   gModel->setHoldStatus(h, e.holdRemainS);
   gModel->setActivePreset(e.activePreset.c_str());
   gModel->setFusedTemp(e.fusedTempC, e.fusedTempValid);
+  // #116: action + equipment (wire strings from state/action|active_equipment).
+  HvacAction a = HvacAction::kIdle;
+  if (e.action == "heating") a = HvacAction::kHeating;
+  else if (e.action == "cooling") a = HvacAction::kCooling;
+  else if (e.action == "fan") a = HvacAction::kFanOnly;
+  else if (e.action == "defrosting") a = HvacAction::kDefrosting;
+  gModel->setHvacAction(a);
+  uint8_t eq = kEquipNone;
+  if (e.equipment == "gas_heat") eq = kEquipGas;
+  else if (e.equipment == "hp_heat") eq = kEquipHpHeat;
+  else if (e.equipment == "cool") eq = kEquipHpCool;
+  else if (e.equipment == "defrost") eq = kEquipGas | kEquipHpHeat;  // tempering
+  gModel->setActiveEquipment(eq);
+  // #116: alarm summary — only touch the (dirtying) alarm list on change.
+  static std::string sAlarmCache;
+  std::string alarmSig;
+  alarmSig.reserve(96);
+  alarmSig += static_cast<char>('0' + (e.alarmN % 10));
+  alarmSig += '|'; alarmSig += e.alarm1; alarmSig += '|'; alarmSig += e.alarm2;
+  if (alarmSig != sAlarmCache) {
+    sAlarmCache = alarmSig;
+    gModel->clearAlarms();
+    if (e.alarmN > 0 && !e.alarm1.empty()) gModel->pushAlarm(e.alarm1.c_str(), 0);
+    if (e.alarmN > 1 && !e.alarm2.empty()) gModel->pushAlarm(e.alarm2.c_str(), 0);
+    // More active than we carry texts for: a truthful overflow marker.
+    if (e.alarmN > 2) gModel->pushAlarm("(more alarms on the Controller)", 0);
+  }
+  // #118: vacation banner round-trip.
+  gModel->setVacation(e.vacationActive, e.vacBanner.c_str());
   U();
 }
 
@@ -149,6 +244,80 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     ota::requestCheck();   // payload ignored; no-op mid-phase (#111)
   } else if (strcmp(topic, gOtaApplyTopic) == 0) {
     ota::requestApply();
+  } else if (strcmp(topic, "slytherm/config/sensors") == 0) {  // #117 roster
+    std::vector<hm::SensorRosterEntry> roster;
+    if (!hm::parseSensorRosterJson(buf, roster)) return;
+    RowSrc fresh[kMaxSensorRows] = {};
+    uint8_t n = 0;
+    for (const auto& e : roster) {
+      if (n >= kMaxSensorRows) break;
+      RowSrc& r = fresh[n];
+      r.used = true;
+      strlcpy(r.id, e.id.c_str(), sizeof(r.id));
+      strlcpy(r.name, e.name.empty() ? e.id.c_str() : e.name.c_str(), sizeof(r.name));
+      if (e.hasMaxAge && e.maxAgeS > 0) r.maxAgeS = e.maxAgeS;
+      if (RowSrc* prev = rowById(r.id)) {  // keep live cells across roster refreshes
+        r.hasTemp = prev->hasTemp; r.tempC = prev->tempC; r.ageS = prev->ageS;
+        r.participating = prev->participating; r.occupied = prev->occupied;
+        r.lastSeenEpoch = prev->lastSeenEpoch; r.dominant = prev->dominant;
+      }
+      ++n;
+    }
+    memcpy(gRows, fresh, sizeof(gRows));
+    gRowCount = n;
+    gRowsDirty = true;
+    Serial.printf("[link] sensor roster: %u rooms\n", n);
+  } else if (strcmp(topic, kFusionTopic) == 0) {  // #117 occupancy + dominant
+    rl::FusionView f;
+    if (!rl::parseFusionJson(buf, f)) return;
+    gFusionOccupied = f.occupied;
+    for (uint8_t i = 0; i < gRowCount; ++i)
+      gRows[i].dominant = !f.dominant.empty() &&
+                          strncmp(gRows[i].id, f.dominant.c_str(), sizeof(gRows[i].id)) == 0;
+    gRowsDirty = true;
+  } else if (strncmp(topic, "slytherm/state/sensor/", 22) == 0) {  // #117 age|participating
+    char id[24];
+    const char* rest = topic + 22;
+    const char* slash = strchr(rest, '/');
+    if (!slash) return;
+    size_t n = static_cast<size_t>(slash - rest);
+    if (n == 0 || n >= sizeof(id)) return;
+    memcpy(id, rest, n); id[n] = '\0';
+    RowSrc* r = rowById(id);
+    if (r == nullptr) return;
+    if (strcmp(slash, "/age") == 0) {
+      char* end = nullptr;
+      const unsigned long v = strtoul(buf, &end, 10);
+      if (end != buf) { r->ageS = static_cast<uint32_t>(v); gRowsDirty = true; }
+    } else if (strcmp(slash, "/participating") == 0) {
+      r->participating = strcmp(buf, "ON") == 0;
+      gRowsDirty = true;
+    }
+  } else if (strncmp(topic, "slytherm/sensors/", 17) == 0) {  // #117 state|presence
+    char id[24];
+    const char* rest = topic + 17;
+    const char* slash = strchr(rest, '/');
+    if (!slash) return;
+    size_t n = static_cast<size_t>(slash - rest);
+    if (n == 0 || n >= sizeof(id)) return;
+    memcpy(id, rest, n); id[n] = '\0';
+    RowSrc* r = rowById(id);
+    if (r == nullptr) return;
+    if (strcmp(slash, "/state") == 0) {
+      hm::SensorReading sr;
+      if (hm::parseSensorJson(buf, sr) && sr.hasTemp) {
+        r->hasTemp = true; r->tempC = sr.tempC; r->ageS = 0;
+        if (sr.hasOcc) r->occupied = sr.occupied;
+        gRowsDirty = true;
+      }
+    } else if (strcmp(slash, "/presence") == 0) {
+      rl::PresenceView pv;
+      if (rl::parsePresenceJson(buf, pv)) {
+        r->occupied = pv.occupied;
+        if (pv.lastSeenEpoch > 0) r->lastSeenEpoch = pv.lastSeenEpoch;
+        gRowsDirty = true;
+      }
+    }
   } else if (strcmp(topic, kOutdoorTemp) == 0) {
     // Controller-published outdoor temp (plain float): feeds the top-bar
     // "Outside" readout and lets the #92 splash gate on the live link.
@@ -228,8 +397,17 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(kAvailability);      // Controller liveness (LWT-backed)
     gMqtt.subscribe(kPresetRoster);      // live preset roster
     gMqtt.subscribe(kOutdoorTemp);       // top-bar Outside readout
+    gMqtt.subscribe("slytherm/config/sensors");          // #117 roster
+    gMqtt.subscribe(kFusionTopic);                        // #117 occupancy/dominant
+    gMqtt.subscribe("slytherm/state/sensor/+/age");       // #117 staleness
+    gMqtt.subscribe("slytherm/state/sensor/+/participating");
+    gMqtt.subscribe("slytherm/sensors/+/state");          // #117 per-room temp
+    gMqtt.subscribe("slytherm/sensors/+/presence");       // #117 presence
     gMqtt.subscribe(gOtaCheckTopic);     // #111 OTA drive (per-Remote)
     gMqtt.subscribe(gOtaApplyTopic);
+    { char t[48];  // #123: retained boot/crash telemetry (built once at boot)
+      snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
+      gMqtt.publish(t, boot_guard::statusJson(), true); }
     gOtaStateCache[0] = 0;               // republish OTA status after (re)connect
     // #111: broker connectivity = the post-OTA self-test (the Controller is
     // deliberately NOT required — OTA must work on a Remote with no
@@ -293,8 +471,16 @@ void pumpIntents() {
         break;
       }
       case IntentType::kClearHold: j = rl::intentClearHoldJson(gIntentId + 1); break;
+      case IntentType::kSetVacation:  // #118
+        j = rl::intentVacationJson(gIntentId + 1, it.vacStartDays, it.vacNights,
+                                   it.heatC, it.coolC);
+        break;
+      case IntentType::kClearVacation: j = rl::intentClearVacationJson(gIntentId + 1); break;  // #118
+      case IntentType::kAckAlarms: j = rl::intentAckAlarmsJson(gIntentId + 1); break;          // #118
       default:
-        Serial.printf("[link] intent type %d has no wire form yet, dropped\n", static_cast<int>(it.type));
+        // Every user-visible intent must round-trip or not exist (#118) —
+        // reaching this is a bug in whoever added a new IntentType.
+        Serial.printf("[link] BUG: intent type %d has no wire form, dropped\n", static_cast<int>(it.type));
         continue;
     }
 
@@ -336,6 +522,13 @@ void loop() {
   if (gMqtt.connected()) {
     gMqtt.loop();
     pumpIntents();
+    // #117: batch row updates into the model at 1 Hz max.
+    static uint32_t sLastRowsMs = 0;
+    if (gRowsDirty && nowMs - sLastRowsMs >= 1000) {
+      sLastRowsMs = nowMs;
+      gRowsDirty = false;
+      publishRowsToModel();
+    }
     // #111: live OTA client status, ~1 Hz, diff-suppressed. NOT retained
     // (a stale "downloading" after reboot would mislead; the cache reset
     // on connect republishes the current state instead).
@@ -358,6 +551,23 @@ void loop() {
 
 bool connected() { return gMqtt.connected(); }
 bool controllerOnline() { return gControllerOnline; }
+
+void toggleSensorParticipation(const char* displayName) {
+  // #119: the shared UI hands us the DISPLAY name; map back to the roster id
+  // and publish the inverse of the current state. No optimistic flip — the
+  // button renders from the echoed per-sensor participating topic (#117), so
+  // a lost publish self-corrects instead of lying.
+  if (displayName == nullptr || !gMqtt.connected()) return;
+  for (uint8_t i = 0; i < gRowCount; ++i) {
+    if (strncmp(gRows[i].name, displayName, sizeof(gRows[i].name)) != 0) continue;
+    char t[64];
+    snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", gRows[i].id);
+    gMqtt.publish(t, gRows[i].participating ? "OFF" : "ON");
+    Serial.printf("[link] participation %s -> %s\n", gRows[i].id,
+                  gRows[i].participating ? "OFF" : "ON");
+    return;
+  }
+}
 uint32_t attempts() { return gAttempts; }
 
 }  // namespace remote_mqtt

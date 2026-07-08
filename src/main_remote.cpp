@@ -18,11 +18,14 @@
 #include <esp_ota_ops.h>
 
 #include "UiModel.h"
+#include "boot_guard.h"       // #122/#123: reset-loop latch + crash telemetry
+#include "coredump_server.h"  // #124: LAN coredump pull (:8082)
 #include "ota_client.h"  // #111: no-op inlines unless -DSLYTHERM_OTA
 #include "remote_mqtt.h"
 #include "remote_net_guard.h"
 #include "remote_wifi.h"
 #include "slytherm_ui.h"
+#include "telnet_log.h"       // #126: live logs on :23 (ring-replay on connect)
 #include "ui/ui_port.h"
 
 using namespace dettson;
@@ -53,12 +56,9 @@ void fillDemoState() {
   gUi.setSetpoints(20.0f, 24.0f);
   gUi.setUserMode(UserMode::kOff);
   gUi.setHvacAction(HvacAction::kIdle);
-  SensorRow rows[2] = {};
-  strlcpy(rows[0].name, "Wall unit", sizeof(rows[0].name));
-  rows[0].tempC = 21.5f; rows[0].participating = true; rows[0].healthy = true; rows[0].dominant = true; rows[0].occupied = true;
-  strlcpy(rows[1].name, "Bedroom", sizeof(rows[1].name));
-  rows[1].tempC = 20.1f; rows[1].participating = true; rows[1].healthy = true; rows[1].lastOccAgeS = 5400;
-  gUi.setSensorRows(rows, 2);
+  // #117: NO demo sensor rows — the Sensors tab renders "No room sensor
+  // reporting" truthfully until the Controller's retained roster/sensor
+  // topics arrive (seconds after MQTT connect).
   DisplayState::PresetView pv[3] = {};
   strlcpy(pv[0].name, "home", sizeof(pv[0].name));  pv[0].heatC = 20.0f; pv[0].coolC = 24.0f;
   strlcpy(pv[1].name, "away", sizeof(pv[1].name));  pv[1].heatC = 16.0f; pv[1].coolC = 28.0f;
@@ -70,7 +70,8 @@ void fillDemoState() {
 // Wall-UI task (core 0), mirroring the Controller's uiTask: renders gUi and
 // routes touch into it. Never touches the network.
 void uiTask(void*) {
-  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/false, /*firstRun=*/false);
+  // #122: >=3 consecutive abnormal boots -> the shared reduced safe screen.
+  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), /*firstRun=*/false);
   for (;;) {
     slytherm_ui::service();
     remote_net_guard::service();  // #109 blocking panel (lv top layer)
@@ -87,13 +88,13 @@ void uiTask(void*) {
 // must link.
 extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
 extern "C" bool uiClock24() { return gClock24; }
-extern "C" void uiToggleSensor(const char*) {}   // #102: forward to Controller
+extern "C" void uiToggleSensor(const char* name) { remote_mqtt::toggleSensorParticipation(name); }  // #119
 extern "C" void uiSniffStart() {}
 extern "C" void uiSniffStop() {}
 extern "C" bool uiSniffActive() { return false; }
 extern "C" uint32_t uiSniffFrames() { return 0; }
 extern "C" int uiSniffLines(char[10][56]) { return 0; }
-extern "C" void uiClearReducedMode() { ESP.restart(); }  // no reset-loop latch here yet
+extern "C" void uiClearReducedMode() { boot_guard::clearLatch(); ESP.restart(); }  // #122
 extern "C" void uiNoteTouch() {}                 // #90 sleep state is Controller-side
 
 void setup() {
@@ -107,6 +108,8 @@ void setup() {
                 ESP.getChipModel(), ESP.getChipRevision() / 100,
                 ESP.getChipRevision() % 100, ESP.getFlashChipSize() / (1024 * 1024),
                 psramFound() ? "OK" : "NOT FOUND");
+
+  boot_guard::begin("bootg");  // #122/#123: count this boot + reason/coredump
 
   gPrefs.begin("remote", false);
   gClock24 = gPrefs.getBool("clk24", false);
@@ -123,10 +126,17 @@ void setup() {
 
   gUiMux = xSemaphoreCreateMutex();
   gUi.setHasBus(false);   // #101: busless persona — no RS-485/CT-485 UI
+  // #120: restore the screen lock — a reboot must never be a lock bypass
+  // (restored state comes back LOCKED; corrupt/missing blob fails OPEN).
+  { UiModel::LockPersistBlob lb;
+    if (gPrefs.getBytes("lock", &lb, sizeof(lb)) == sizeof(lb))
+      gUi.restoreLock(&lb, millis() / 1000); }
   // Pre-link placeholder only: the #102 link overwrites setpoints/mode/hold/
   // preset/fused-temp from the Controller's retained echo within seconds of
   // MQTT connecting. Sensor rows/outdoor stay demo until their feed lands.
   fillDemoState();
+
+  telnet_log::begin();  // #126: live logs on :23, ring-replays recent history
 
   remote_wifi::begin();
   remote_mqtt::attachModel(&gUi, gUiMux);  // #102: echo -> model, intents -> broker
@@ -141,6 +151,8 @@ void setup() {
 void loop() {
   remote_wifi::loop();
   remote_mqtt::loop();
+  telnet_log::poll();       // #126
+  coredump_server::poll();  // #124: LAN coredump pull (:8082)
 
   // Feed link health + wall clock into the model (the UI renders these live).
   // One-shot NTP once WiFi is up (same servers/TZ as the Controller, #69):
@@ -170,13 +182,23 @@ void loop() {
       gUi.setClock(c);
     }
     gUi.tick(nowMs / 1000);
+    // #120: persist the lock on change (same shadow-compare discipline as the
+    // Controller's saveLockBlob; human-rate writes, NVS wear negligible).
+    static UiModel::LockPersistBlob sShadowLock{};
+    UiModel::LockPersistBlob lb;
+    gUi.saveLock(&lb);
     xSemaphoreGive(gUiMux);
+    if (memcmp(&lb, &sShadowLock, sizeof(lb)) != 0) {
+      sShadowLock = lb;
+      gPrefs.putBytes("lock", &lb, sizeof(lb));
+    }
+    boot_guard::healthyTick(nowMs);  // #122: sustained uptime clears the latch
   }
 
   static uint32_t lastBeatMs = 0;
   if (nowMs - lastBeatMs >= 5000) {
     lastBeatMs = nowMs;
-    Serial.printf("alive t=%lus heap=%u touch=%s wifi=%s ip=%s mqtt=%s\n", nowMs / 1000,
+    telnet_log::logf("alive t=%lus heap=%u touch=%s wifi=%s ip=%s mqtt=%s", nowMs / 1000,
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   slytherm_ui::portTouchOk() ? "OK" : "FAIL",
                   remote_wifi::connected() ? "OK" : "FAIL",

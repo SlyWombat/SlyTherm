@@ -35,4 +35,9 @@ bool connected();          // broker link up
 bool controllerOnline();   // slytherm/availability == online (LWT-backed)
 uint32_t attempts();       // cumulative broker connect attempts (#109 guard)
 
+// #119: flip a room's fusion participation on the Controller (publishes the
+// inverse of the current echoed state to slytherm/cmd/sensor/<id>/participating).
+// Takes the DISPLAY name the shared UI's Sensors tab hands to uiToggleSensor.
+void toggleSensorParticipation(const char* displayName);
+
 }  // namespace remote_mqtt

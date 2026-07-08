@@ -271,6 +271,18 @@ def main() -> None:
                     f" OTA slot (#64) — it would not be OTA-flashable")
             app_out = OUT_DIR / f"{ota['id']}-{version}.app.bin"
             shutil.copyfile(app, app_out)
+            # #125: archive the matching ELF (gzipped) with the release —
+            # a pulled coredump (#124) is undecodable without the EXACT ELF.
+            # A missing ELF FAILS the release: publishing without it silently
+            # breaks the crash-debug chain for every unit that installs it.
+            elf = app.with_suffix(".elf")
+            if not elf.is_file():
+                die(f"{env}: {elf} missing — cannot archive symbols (#125)")
+            elf_out = OUT_DIR / f"{ota['id']}-{version}.elf.gz"
+            import gzip
+            with open(elf, "rb") as fin, gzip.open(elf_out, "wb", compresslevel=6) as fout:
+                shutil.copyfileobj(fin, fout)
+            results.append((f"{env} (elf)", elf_out, elf_out.stat().st_size, None))
             sha = hashlib.sha256(app_out.read_bytes()).hexdigest()
             entry = {
                 "id": ota["id"],
