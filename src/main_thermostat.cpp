@@ -94,10 +94,15 @@
 #include "SleepState.h"
 #include "UiModel.h"
 
+// Running-partition app hash (reset-loop latch clear on a new flash) + the
+// #64/#61 OTA capability/rollback calls in setup() — needed on EVERY target,
+// not just the UI build (the bench env broke silently while this sat under
+// SLYTHERM_UI).
+#include <esp_ota_ops.h>
+
 #ifdef SLYTHERM_UI
 #include <ESPmDNS.h>      // mDNS broker auto-discovery (silent home-system connect)
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
-#include <esp_ota_ops.h>  // running-partition app hash, to clear the reset-loop latch on a new flash
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
 #include "telnet_log.h"   // WiFi-accessible debug log (port 23)
