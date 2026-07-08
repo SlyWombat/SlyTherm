@@ -105,10 +105,10 @@
 #include "slytherm_ui.h"  // LVGL wall-UI binding (compiled only in env:thermostat_s3)
 #include "wifi_prov.h"    // on-device Wi-Fi provisioning (owned by the MQTT task)
 #include "mqtt_cfg.h"     // on-device broker provisioning (NVS + mDNS)
-#include "telnet_log.h"
-#include "boot_guard.h"       // #122/#123: boot counter + crash telemetry
-#include "coredump_server.h"  // #124: LAN coredump pull   // WiFi-accessible debug log (port 23)
+#include "telnet_log.h"   // WiFi-accessible debug log (port 23)
 #endif
+#include "boot_guard.h"       // #122/#123: boot counter + crash telemetry (all builds)
+#include "coredump_server.h"  // #124: LAN coredump pull (all builds)
 
 #include "thermostat_config.h"
 #if __has_include("thermostat_secrets.h")
