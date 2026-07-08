@@ -218,11 +218,16 @@ void initPanel() {
 }
 
 // ---- LVGL glue ----
-// Registered NATIVE 480x800 with sw_rotate + LV_DISP_ROT_90: the shared
-// screens see the logical 800x480 landscape; LVGL rotates each rendered
-// chunk in software and hands flushCb native-orientation areas.
+// Registered NATIVE 480x800 with rotated=LV_DISP_ROT_90 but sw_rotate=0:
+// the shared screens see the logical 800x480 landscape, and THIS driver owns
+// the rotation. LVGL's own sw_rotate path was tried and rejected — it draws
+// its chunk buffer from the LVGL pool, which lives in PSRAM on this board,
+// and the pixel-by-pixel rotate into PSRAM made repaints slow enough to
+// starve touch sampling (quick taps fell between indev reads). Rotating
+// here goes SRAM draw buffer -> static SRAM bounce buffer -> one DSI DMA.
 lv_disp_draw_buf_t gDrawBuf;
-lv_color_t gLineBuf[kHRes * 40];  // internal RAM, matches the Controller's recipe
+lv_color_t gLineBuf[kHRes * 40];   // internal RAM, matches the Controller's recipe
+lv_color_t gRotBuf[kHRes * 40];    // internal RAM rotation bounce, same capacity
 lv_disp_drv_t gDispDrv;
 lv_indev_drv_t gIndevDrv;
 
@@ -243,8 +248,17 @@ bool drawDoneCb(esp_lcd_panel_handle_t, esp_lcd_dpi_panel_event_data_t*, void*) 
 }
 
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* px) {
+  // `area` arrives in LOGICAL 800x480 coords (sw_rotate=0 + rotated=ROT_90
+  // means the driver rotates). Mapping (matches LVGL's own ROT_90 flush and
+  // the pointer transform lv_indev applies): logical(x,y) -> native(y, 799-x).
+  const int w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
+  for (int ly = 0; ly < h; ly++) {
+    const lv_color_t* src = px + (size_t)ly * w;
+    for (int lx = 0; lx < w; lx++) gRotBuf[(size_t)(w - 1 - lx) * h + ly] = src[lx];
+  }
   xSemaphoreTake(gFlushDone, 0);  // drain a stale give from a timed-out flush
-  esp_lcd_panel_draw_bitmap(gPanel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px);
+  esp_lcd_panel_draw_bitmap(gPanel, area->y1, (kVRes - 1) - area->x2,
+                            area->y2 + 1, kVRes - area->x1, gRotBuf);
   xSemaphoreTake(gFlushDone, pdMS_TO_TICKS(100));  // done-ISR, or bounded bail-out
   lv_disp_flush_ready(drv);
 }
@@ -254,11 +268,11 @@ void touchCb(lv_indev_drv_t*, lv_indev_data_t* data) {
   static bool wasDown = false;
   if (gTouchOk && gtRead(x, y)) {
     data->state = LV_INDEV_STATE_PR;
-    // GT911 reports native portrait coords (x 0..479, y 0..799); LVGL v8 does
-    // NOT rotate pointer input with the display, so invert its ROT_90 flush
-    // mapping (lv_refr.c: logical(x,y) -> native(y, ver_res-1-x)) by hand:
-    data->point.x = (kVRes - 1) - y;
-    data->point.y = x;
+    // RAW native portrait coords, on purpose: LVGL v8 rotates pointer input
+    // itself when drv.rotated is set (lv_indev.c indev_pointer_proc applies
+    // the ROT_90 inverse) — transforming here too would double-rotate.
+    data->point.x = x;
+    data->point.y = y;
     if (!wasDown) { wasDown = true; uiNoteTouch(); }   // #90: press edge -> sleep-state wake
   } else {
     data->state = LV_INDEV_STATE_REL;
@@ -285,7 +299,7 @@ bool portInit() {
   gDispDrv.ver_res = kVRes;
   gDispDrv.flush_cb = flushCb;
   gDispDrv.draw_buf = &gDrawBuf;
-  gDispDrv.sw_rotate = 1;
+  gDispDrv.sw_rotate = 0;              // rotation handled in flushCb (SRAM bounce)
   gDispDrv.rotated = LV_DISP_ROT_90;   // portrait glass -> logical 800x480 landscape
   lv_disp_drv_register(&gDispDrv);
   esp_lcd_dpi_panel_event_callbacks_t cbs = {};
