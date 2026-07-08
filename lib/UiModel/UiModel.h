@@ -157,6 +157,13 @@ struct DisplayState {
   bool busOk  = false;
   bool degradedMode = false;       // DS18B20-only degraded mode banner
 
+  // #101/#114 persona capability: true on the furnace-wired Controller (CT-485
+  // bus present), false on a Remote. Gates the Diag RS-485 LISTEN button and
+  // the bus fields at render. Additive + defaulted so the Controller is
+  // unaffected; set once at boot (no dirty bit — every group repaints on it
+  // anyway within a tick).
+  bool hasBus = true;
+
   uint32_t busLastRxS = 0;         // CT-485: seconds clock of last decoded frame (0 = never)
   uint32_t busFrames  = 0;         // CT-485: frames decoded OK (live only when RS-485 UART enabled)
 
@@ -270,6 +277,8 @@ class UiModel : public UiCommands {
   void pushAlarm(const char* text, uint16_t code);
   void clearAlarms();
   void setLinkHealth(bool wifi, bool mqtt, bool bus);
+  // #101/#114: persona capability (see DisplayState.hasBus). Boot-time set.
+  void setHasBus(bool b) { state_.hasBus = b; }
   // CT-485 bus monitor (Diag). Rendered every tick, so no dirty bit needed.
   void setBusDiag(uint32_t lastRxS, uint32_t frames) { state_.busLastRxS = lastRxS; state_.busFrames = frames; }
   void setClock(const char* s) { strncpy(state_.clockStr, s, sizeof(state_.clockStr) - 1); state_.clockStr[sizeof(state_.clockStr) - 1] = 0; }
