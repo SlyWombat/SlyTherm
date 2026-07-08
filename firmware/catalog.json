@@ -6,14 +6,28 @@
       "name": "SlyTherm Controller (Waveshare ESP32-S3-4.3B)",
       "chipFamily": "ESP32-S3",
       "hwRev": "s3-43b-r1.1",
-      "version": "0.4.1",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.4.1/wall-s3-0.4.1.app.bin",
-      "appSize": 1546672,
-      "sha256": "42a0a7591dd8a3437708456ac0e90393aacf32bda897ea2de4189656db35d500",
-      "sig": "MEYCIQDCEspnvoHxgtvMmzPyjrLLlllSpuU3L3MowscrwuK2XwIhALOHcFoDIt6Pi2PytF7gG1RB5DW5OOlHLp51GAezvvkP",
+      "version": "0.4.2",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.4.2/wall-s3-0.4.2.app.bin",
+      "appSize": 1548704,
+      "sha256": "fe4fb8f15d3f5e46a89ee19ce179caeddf842860eba443839053459df2a5d874",
+      "sig": "MEUCIFbgcaIzHGWdF1vrAuRw8NuPFMa2ADTnlfA0BjLKvyDpAiEAyLTRj4Q1NCLPa66Uesv7dTAiBZEW45tPjF6MuoXCVjQ=",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.4.1"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.4.2"
+    },
+    {
+      "id": "remote-p4",
+      "name": "SlyTherm Remote (Guition JC-ESP32P4-M3)",
+      "chipFamily": "ESP32-P4",
+      "hwRev": "p4-m3-r1",
+      "version": "0.4.2",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.4.2/remote-p4-0.4.2.app.bin",
+      "appSize": 1731616,
+      "sha256": "4f8da37b72698ea070f4d73d756005763e860316df2df2bbd33ed0ce827ee9fb",
+      "sig": "MEUCIBj5KY60/EvUscQOOkaHiKOVA2mHNswunOxlbHwDJWCpAiEAnAvXhhoqpAZDWS6RozcfEbQQnLeo1gWkFYL3yvKOvZk=",
+      "minVersion": "0.0.0",
+      "mandatory": false,
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.4.2"
     }
   ]
 }
