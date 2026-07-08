@@ -11,7 +11,12 @@ namespace remote_wifi {
 namespace {
 
 uint32_t gLastTryMs = 0;
-constexpr uint32_t kRetryMs = 10000;
+// #109: retry backoff — 10s after the first failure, *1.5 per retry, 60s
+// ceiling, reset on success. Never a 5s hammer, retries forever.
+constexpr uint32_t kRetryMinMs = 10000;
+constexpr uint32_t kRetryMaxMs = 60000;
+uint32_t gRetryMs = kRetryMinMs;
+uint32_t gAttempts = 0;
 uint8_t gBestBssid[6] = {};
 int32_t gBestChannel = 0;
 bool gHaveBest = false;
@@ -44,6 +49,7 @@ void scanForBest() {
 }
 
 void connectToBest() {
+  ++gAttempts;
   if (gHaveBest) {
     Serial.println("[wifi] connecting to strongest \"" REMOTE_WIFI_SSID "\" BSSID...");
     WiFi.begin(REMOTE_WIFI_SSID, REMOTE_WIFI_PASS, gBestChannel, gBestBssid);
@@ -67,10 +73,13 @@ void loop() {
   const uint32_t nowMs = millis();
   if (WiFi.status() == WL_CONNECTED) {
     gFailedTries = 0;
+    gRetryMs = kRetryMinMs;
     return;
   }
-  if (nowMs - gLastTryMs >= kRetryMs) {
+  if (nowMs - gLastTryMs >= gRetryMs) {
     gLastTryMs = nowMs;
+    gRetryMs = gRetryMs + gRetryMs / 2;
+    if (gRetryMs > kRetryMaxMs) gRetryMs = kRetryMaxMs;
     Serial.println("[wifi] retrying...");
     WiFi.disconnect();
     if (++gFailedTries >= kRescanAfterTries) {
@@ -82,5 +91,6 @@ void loop() {
 }
 
 bool connected() { return WiFi.status() == WL_CONNECTED; }
+uint32_t attempts() { return gAttempts; }
 
 }  // namespace remote_wifi

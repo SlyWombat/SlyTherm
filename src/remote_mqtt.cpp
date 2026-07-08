@@ -42,9 +42,15 @@ constexpr const char* kRemoteState = "slytherm/remote/state";
 constexpr const char* kControllerStatus = "slytherm/controller/status";
 constexpr const char* kAvailability = "slytherm/availability";
 constexpr const char* kPresetRoster = "slytherm/config/presets";
+constexpr const char* kOutdoorTemp = "slytherm/state/outdoor_temp";
 
 uint32_t gLastDiscoverMs = 0;
 uint32_t gLastConnectTryMs = 0;
+// #109: broker retry backoff — 5s -> 60s while failing, reset on success.
+constexpr uint32_t kConnMinMs = 5000;
+constexpr uint32_t kConnMaxMs = 60000;
+uint32_t gConnRetryMs = kConnMinMs;
+uint32_t gAttempts = 0;
 
 // #102: NVS-persisted monotonic intent id. The Controller's dedupe table
 // keeps our last id across OUR reboots (it only resets when the Controller
@@ -125,6 +131,16 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     }
   } else if (strcmp(topic, kPresetRoster) == 0) {
     applyRoster(buf);
+  } else if (strcmp(topic, kOutdoorTemp) == 0) {
+    // Controller-published outdoor temp (plain float): feeds the top-bar
+    // "Outside" readout and lets the #92 splash gate on the live link.
+    char* end = nullptr;
+    const float v = strtof(buf, &end);
+    if (end != buf) {
+      L();
+      gModel->setOutdoor(v, true, OutdoorSource::kHaWeather);
+      U();
+    }
   }
 }
 
@@ -172,8 +188,9 @@ void discoverBroker(uint32_t nowMs) {
 }
 
 void tryConnect(uint32_t nowMs) {
-  if (!mqtt_cfg::hostSet() || gMqtt.connected() || nowMs - gLastConnectTryMs < 5000) return;
+  if (!mqtt_cfg::hostSet() || gMqtt.connected() || nowMs - gLastConnectTryMs < gConnRetryMs) return;
   gLastConnectTryMs = nowMs;
+  ++gAttempts;
 
   char host[64] = {}, user[48] = {}, pass[64] = {};
   uint16_t port = 1883;
@@ -189,8 +206,12 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(kControllerStatus);  // cid bind
     gMqtt.subscribe(kAvailability);      // Controller liveness (LWT-backed)
     gMqtt.subscribe(kPresetRoster);      // live preset roster
+    gMqtt.subscribe(kOutdoorTemp);       // top-bar Outside readout
+    gConnRetryMs = kConnMinMs;           // backoff resets on success
     Serial.println("[mqtt] connected; subscribed to controller echo/status/roster");
   } else {
+    gConnRetryMs = gConnRetryMs + gConnRetryMs / 2;
+    if (gConnRetryMs > kConnMaxMs) gConnRetryMs = kConnMaxMs;
     Serial.printf("[mqtt] connect failed, state=%d\n", gMqtt.state());
   }
 }
@@ -294,5 +315,6 @@ void loop() {
 
 bool connected() { return gMqtt.connected(); }
 bool controllerOnline() { return gControllerOnline; }
+uint32_t attempts() { return gAttempts; }
 
 }  // namespace remote_mqtt

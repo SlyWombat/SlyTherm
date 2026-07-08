@@ -33,5 +33,6 @@ void loop();
 
 bool connected();          // broker link up
 bool controllerOnline();   // slytherm/availability == online (LWT-backed)
+uint32_t attempts();       // cumulative broker connect attempts (#109 guard)
 
 }  // namespace remote_mqtt

@@ -17,6 +17,7 @@
 
 #include "UiModel.h"
 #include "remote_mqtt.h"
+#include "remote_net_guard.h"
 #include "remote_wifi.h"
 #include "slytherm_ui.h"
 #include "ui/ui_port.h"
@@ -34,11 +35,12 @@ bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS 
 // Demo DisplayState (#101 acceptance): static-but-plausible content so every
 // tab has something real to draw. Replaced by the Controller echo in #102.
 void fillDemoState() {
-  gUi.setFusedTemp(21.5f, true);
+  // #108: fused/outdoor stay INVALID at boot so the #92 splash genuinely
+  // gates on the Controller link (echo -> fused temp, state/outdoor_temp ->
+  // outdoor). Only the sensor rows remain placeholder until #105-107.
   gUi.setSetpoints(20.0f, 24.0f);
-  gUi.setUserMode(UserMode::kAuto);
+  gUi.setUserMode(UserMode::kOff);
   gUi.setHvacAction(HvacAction::kIdle);
-  gUi.setOutdoor(12.0f, true, OutdoorSource::kHaWeather);
   SensorRow rows[2] = {};
   strlcpy(rows[0].name, "Wall unit", sizeof(rows[0].name));
   rows[0].tempC = 21.5f; rows[0].participating = true; rows[0].healthy = true; rows[0].dominant = true; rows[0].occupied = true;
@@ -59,6 +61,7 @@ void uiTask(void*) {
   slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/false, /*firstRun=*/false);
   for (;;) {
     slytherm_ui::service();
+    remote_net_guard::service();  // #109 blocking panel (lv top layer)
     vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
@@ -119,6 +122,11 @@ void loop() {
   const uint32_t nowMs = millis();
   if (nowMs - lastTickMs >= 1000) {
     lastTickMs = nowMs;
+    // #109: run the degraded-UX guard on the link signals. brokerUp needs
+    // BOTH wifi and an MQTT session; controllerUp is the availability LWT.
+    remote_net_guard::feed(remote_wifi::connected() && remote_mqtt::connected(),
+                           remote_mqtt::controllerOnline(),
+                           remote_wifi::attempts() + remote_mqtt::attempts());
     xSemaphoreTake(gUiMux, portMAX_DELAY);
     gUi.setLinkHealth(remote_wifi::connected(), remote_mqtt::connected(), false);
     struct tm ti;

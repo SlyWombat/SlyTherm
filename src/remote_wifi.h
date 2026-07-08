@@ -5,6 +5,8 @@
 // bring-up shortcut, not the final mechanism.
 #pragma once
 
+#include <cstdint>
+
 namespace remote_wifi {
 
 // Starts the hosted-WiFi association (non-blocking). Call once from setup().
@@ -14,5 +16,10 @@ void begin();
 void loop();
 
 bool connected();
+
+// Cumulative connect attempts since boot (resets never; the #109 guard
+// diffs it across an outage). Retry cadence backs off 10s -> 60s while
+// disconnected and snaps back on success.
+uint32_t attempts();
 
 }  // namespace remote_wifi

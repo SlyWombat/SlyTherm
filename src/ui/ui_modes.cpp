@@ -125,10 +125,13 @@ void buildBoot(){
   bcRoom=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcRoom,&lv_font_montserrat_16,0); lv_obj_align(bcRoom,LV_ALIGN_TOP_MID,0,414); }
 void renderBoot(const DisplayState& s){
   bootRow(bcWifi,"Wi-Fi",s.wifiOk);
-  bootRow(bcMqtt,"Home Assistant",s.mqttOk);
+  // #108 persona wording: on the busless Remote the later rows gate on the
+  // Controller link (echo -> fused temp), not HA/local sensors — the same
+  // underlying flags, homeowner-appropriate labels.
+  bootRow(bcMqtt, s.hasBus?"Home Assistant":"Home system", s.mqttOk);
   bootRow(bcOat,"Outdoor temperature",s.outdoorValid);
-  bootRow(bcRoom,"Room sensors",s.fusedTempValid);
-  setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":"Warming up..."); }
+  bootRow(bcRoom, s.hasBus?"Room sensors":"Controller link", s.fusedTempValid);
+  setTxt(wBootStat, (s.outdoorValid&&s.fusedTempValid)?"Ready":(s.hasBus?"Warming up...":"Discovering Controller...")); }
 // #92: warm-up done -> roll the logo across + off the right edge, spinning, then Home.
 static void bootMoveX(void* v,int32_t x){ lv_obj_set_style_translate_x((lv_obj_t*)v,(lv_coord_t)x,0); }
 static void bootSpin(void* v,int32_t a){ lv_img_set_angle((lv_obj_t*)v,(int16_t)a); }
