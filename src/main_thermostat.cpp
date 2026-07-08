@@ -58,6 +58,8 @@
 
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <driver/uart.h>          // uart_set_pin: force the RS-485 mux (core 3.x)
+#include <esp32-hal-periman.h>    // pin-ownership diagnostics for the same
 
 // #113: injected by tools/version_flag.py (VERSION file + git sha). Fallbacks
 // keep ad-hoc builds (e.g. PLATFORMIO_BUILD_FLAGS-only invocations) compiling.
@@ -1474,6 +1476,17 @@ void ct485Task(void*) {
   Serial0.end();
   Serial2.setRxBufferSize(2048);
   Serial2.begin(ct485::kBaudDefault, SERIAL_8N1, cfg::kCt485RxPin, cfg::kCt485TxPin);
+  // v0.5.4 shipped Serial0.end() alone and rx stayed 0 — the polite path is
+  // not enough on this core. Force the GPIO matrix mux at the IDF layer
+  // (console/PeriMan ownership can leave begin()'s pin attach unapplied),
+  // then log who PeriMan thinks owns the pins so the telnet ring shows the
+  // truth from boot. uart_set_pin argument order is (port, TX, RX, rts, cts).
+  uart_set_pin(UART_NUM_2, cfg::kCt485TxPin, cfg::kCt485RxPin,
+               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  telnet_log::logf("[ct485] uart2 drv=%d rxPinBus=%d txPinBus=%d",
+                   (int)uart_is_driver_installed(UART_NUM_2),
+                   (int)perimanGetPinBusType(cfg::kCt485RxPin),
+                   (int)perimanGetPinBusType(cfg::kCt485TxPin));
   gCtLastByteUs = micros();
 #endif
   for (;;) {
