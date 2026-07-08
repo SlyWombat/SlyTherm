@@ -66,6 +66,7 @@ constexpr uint32_t kCheckIntervalMs = 24u * 60u * 60u * 1000u;  // daily
 constexpr uint32_t kCheckRetryMs = 5u * 60u * 1000u;  // retry cadence after a failure
 constexpr uint32_t kSelfTestTimeoutMs = 5u * 60u * 1000u;       // 5 min
 constexpr uint8_t kMaxBootAttempts = 3;
+constexpr uint8_t kMaxApplyAttempts = 3;  // mid-apply resets before going manual-only
 constexpr size_t kCatalogMaxBytes = 16 * 1024;
 constexpr uint32_t kStreamTimeoutMs = 30 * 1000;  // stall watchdog per read
 
@@ -250,6 +251,26 @@ bool doApply() {
     return false;
   }
 
+  // Crash-loop guard: an apply that RESETS the board mid-flight (e.g. the
+  // esp-hosted SDIO assert the streaming path tripped on the P4) must not be
+  // retried forever by the auto-apply below. Persist an attempt counter keyed
+  // to the target version (a new release resets it); kMaxApplyAttempts
+  // strikes -> this version becomes manual-only.
+  {
+    Preferences p;
+    p.begin(kNvsNs, false);
+    String v = p.getString("atryv", "");
+    uint8_t n = (v == gAvailable.version.c_str()) ? p.getUChar("atry", 0) : 0;
+    if (n >= kMaxApplyAttempts) {
+      p.end();
+      fail("apply: repeated resets mid-apply — manual retry only");
+      return false;
+    }
+    p.putString("atryv", gAvailable.version.c_str());
+    p.putUChar("atry", static_cast<uint8_t>(n + 1));
+    p.end();
+  }
+
   setStatus(State::kDownloading, 0, gAvailable.version.c_str(), "");
   WiFiClientSecure tls;
   tls.setCACert(ota_certs::kOtaCaBundle);
@@ -277,10 +298,29 @@ bool doApply() {
   const size_t expect = gAvailable.appSize ? gAvailable.appSize
                         : (total > 0 ? static_cast<size_t>(total)
                                      : UPDATE_SIZE_UNKNOWN);
-  if (!Update.begin(expect, U_FLASH)) {
-    http.end();
-    fail("apply: Update.begin failed");
-    return false;
+
+  // PSRAM-buffered download (preferred): network and flash writes must NOT
+  // interleave. Every flash write suspends the XIP cache and stalls tasks
+  // running from flash — on the P4 that includes the esp-hosted SDIO
+  // drainer, whose RX pool then overflows and ASSERTS (sdio_drv.c:953 ->
+  // reboot mid-download, found on the bench). Buffering the whole image in
+  // PSRAM first also means sha256+signature verify BEFORE the first flash
+  // touch. Fallback (no PSRAM headroom / unknown size): direct streaming.
+  uint8_t* ram = nullptr;
+  if (expect != UPDATE_SIZE_UNKNOWN && psramFound() &&
+      ESP.getFreePsram() > expect + (2u << 20)) {
+    ram = static_cast<uint8_t*>(ps_malloc(expect));
+  }
+  if (ram == nullptr) {
+    if (!Update.begin(expect, U_FLASH)) {
+      http.end();
+      fail("apply: Update.begin failed");
+      return false;
+    }
+    Serial.println("[ota] streaming apply (no PSRAM buffer)");
+  } else {
+    Serial.printf("[ota] buffered apply (%u B to PSRAM first)\n",
+                  static_cast<unsigned>(expect));
   }
 
   Sha256 sha;
@@ -292,7 +332,7 @@ bool doApply() {
     const size_t avail = stream->available();
     if (avail == 0) {
       if (millis() - lastDataMs > kStreamTimeoutMs) {
-        Update.abort();
+        if (ram) free(ram); else Update.abort();
         http.end();
         fail("apply: stream stalled");
         return false;
@@ -302,11 +342,16 @@ bool doApply() {
       continue;
     }
     lastDataMs = millis();
+    size_t chunk = avail > sizeof(buf) ? sizeof(buf) : avail;
+    if (ram && written + chunk > expect) chunk = expect - written;
+    if (ram && chunk == 0) break;  // server sent more than expected
     const int n = stream->readBytes(
-        buf, avail > sizeof(buf) ? sizeof(buf) : avail);
+        ram ? reinterpret_cast<char*>(ram + written)
+            : reinterpret_cast<char*>(buf), chunk);
     if (n <= 0) continue;
-    sha.update(buf, static_cast<size_t>(n));
-    if (Update.write(buf, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
+    sha.update(ram ? ram + written : buf, static_cast<size_t>(n));
+    if (!ram &&
+        Update.write(buf, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
       Update.abort();
       http.end();
       fail("apply: flash write failed");
@@ -320,7 +365,7 @@ bool doApply() {
   }
   http.end();
   if (total > 0 && written != static_cast<size_t>(total)) {
-    Update.abort();
+    if (ram) free(ram); else Update.abort();
     fail("apply: truncated download");
     return false;
   }
@@ -329,14 +374,36 @@ bool doApply() {
   uint8_t digest[32];
   sha.finish(digest);
   if (!hexEqual(digest, gAvailable.sha256)) {
-    Update.abort();
+    if (ram) free(ram); else Update.abort();
     fail("verify: sha256 mismatch");
     return false;
   }
   if (!signatureOk(digest, gAvailable.sig)) {
-    Update.abort();
+    if (ram) free(ram); else Update.abort();
     fail("verify: signature rejected");
     return false;
+  }
+  if (ram) {
+    // Verified in RAM — now the flash phase, with the network idle. The
+    // small per-chunk yield lets housekeeping (MQTT keepalive, UI) breathe
+    // between cache-suspension windows.
+    if (!Update.begin(expect, U_FLASH)) {
+      free(ram);
+      fail("apply: Update.begin failed");
+      return false;
+    }
+    for (size_t off = 0; off < written;) {
+      const size_t chunk = written - off > 16384 ? 16384 : written - off;
+      if (Update.write(ram + off, chunk) != chunk) {
+        free(ram);
+        Update.abort();
+        fail("apply: flash write failed");
+        return false;
+      }
+      off += chunk;
+      vTaskDelay(1);
+    }
+    free(ram);
   }
   // Activates the new slot in otadata; the running image keeps control until
   // the (gated) reboot below. A power-cycle while staged boots the new image
@@ -349,6 +416,7 @@ bool doApply() {
   p.begin(kNvsNs, false);
   p.putString("pend", gAvailable.version.c_str());
   p.putUChar("tries", 0);
+  p.putUChar("atry", 0);  // clean apply: reset the crash-loop guard
   p.end();
   Serial.printf("[ota] staged %s -> slot %s; waiting for safe reboot window\n",
                 gAvailable.version.c_str(), next->label);
@@ -397,6 +465,12 @@ void otaTask(void*) {
         gCheckReq = false;
         lastAutoCheckMs = millis();
         lastCheckOk = doCheck();
+        // Auto-apply: a found update stages itself (downloads + verifies)
+        // without an operator. The REBOOT is still gated (furnace idle on
+        // the Controller); the crash-loop guard in doApply() keeps a
+        // reset-mid-apply from retrying past kMaxApplyAttempts.
+        if (lastCheckOk && status().state == State::kUpdateAvailable)
+          gApplyReq = true;
       }
       if (gApplyReq && !staged) {
         gApplyReq = false;
