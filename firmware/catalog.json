@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "targets": [
+    {
+      "id": "wall-s3",
+      "name": "SlyTherm Controller (Waveshare ESP32-S3-4.3B)",
+      "chipFamily": "ESP32-S3",
+      "hwRev": "s3-43b-r1.1",
+      "version": "0.4.0",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v0.4.0/wall-s3-0.4.0.app.bin",
+      "appSize": 1379856,
+      "sha256": "91bbeea1f88181409a4fb0350657d2c8e1cc09894f2991ef91c2ef68f1411e11",
+      "sig": "MEUCIFZVTwzDm90JGjWQ1/+ZgQrHh+FN6sQoHixStQZndLd7AiEAxomVc+Ol8Y0tMA2IhL++jGNQxDnnXDlonhgICdSsIIc=",
+      "minVersion": "0.0.0",
+      "mandatory": false,
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v0.4.0"
+    }
+  ]
+}
