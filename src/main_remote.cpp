@@ -15,7 +15,10 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include <esp_ota_ops.h>
+
 #include "UiModel.h"
+#include "ota_client.h"  // #111: no-op inlines unless -DSLYTHERM_OTA
 #include "remote_mqtt.h"
 #include "remote_net_guard.h"
 #include "remote_wifi.h"
@@ -24,6 +27,15 @@
 
 using namespace dettson;
 using namespace dettson::ui;
+
+// #113: injected by tools/version_flag.py; fallback keeps ad-hoc builds compiling.
+#ifndef SLYTHERM_FW_BUILD
+#define SLYTHERM_FW_BUILD "0.0.0-dev"
+#endif
+
+// #111/#62: the OTA reboot gate. The Remote has no furnace — an update
+// applies the moment it is verified (docs/10 §7: remote-p4 is ungated).
+extern "C" bool otaSafeToReboot() { return true; }
 
 namespace {
 
@@ -90,7 +102,7 @@ void setup() {
   delay(1500);
   Serial.println();
   Serial.println("=== SlyTherm Remote (ESP32-P4) boot ===");
-  Serial.printf("Build: %s %s\n", __DATE__, __TIME__);
+  Serial.println("fw " SLYTHERM_FW_BUILD);  // #113: VERSION file + git sha
   Serial.printf("Chip: %s rev v%d.%d, %d MB flash, PSRAM %s\n",
                 ESP.getChipModel(), ESP.getChipRevision() / 100,
                 ESP.getChipRevision() % 100, ESP.getFlashChipSize() / (1024 * 1024),
@@ -98,6 +110,16 @@ void setup() {
 
   gPrefs.begin("remote", false);
   gClock24 = gPrefs.getBool("clk24", false);
+
+  // #64/#111: dual-app check + pending-update validation (arms the self-test
+  // that remote_mqtt confirms on broker connect; rolls back a crash-looping
+  // new image). No-ops without -DSLYTHERM_OTA / no pending update.
+  { const esp_partition_t* run = esp_ota_get_running_partition();
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+    Serial.printf("[boot] OTA %s: running=%s next=%s\n",
+                  next ? "capable" : "NOT capable (single-app table)",
+                  run ? run->label : "?", next ? next->label : "none"); }
+  ota::bootValidate();
 
   gUiMux = xSemaphoreCreateMutex();
   gUi.setHasBus(false);   // #101: busless persona — no RS-485/CT-485 UI
@@ -111,6 +133,9 @@ void setup() {
   remote_mqtt::begin();
 
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
+
+  // #111: OTA task (checks the GitHub catalog; reboot ungated on the Remote).
+  ota::begin();
 }
 
 void loop() {

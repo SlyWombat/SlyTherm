@@ -4,6 +4,8 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <PubSubClient.h>
+
+#include "ota_client.h"  // #111: no-op inlines unless -DSLYTHERM_OTA
 #include <WiFi.h>
 
 #include <cstring>
@@ -16,6 +18,11 @@
 
 namespace remote_mqtt {
 namespace {
+
+// #113: injected by tools/version_flag.py; fallback keeps ad-hoc builds compiling.
+#ifndef SLYTHERM_FW_VERSION
+#define SLYTHERM_FW_VERSION "0.0.0-dev"
+#endif
 
 namespace rl = remote_link;
 namespace hm = dettson::hamqtt;
@@ -35,6 +42,13 @@ char gId[16] = {};        // last 3 MAC bytes, hex -- e.g. "d2d30c"
 char gClientId[32] = {};  // "slytherm-remote-d2d30c"
 char gAvailTopic[48] = {};
 char gIntentTopic[48] = {};
+// #111 OTA surface, per-Remote (a shared cmd topic would update every
+// Remote on the broker at once): slytherm/remote/<id>/cmd/ota_check|
+// ota_apply -> requests; .../state/ota -> live client status.
+char gOtaCheckTopic[56] = {};
+char gOtaApplyTopic[56] = {};
+char gOtaStateTopic[56] = {};
+char gOtaStateCache[192] = {};  // diff suppression ("" -> republish)
 
 // Topic literals (the Remote build doesn't compile the Controller's src/;
 // these mirror hm::topic — one product namespace, docs/11).
@@ -131,6 +145,10 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     }
   } else if (strcmp(topic, kPresetRoster) == 0) {
     applyRoster(buf);
+  } else if (strcmp(topic, gOtaCheckTopic) == 0) {
+    ota::requestCheck();   // payload ignored; no-op mid-phase (#111)
+  } else if (strcmp(topic, gOtaApplyTopic) == 0) {
+    ota::requestApply();
   } else if (strcmp(topic, kOutdoorTemp) == 0) {
     // Controller-published outdoor temp (plain float): feeds the top-bar
     // "Outside" readout and lets the #92 splash gate on the live link.
@@ -151,6 +169,9 @@ void deriveIds() {
   snprintf(gClientId, sizeof(gClientId), "slytherm-remote-%s", gId);
   snprintf(gAvailTopic, sizeof(gAvailTopic), "slytherm/remote/%s/status", gId);
   snprintf(gIntentTopic, sizeof(gIntentTopic), "slytherm/remote/%s/intent", gId);
+  snprintf(gOtaCheckTopic, sizeof(gOtaCheckTopic), "slytherm/remote/%s/cmd/ota_check", gId);
+  snprintf(gOtaApplyTopic, sizeof(gOtaApplyTopic), "slytherm/remote/%s/cmd/ota_apply", gId);
+  snprintf(gOtaStateTopic, sizeof(gOtaStateTopic), "slytherm/remote/%s/state/ota", gId);
 }
 
 void discoverBroker(uint32_t nowMs) {
@@ -207,6 +228,13 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(kAvailability);      // Controller liveness (LWT-backed)
     gMqtt.subscribe(kPresetRoster);      // live preset roster
     gMqtt.subscribe(kOutdoorTemp);       // top-bar Outside readout
+    gMqtt.subscribe(gOtaCheckTopic);     // #111 OTA drive (per-Remote)
+    gMqtt.subscribe(gOtaApplyTopic);
+    gOtaStateCache[0] = 0;               // republish OTA status after (re)connect
+    // #111: broker connectivity = the post-OTA self-test (the Controller is
+    // deliberately NOT required — OTA must work on a Remote with no
+    // Controller on the network). Confirms a pending update; else no-op.
+    ota::noteSelfTestPass();
     gConnRetryMs = kConnMinMs;           // backoff resets on success
     Serial.println("[mqtt] connected; subscribed to controller echo/status/roster");
   } else {
@@ -308,6 +336,21 @@ void loop() {
   if (gMqtt.connected()) {
     gMqtt.loop();
     pumpIntents();
+    // #111: live OTA client status, ~1 Hz, diff-suppressed. NOT retained
+    // (a stale "downloading" after reboot would mislead; the cache reset
+    // on connect republishes the current state instead).
+    static uint32_t sLastOtaPubMs = 0;
+    if (nowMs - sLastOtaPubMs >= 1000) {
+      sLastOtaPubMs = nowMs;
+      const ota::Status os = ota::status();
+      const std::string j = hm::otaStateJson(ota::toString(os.state),
+                                             os.progressPct, SLYTHERM_FW_VERSION,
+                                             os.available, os.error);
+      if (strncmp(gOtaStateCache, j.c_str(), sizeof(gOtaStateCache) - 1) != 0) {
+        strlcpy(gOtaStateCache, j.c_str(), sizeof(gOtaStateCache));
+        gMqtt.publish(gOtaStateTopic, j.c_str());
+      }
+    }
   } else {
     tryConnect(nowMs);
   }
