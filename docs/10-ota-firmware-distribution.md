@@ -41,6 +41,12 @@ catalog of which hardware targets exist and what versions are available. The
   heartbeat, and the OTA version compare (`lib/OtaCatalog::parseSemver`,
   which ignores `+build` metadata).
 - A release tag is always `v<VERSION>`; CI fails the release if they differ.
+- **Releases are cut from `main` only** (decided 2026-07-08): both platform
+  tracks converge to `main` before any tag, and the workflow refuses a tag
+  whose commit is not on `main` — a feature-branch tag can't ship one
+  track's in-flight work to the whole fleet. One release train: every tag
+  rebuilds all targets from the same tree (per-target trains are a possible
+  later refinement; the catalog schema already supports per-target versions).
 - **One release train**: Controller (`wall-s3`) and Remote (`remote-p4`)
   binaries share the version of the release that built them.
 
