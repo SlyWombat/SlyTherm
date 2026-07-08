@@ -32,6 +32,52 @@ bool      gForgetReq = false;
 
 uint32_t gLastBeginMs = 0, gConnStartMs = 0, gScanStartMs = 0;
 bool     gScanning    = false;
+uint32_t gAttempts    = 0;   // #109/#121: every WiFi.begin counts
+
+// #121 (Remote-only, flag-gated so the Controller binary is untouched): the
+// P4 bench sits at the edge of a 2.4GHz mesh — associating to the driver's
+// pick fails where pinning the strongest same-SSID BSSID succeeds, and the
+// boot-time best node can degrade, so re-scan after repeated failures and
+// back the retry cadence off 10s -> 60s (never a hammer). Ported verbatim
+// from the retired remote_wifi.cpp (#96/#109 bench-proven).
+#ifdef SLYTHERM_WIFI_PIN_BSSID
+uint8_t  gBestBssid[6] = {};
+int32_t  gBestChannel = 0;
+bool     gHaveBest = false;
+uint8_t  gFailedTries = 0;
+constexpr uint8_t  kRescanAfterTries = 3;
+constexpr uint32_t kRetryMinMs = 10000, kRetryMaxMs = 60000;
+uint32_t gRetryMs = kRetryMinMs;
+
+void scanForBest(){
+  Serial.println("[wifi] scanning for strongest BSSID...");
+  WiFi.scanDelete();
+  int n = WiFi.scanNetworks(false, false);
+  gHaveBest = false;
+  int32_t bestRssi = -999;
+  for(int i=0;i<n;i++){
+    if(WiFi.SSID(i) == gActiveSsid && WiFi.RSSI(i) > bestRssi){
+      bestRssi = WiFi.RSSI(i);
+      gBestChannel = WiFi.channel(i);
+      memcpy(gBestBssid, WiFi.BSSID(i), 6);
+      gHaveBest = true;
+    }
+  }
+  WiFi.scanDelete();
+  if(gHaveBest) Serial.printf("[wifi] strongest \"%s\": ch=%d rssi=%d\n",
+                              gActiveSsid, (int)gBestChannel, (int)bestRssi);
+}
+#endif
+
+// All (re)association funnels through here so the pin/backoff/attempt
+// accounting can't be bypassed. Plain WiFi.begin when not pinning.
+void radioBegin(){
+  ++gAttempts;
+#ifdef SLYTHERM_WIFI_PIN_BSSID
+  if(gHaveBest){ WiFi.begin(gActiveSsid, gActivePass, gBestChannel, gBestBssid); return; }
+#endif
+  WiFi.begin(gActiveSsid, gActivePass);
+}
 
 void saveCreds(const char* ssid, const char* pass){
   Preferences p; p.begin("wifi", false);
@@ -49,11 +95,17 @@ bool begin(const char* fbSsid, const char* fbPass){
   strlcpy(gActiveSsid, s.c_str(), sizeof(gActiveSsid));
   strlcpy(gActivePass, pw.c_str(), sizeof(gActivePass));
   WiFi.mode(WIFI_STA);
-  if(gActiveSsid[0]){ WiFi.begin(gActiveSsid, gActivePass); gLastBeginMs = millis(); }
+  if(gActiveSsid[0]){
+#ifdef SLYTHERM_WIFI_PIN_BSSID
+    scanForBest();
+#endif
+    radioBegin(); gLastBeginMs = millis();
+  }
   return gActiveSsid[0] != 0;
 }
 
 bool connected(){ return WiFi.status()==WL_CONNECTED; }
+uint32_t attempts(){ return gAttempts; }
 
 bool hasSavedCredentials(){
   Preferences p; p.begin("wifi", true);
@@ -71,7 +123,10 @@ void service(uint32_t nowMs){
   L(); bool cReq=gConnReq; gConnReq=false; char rs[33],rp[65];
   strlcpy(rs,gReqSsid,sizeof(rs)); strlcpy(rp,gReqPass,sizeof(rp)); U();
   if(cReq && rs[0]){ strlcpy(gActiveSsid,rs,sizeof(gActiveSsid)); strlcpy(gActivePass,rp,sizeof(gActivePass));
-    WiFi.disconnect(); WiFi.begin(gActiveSsid,gActivePass); gConnStartMs=nowMs;
+#ifdef SLYTHERM_WIFI_PIN_BSSID
+    gHaveBest = false;  // a user-chosen (possibly different) SSID: let the driver pick first
+#endif
+    WiFi.disconnect(); radioBegin(); gConnStartMs=nowMs;
     L(); gConnSt=ConnState::kConnecting; U(); }
 
   // connect state machine + maintenance
@@ -79,9 +134,21 @@ void service(uint32_t nowMs){
   if(cs==ConnState::kConnecting){
     if(WiFi.status()==WL_CONNECTED){ saveCreds(gActiveSsid,gActivePass); L(); gConnSt=ConnState::kConnected; U(); }
     else if(nowMs-gConnStartMs>12000){ L(); gConnSt=ConnState::kFailed; U(); }
-  } else if(gActiveSsid[0] && WiFi.status()!=WL_CONNECTED && nowMs-gLastBeginMs>15000){
-    WiFi.begin(gActiveSsid,gActivePass); gLastBeginMs=nowMs;
   }
+#ifdef SLYTHERM_WIFI_PIN_BSSID
+  else if(WiFi.status()==WL_CONNECTED){ gFailedTries = 0; gRetryMs = kRetryMinMs; }
+  else if(gActiveSsid[0] && nowMs-gLastBeginMs>gRetryMs){
+    gLastBeginMs=nowMs;
+    gRetryMs = gRetryMs + gRetryMs/2; if(gRetryMs > kRetryMaxMs) gRetryMs = kRetryMaxMs;
+    WiFi.disconnect();
+    if(++gFailedTries >= kRescanAfterTries){ gFailedTries = 0; scanForBest(); }
+    radioBegin();
+  }
+#else
+  else if(gActiveSsid[0] && WiFi.status()!=WL_CONNECTED && nowMs-gLastBeginMs>15000){
+    radioBegin(); gLastBeginMs=nowMs;
+  }
+#endif
 
   // scan request — SYNCHRONOUS. The async scan returns 0 while already
   // associated (confirmed on this ESP32-S3); a blocking scan enumerates

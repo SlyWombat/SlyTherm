@@ -24,7 +24,7 @@ namespace remote_mqtt {
 // module; all model access is serialized by `mux` (the UI task renders it).
 void attachModel(dettson::ui::UiModel* model, SemaphoreHandle_t mux);
 
-// Call once from setup() (after remote_wifi::begin()).
+// Call once from setup() (after wifi_prov::begin()).
 void begin();
 
 // Call every loop(). Handles discovery, (re)connect, inbound state, and

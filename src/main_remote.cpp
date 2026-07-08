@@ -23,10 +23,19 @@
 #include "ota_client.h"  // #111: no-op inlines unless -DSLYTHERM_OTA
 #include "remote_mqtt.h"
 #include "remote_net_guard.h"
-#include "remote_wifi.h"
 #include "slytherm_ui.h"
 #include "telnet_log.h"       // #126: live logs on :23 (ring-replay on connect)
 #include "ui/ui_port.h"
+#include "wifi_prov.h"        // #121: wifi_prov owns the radio (NVS + on-device setup)
+
+// Dev builds may carry a compiled-in seed; production images ship secretless
+// and provision on-glass (#121). Same pattern as thermostat_secrets.h.
+#if __has_include("remote_secrets.h")
+#include "remote_secrets.h"
+#else
+#define REMOTE_WIFI_SSID ""
+#define REMOTE_WIFI_PASS ""
+#endif
 
 using namespace dettson;
 using namespace dettson::ui;
@@ -44,6 +53,7 @@ namespace {
 
 UiModel gUi;
 SemaphoreHandle_t gUiMux = nullptr;
+bool gFirstRun = false;  // #121: no WiFi config anywhere -> Welcome onboarding
 Preferences gPrefs;
 bool gClock24 = false;  // top-bar clock format (12h default); persisted in NVS "clk24"
 
@@ -71,7 +81,7 @@ void fillDemoState() {
 // routes touch into it. Never touches the network.
 void uiTask(void*) {
   // #122: >=3 consecutive abnormal boots -> the shared reduced safe screen.
-  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), /*firstRun=*/false);
+  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), gFirstRun);
   for (;;) {
     slytherm_ui::service();
     remote_net_guard::service();  // #109 blocking panel (lv top layer)
@@ -138,7 +148,12 @@ void setup() {
 
   telnet_log::begin();  // #126: live logs on :23, ring-replays recent history
 
-  remote_wifi::begin();
+  // #121: wifi_prov owns the radio — NVS creds (already seeded on fielded
+  // units) win, the compiled-in secret is a dev fallback, and NO credentials
+  // at all boots the first-run Welcome -> on-glass WiFi setup flow (#82).
+  const bool haveWifiCfg = wifi_prov::begin(REMOTE_WIFI_SSID, REMOTE_WIFI_PASS);
+  gFirstRun = !haveWifiCfg;
+  if (gFirstRun) Serial.println("[wifi] unprovisioned - booting Welcome/WiFi setup");
   remote_mqtt::attachModel(&gUi, gUiMux);  // #102: echo -> model, intents -> broker
   remote_mqtt::begin();
 
@@ -149,7 +164,7 @@ void setup() {
 }
 
 void loop() {
-  remote_wifi::loop();
+  wifi_prov::service(millis());  // #121: connection maintenance + UI scan/connect requests
   remote_mqtt::loop();
   telnet_log::poll();       // #126
   coredump_server::poll();  // #124: LAN coredump pull (:8082)
@@ -159,7 +174,7 @@ void loop() {
   // feeds the top-bar clock AND the OTA client's TLS cert validation (#111 —
   // an unsynced clock fails every X.509 date check).
   static bool sNtpUp = false;
-  if (!sNtpUp && remote_wifi::connected()) {
+  if (!sNtpUp && wifi_prov::connected()) {
     sNtpUp = true;
     configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
   }
@@ -170,11 +185,11 @@ void loop() {
     lastTickMs = nowMs;
     // #109: run the degraded-UX guard on the link signals. brokerUp needs
     // BOTH wifi and an MQTT session; controllerUp is the availability LWT.
-    remote_net_guard::feed(remote_wifi::connected() && remote_mqtt::connected(),
+    remote_net_guard::feed(wifi_prov::connected() && remote_mqtt::connected(),
                            remote_mqtt::controllerOnline(),
-                           remote_wifi::attempts() + remote_mqtt::attempts());
+                           wifi_prov::attempts() + remote_mqtt::attempts());
     xSemaphoreTake(gUiMux, portMAX_DELAY);
-    gUi.setLinkHealth(remote_wifi::connected(), remote_mqtt::connected(), false);
+    gUi.setLinkHealth(wifi_prov::connected(), remote_mqtt::connected(), false);
     struct tm ti;
     if (getLocalTime(&ti, 0)) {
       char c[24];
@@ -201,8 +216,8 @@ void loop() {
     telnet_log::logf("alive t=%lus heap=%u touch=%s wifi=%s ip=%s mqtt=%s", nowMs / 1000,
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   slytherm_ui::portTouchOk() ? "OK" : "FAIL",
-                  remote_wifi::connected() ? "OK" : "FAIL",
-                  remote_wifi::connected() ? WiFi.localIP().toString().c_str() : "-",
+                  wifi_prov::connected() ? "OK" : "FAIL",
+                  wifi_prov::connected() ? WiFi.localIP().toString().c_str() : "-",
                   remote_mqtt::connected() ? "OK" : "FAIL");
   }
   delay(2);

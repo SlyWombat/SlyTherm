@@ -27,6 +27,9 @@ bool hasSavedCredentials();
 // Drive connection maintenance + process pending scan/connect requests.
 void service(uint32_t nowMs);
 bool connected();
+// #109/#121: cumulative WiFi.begin attempts since boot (the net-guard diffs
+// it across an outage to show "Retrying (attempt N)").
+uint32_t attempts();
 
 // ---- UI side (thread-safe; posts requests, reads results) ----
 void      requestScan();

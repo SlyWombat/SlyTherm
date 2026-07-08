@@ -16,7 +16,7 @@
 #include "RemoteLink.h"    // #102 codec: echo/status parsers + intent builders
 #include "boot_guard.h"   // #123: boot/crash telemetry payload
 #include "mqtt_cfg.h"
-#include "remote_wifi.h"
+#include "wifi_prov.h"   // #121: wifi_prov owns the radio
 
 namespace remote_mqtt {
 namespace {
@@ -510,7 +510,7 @@ void begin() {
 }
 
 void loop() {
-  if (!remote_wifi::connected()) return;
+  if (!wifi_prov::connected()) return;
 
   const uint32_t nowMs = millis();
   discoverBroker(nowMs);
