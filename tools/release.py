@@ -190,8 +190,11 @@ def main() -> None:
     print(f"release version: {version}")
 
     pio = find_pio()
-    esptool = find_esptool()
-    boot_app0 = find_boot_app0()
+    # esptool + boot_app0 ship inside PlatformIO packages that only exist
+    # AFTER the first `pio run` downloads the toolchain — resolve them lazily
+    # (a cold CI runner has an empty ~/.platformio until the build).
+    esptool = None
+    boot_app0 = None
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     results = []
@@ -205,6 +208,9 @@ def main() -> None:
             die(f"[env:{env}] missing from platformio.ini")
         if not args.skip_build:
             run([pio, "run", "-e", env])
+        if esptool is None:
+            esptool = find_esptool()
+            boot_app0 = find_boot_app0()
 
         bdir = build_dir_for(env)
         images = [bdir / "bootloader.bin", bdir / "partitions.bin",
