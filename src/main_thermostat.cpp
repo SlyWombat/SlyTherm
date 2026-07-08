@@ -58,7 +58,8 @@
 
 #include <esp_system.h>
 #include <esp_timer.h>
-#include <driver/uart.h>          // uart_set_pin: force the RS-485 mux (core 3.x)
+#include <driver/uart.h>          // raw IDF UART1 for CT-485 (core 3.x pin wars)
+#include <driver/gpio.h>          // gpio_get_level: RX pad probe in ct485-stats
 #include <esp32-hal-periman.h>    // pin-ownership diagnostics for the same
 
 // #113: injected by tools/version_flag.py (VERSION file + git sha). Fallbacks
@@ -1469,34 +1470,44 @@ void ct485Task(void*) {
     pinMode(cfg::kCt485DePin, OUTPUT);
     digitalWrite(cfg::kCt485DePin, LOW);  // receive; hardware pulldown agrees
   }
-  // Core 3.x (pioarduino 55.03.39): the IDF console owns UART0, and UART0's
-  // default pins ARE this board's RS-485 pair (U0TXD=43 / U0RXD=44). Release
-  // UART0 first or Serial2's claim on 43/44 silently loses and RX stays dead
-  // (v0.5.3 field regression right after the core jump: ok=0, bus silent).
+  // Core 3.x (pioarduino 55.03.39) regression war (v0.5.3..v0.5.5): the IDF
+  // console owns UART0 whose default pins ARE this board's RS-485 pair
+  // (U0TXD=43 / U0RXD=44). Serial0.end() (v0.5.4) and a forced
+  // uart_set_pin on UART2 (v0.5.5) both left rx=0 even with PeriMan showing
+  // the pins as UART_RX/UART_TX. So: bypass Arduino HardwareSerial entirely —
+  // raw IDF driver on a fresh instance (UART1), explicit pin mux, no core
+  // pin-management in the path.
   Serial0.end();
-  Serial2.setRxBufferSize(2048);
-  Serial2.begin(ct485::kBaudDefault, SERIAL_8N1, cfg::kCt485RxPin, cfg::kCt485TxPin);
-  // v0.5.4 shipped Serial0.end() alone and rx stayed 0 — the polite path is
-  // not enough on this core. Force the GPIO matrix mux at the IDF layer
-  // (console/PeriMan ownership can leave begin()'s pin attach unapplied),
-  // then log who PeriMan thinks owns the pins so the telnet ring shows the
-  // truth from boot. uart_set_pin argument order is (port, TX, RX, rts, cts).
-  uart_set_pin(UART_NUM_2, cfg::kCt485TxPin, cfg::kCt485RxPin,
-               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-  telnet_log::logf("[ct485] uart2 drv=%d rxPinBus=%d txPinBus=%d",
-                   (int)uart_is_driver_installed(UART_NUM_2),
-                   (int)perimanGetPinBusType(cfg::kCt485RxPin),
-                   (int)perimanGetPinBusType(cfg::kCt485TxPin));
+  {
+    uart_config_t uc = {};
+    uc.baud_rate = static_cast<int>(ct485::kBaudDefault);
+    uc.data_bits = UART_DATA_8_BITS;
+    uc.parity    = UART_PARITY_DISABLE;
+    uc.stop_bits = UART_STOP_BITS_1;
+    uc.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uc.source_clk = UART_SCLK_DEFAULT;
+    esp_err_t e1 = uart_driver_install(UART_NUM_1, 4096, 0, 0, nullptr, 0);
+    esp_err_t e2 = uart_param_config(UART_NUM_1, &uc);
+    esp_err_t e3 = uart_set_pin(UART_NUM_1, cfg::kCt485TxPin, cfg::kCt485RxPin,
+                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    telnet_log::logf("[ct485] uart1 install=%d cfg=%d pins=%d rxBus=%d txBus=%d",
+                     (int)e1, (int)e2, (int)e3,
+                     (int)perimanGetPinBusType(cfg::kCt485RxPin),
+                     (int)perimanGetPinBusType(cfg::kCt485TxPin));
+  }
   gCtLastByteUs = micros();
 #endif
   for (;;) {
     const uint32_t nowMs = millis();
     xSemaphoreTake(gCtMux, portMAX_DELAY);
 #ifdef SLYTHERM_CT485_UART
-    int avail = Serial2.available();
+    size_t availSz = 0;
+    uart_get_buffered_data_len(UART_NUM_1, &availSz);
+    int avail = static_cast<int>(availSz);
     while (avail-- > 0) {
-      const int c = Serial2.read();
-      if (c < 0) break;
+      uint8_t rb;
+      if (uart_read_bytes(UART_NUM_1, &rb, 1, 0) != 1) break;
+      const int c = rb;
       gCtRxBytes = gCtRxBytes + 1;
       const uint32_t nowUs = micros();
       const bool gapBefore =
@@ -1532,8 +1543,11 @@ void ct485Task(void*) {
     { static uint32_t statsMs = 0;
       if (gSniffActive && nowMs - statsMs >= 30000) { statsMs = nowMs;
         const auto& c = gCtAcc.counters();
-        telnet_log::logf("[ct485-stats] %lu rx=%lu ok=%lu badLen=%lu badCk=%lu over=%lu",
+        // lvl = raw pad level of the RX pin: RS-485 idle (mark) should read 1.
+        // Stuck 0 with rx frozen = dead input path / transceiver, not framing.
+        telnet_log::logf("[ct485-stats] %lu rx=%lu lvl=%d ok=%lu badLen=%lu badCk=%lu over=%lu",
                          (unsigned long)nowMs, (unsigned long)gCtRxBytes,
+                         (int)gpio_get_level(static_cast<gpio_num_t>(cfg::kCt485RxPin)),
                          (unsigned long)c.framesOk,
                          (unsigned long)c.badLength, (unsigned long)c.badChecksum,
                          (unsigned long)c.overruns); } }
@@ -1547,8 +1561,8 @@ void ct485Task(void*) {
       if (n > 0) {
         digitalWrite(cfg::kCt485DePin, HIGH);
         delayMicroseconds(ct485::kDePrePostUs);
-        Serial2.write(raw, n);
-        Serial2.flush();
+        uart_write_bytes(UART_NUM_1, raw, n);
+        uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(250));
         delayMicroseconds(ct485::kDePrePostUs);
         digitalWrite(cfg::kCt485DePin, LOW);
       }
