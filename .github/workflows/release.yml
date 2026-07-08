@@ -80,6 +80,7 @@ jobs:
         with:
           files: |
             web/installer/firmware/*.bin
+            web/installer/firmware/*.elf.gz
             web/installer/firmware/manifest_*.json
             firmware/catalog.json
             docs/manuals/USER_MANUAL.pdf
