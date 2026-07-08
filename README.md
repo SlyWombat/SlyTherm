@@ -114,3 +114,7 @@ No-toolchain option: the [`web/installer/`](web/installer/) browser flasher.
 ---
 
 *Part of the ElectricRV project family. Secrets (`.env`, `*_secrets.h`) are gitignored.*
+
+## License
+
+SlyTherm is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) — free for personal, hobbyist, educational, research, and charitable use. **Commercial use requires a separate license** — see [`COMMERCIAL_LICENSING.md`](COMMERCIAL_LICENSING.md).
