@@ -21,6 +21,11 @@
 using namespace dettson;
 using namespace dettson::ui;
 
+// #113: injected by tools/version_flag.py; fallback keeps ad-hoc builds compiling.
+#ifndef SLYTHERM_FW_BUILD
+#define SLYTHERM_FW_BUILD "0.0.0-dev"
+#endif
+
 extern "C" const lv_img_dsc_t slymark_img;  // generated from assets/slytherm-mark.svg (slymark_img.c)
 extern "C" void uiToggleClock24();           // main_thermostat.cpp: flip+persist 12/24h (#69)
 extern "C" bool uiClock24();
@@ -517,7 +522,10 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t*sb=lv_btn_create(tab); lv_obj_set_size(sb,220,56); lv_obj_align(sb,LV_ALIGN_TOP_LEFT,4,300);
   lv_obj_set_style_bg_color(sb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(sb,openServer,LV_EVENT_CLICKED,nullptr);
   lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl);
-  wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,""); }
+  wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,"");
+  // #113: firmware identity line (VERSION file + git sha, injected at build)
+  { lv_obj_t*fw=lv_label_create(tab); lv_label_set_text(fw,"Firmware " SLYTHERM_FW_BUILD);
+    lv_obj_set_style_text_color(fw,lv_color_hex(COL_MUTED),0); lv_obj_align(fw,LV_ALIGN_BOTTOM_LEFT,4,-4); } }
 
 // ---- ambient (idle) screen ----
 void renderMain(const DisplayState& s);  // fwd: wake repaints Home before the light shows

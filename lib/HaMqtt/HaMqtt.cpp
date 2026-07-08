@@ -608,12 +608,19 @@ std::string strList(const std::vector<std::string>& items) {
   return s;
 }
 
+// #113: injected by tools/version_flag.py in firmware builds; host/native test
+// builds get the fallback so this pure lib never depends on the pre-script.
+#ifndef SLYTHERM_FW_VERSION
+#define SLYTHERM_FW_VERSION "0.0.0-dev"
+#endif
+
 std::string deviceJson() {
   return Obj()
       .raw("identifiers", strList({"slytherm_esp32"}))
       .str("name", "SlyTherm ClimateTalk Thermostat")
       .str("manufacturer", "ElectricRV")
       .str("model", "ESP32-S3 CT-485")
+      .str("sw_version", SLYTHERM_FW_VERSION)  // #113: HA device page shows fw version
       .close();
 }
 

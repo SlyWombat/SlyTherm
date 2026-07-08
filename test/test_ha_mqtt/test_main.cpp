@@ -133,6 +133,9 @@ static void test_climate_discovery_content() {
   TEST_ASSERT_TRUE(has(j, "\"device\":{\"identifiers\":[\"slytherm_esp32\"]"));
   TEST_ASSERT_TRUE(has(j, "\"manufacturer\":\"ElectricRV\""));
   TEST_ASSERT_TRUE(has(j, "\"model\":\"ESP32-S3 CT-485\""));
+  // #113: device block carries the firmware version (host builds see the
+  // SLYTHERM_FW_VERSION fallback; firmware builds get the injected value).
+  TEST_ASSERT_TRUE(has(j, "\"sw_version\":\""));
 }
 
 // ---------- diagnostic entity discovery ----------

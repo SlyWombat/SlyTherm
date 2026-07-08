@@ -58,6 +58,15 @@
 
 #include <esp_system.h>
 #include <esp_timer.h>
+
+// #113: injected by tools/version_flag.py (VERSION file + git sha). Fallbacks
+// keep ad-hoc builds (e.g. PLATFORMIO_BUILD_FLAGS-only invocations) compiling.
+#ifndef SLYTHERM_FW_VERSION
+#define SLYTHERM_FW_VERSION "0.0.0-dev"
+#endif
+#ifndef SLYTHERM_FW_BUILD
+#define SLYTHERM_FW_BUILD SLYTHERM_FW_VERSION
+#endif
 // IDF >= 5 (Arduino core 3.x) moved esp_efuse_mac_get_default() out of
 // esp_system.h; older cores have no esp_mac.h at all.
 #if __has_include(<esp_mac.h>)
@@ -1231,7 +1240,8 @@ void mqttTask(void*) {
         // kAvailability (above) — this topic carries cid/version only (see
         // the kControllerStatus comment in HaMqtt.h for why).
         gMqtt.publish(hm::topic::kControllerStatus,
-                      hm::controllerStatusJson(controllerCid(), true, __DATE__).c_str(),
+                      hm::controllerStatusJson(controllerCid(), true,
+                                               SLYTHERM_FW_VERSION).c_str(),
                       true);
 #endif
         publishDiscovery();
@@ -2123,6 +2133,7 @@ void setup() {
                  "DISABLED (logging/stub build)"
 #endif
   );
+  Serial.println("fw " SLYTHERM_FW_BUILD);  // #113: VERSION file + git sha
 
   if (cfg::kWdtPetPin >= 0) { pinMode(cfg::kWdtPetPin, OUTPUT); digitalWrite(cfg::kWdtPetPin, LOW); }
 
@@ -2145,6 +2156,14 @@ void setup() {
         gShadow.hold = 0xFF;
         Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch + hold");
       } } }
+  // #64: OTA-capability check. Both stock tables (default_8MB/S3,
+  // default_16MB/P4) are dual-app; if next is NULL the table has no second
+  // slot and the OTA client (#61) must hard-disable with a visible reason.
+  { const esp_partition_t* run = esp_ota_get_running_partition();
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+    Serial.printf("[boot] OTA %s: running=%s next=%s\n",
+                  next ? "capable" : "NOT capable (single-app table)",
+                  run ? run->label : "?", next ? next->label : "none"); }
   gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
   // Monotonic clock: resume from the persisted base (never backwards).

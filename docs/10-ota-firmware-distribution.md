@@ -5,83 +5,141 @@ distributed via **GitHub Releases** with a **versioned catalog of supported
 platforms** — modelled on the parallel **SlyLED** project (firmware attached to
 GitHub releases; per-target versioned binaries built by CI).
 
-> This is a **plan**; execution is tracked in the linked GitHub issues (the OTA
-> epic + children). Nothing here ships without the safety gates in §5.
+> Execution is tracked in the OTA epic #58 + children (concrete per-issue plans
+> live in the issue comments, revised 2026-07-07). Nothing here ships without
+> the safety gates in §6.
 
 ## 1. Goal
 
 Push new firmware to deployed devices without a USB cable, safely, with a clear
-catalog of which hardware targets exist and what versions are available.
+catalog of which hardware targets exist and what versions are available. The
+**Controller and the Remote fetch their firmware through the same mechanism.**
 
 ## 2. Where we are
 
-- `tools/release.py` already builds **merged single-image binaries** + **ESP Web
-  Tools manifests** (`web/installer/`) for **USB** browser-flashing.
-- **Missing:** OTA (pull-update over WiFi), GitHub-release CI, a multi-target
-  catalog, OTA-capable partition tables, and the on-device update UI.
+- `tools/release.py` builds **merged single-image binaries** + **ESP Web Tools
+  manifests** (`web/installer/`) for **USB** browser-flashing;
+  `.github/workflows/release.yml` runs it on `v*` tags. No release cut yet.
+- **Both deployed targets already run dual-app OTA partition tables** (§5) —
+  the on-flash layout needs no change.
+- `tools/version_flag.py` injects `SLYTHERM_FW_VERSION`/`SLYTHERM_FW_BUILD`
+  from the root `VERSION` file (§3); `lib/OtaCatalog` parses the catalog and
+  resolves update decisions (host-tested).
+- **Missing:** CI extensions for OTA artifacts (#59), the on-device client
+  (#61), signing + safety gating (#62), and the update UI (#65, #112).
 
-## 3. Device catalog (targets)
+## 3. Versioning (issue #113)
 
-| Target id | Hardware | Role | Furnace-connected |
-| --- | --- | --- | --- |
-| `wall-s3` | Waveshare ESP32-S3-4.3B | main thermostat + wall UI (`thermostat_s3`) | **yes** (CT-485/24V) |
-| `sniffer-s3` | ESP32-S3-4.3B / DevKitC | RX-only CT-485 sniffer | no (listen-only) |
-| `satellite-s3` | ESP32-S3 touchscreen | **remote room panel** — display/adjust over MQTT, report room temp+occupancy as a sensor; **no CT-485/actuator** | **no** |
+- The root **`VERSION` file is the single source of truth** (semver
+  `MAJOR.MINOR.PATCH`). PATCH = fixes; MINOR = features; MAJOR = breaking
+  contract change (topic map, catalog schema, partition expectations). Bump in
+  the PR that completes the work being released.
+- `tools/version_flag.py` (PlatformIO pre-script, wired via `extra_scripts`)
+  defines `SLYTHERM_FW_VERSION` ("0.3.0") and `SLYTHERM_FW_BUILD`
+  ("0.3.0+g1a2b3c4[-dirty]") in every firmware env. Consumers: boot banner,
+  Settings screen, HA discovery `sw_version`, the `slytherm/controller/status`
+  heartbeat, and the OTA version compare (`lib/OtaCatalog::parseSemver`,
+  which ignores `+build` metadata).
+- A release tag is always `v<VERSION>`; CI fails the release if they differ.
+- **One release train**: Controller (`wall-s3`) and Remote (`remote-p4`)
+  binaries share the version of the release that built them.
 
-Each target has a hardware-revision tag so the catalog can gate incompatible
-images. Satellite panels are the driver for a clean control-vs-UI split (the
-`ui/lvgl` binding + `wifi_prov` are already reusable without the control app).
+## 4. Device catalog (targets)
 
-## 4. Architecture (GitHub → catalog → device)
+| Target id | Env | Hardware | hwRev | Furnace | OTA |
+| --- | --- | --- | --- | --- | --- |
+| `wall-s3` | `thermostat_s3` | Waveshare ESP32-S3-4.3B **Controller** | `s3-43b-r1.1` | **yes** | gated (§6) |
+| `remote-p4` | `remote_p4` | Guition JC-ESP32P4-M3 **Remote** | `p4-m3-r1` | no | ungated |
+
+The esp32dev bench envs (`sniffer`, `thermostat`) stay **USB-only** — no
+catalog entries. A new board revision is a **new `{id, hwRev}` catalog entry**,
+never a mutation of an existing one, so old hardware keeps resolving its own
+image. (The former `satellite-s3` target was superseded by the Remote — #63.)
+
+`catalog.json` lives at `firmware/catalog.json`, committed to `main` by CI on
+each release; devices fetch
+`https://raw.githubusercontent.com/SlyWombat/SlyTherm/main/firmware/catalog.json`.
+Schema (v1) and parsing semantics: issue #60 + `lib/OtaCatalog`. Per target:
+`{id, name, chipFamily, hwRev, version, appUrl, appSize, sha256, sig,
+minVersion, mandatory, notesUrl}`.
+
+**Distribution prerequisite:** the repo goes **public when OTA testing starts**
+(decided 2026-07-07). Until then devices cannot fetch the catalog or assets;
+all other OTA work proceeds (bench-testable against a local HTTPS server).
+
+## 5. Partition tables (issue #64 — verified, no redesign)
+
+- `thermostat_s3` → framework `default_8MB.csv`: `nvs@0x9000`,
+  `otadata@0xe000`, `ota_0@0x10000` + `ota_1@0x340000` (3.34 MB each),
+  `spiffs@0x670000`, `coredump@0x7F0000`. App ≈1.38 MB → 2.4× headroom.
+  Deliberately kept on the 8 MB table despite 16 MB physical flash: it is the
+  deployed layout, and **a partition table is never changeable via OTA**
+  (USB-only, forever).
+- `remote_p4` → `default_16MB.csv`: `ota_0`/`ota_1` @ 6.25 MB each,
+  `spiffs@0xc90000`, `coredump@0xFF0000`.
+- Per-target coredump offsets (0x7F0000 vs 0xFF0000) matter to the crash-debug
+  tooling.
+- Boot logs OTA capability (`running=ota_0 next=ota_1`); the client
+  hard-disables with a visible reason if no second slot exists.
+
+## 6. Architecture (GitHub → catalog → device)
 
 ```
- git tag vX.Y.Z ──► GitHub Actions
+ git tag vX.Y.Z ──► GitHub Actions (#59)
+                     ├─ assert tag == VERSION file
                      ├─ pio test -e native
-                     ├─ build each target (app image + merged USB image)
-                     ├─ create GitHub Release vX.Y.Z, attach assets
-                     └─ generate firmware/catalog.json (targets → latest ver + url + sha256)
+                     ├─ build each target: app-only image + merged USB image
+                     ├─ sha256 + ECDSA-P256 signature per app image
+                     ├─ create Release vX.Y.Z, attach assets
+                     └─ regenerate + commit firmware/catalog.json
                                      │
- device (OTA client) ◄──────────────┘  fetch catalog.json (raw/release asset)
-   compare its target+hwrev+version  →  download app image (HTTPS, GitHub asset)
-   verify sha256 + signature         →  esp_https_ota to inactive A/B partition
-   mark-for-rollback → reboot        →  self-test → confirm or roll back
+ device (#61) ◄─────────────────────┘  fetch catalog.json (raw URL)
+   lib/OtaCatalog: resolve target+hwRev+version → update decision
+   HTTPClient (redirect-follow) streams the asset into Update.h → inactive slot
+   sha256 (streamed) + signature verified BEFORE activation
+   NVS otaPending → reboot (Controller: deferred to idle, §7)
+   boot self-test → confirm, or roll back to the previous slot
 ```
 
-- **CI** extends `tools/release.py`: adds the OTA **app-only** image per target
-  (for `esp_https_ota`) alongside the merged USB image, and emits `catalog.json`.
-- **Catalog** (`catalog.json`, served from GitHub): per target
-  `{id, name, chipFamily, hwRev, version, appUrl, sha256, minVersion,
-  mandatory, notesUrl}`. Superset-compatible with the ESP Web Tools manifests.
-- **Device OTA client**: manual "check now" + optional scheduled check; downloads
-  over HTTPS from the release asset; **A/B (dual-app) partitions** with rollback.
+**One shared client for both roles:** `lib/OtaCatalog` (pure, host-tested) +
+`src/ota_client.cpp` (Arduino glue; compiles on core 2.x/S3 and 3.x/P4 — the
+TLS class is the single `#if` seam). `HTTPClient` + `Update.h` is used instead
+of raw `esp_https_ota`: same underlying `esp_ota_*` machinery, plus streaming
+hash verify and GitHub 302-redirect handling that works identically on both
+cores.
 
-## 5. Safety (the wall unit controls a gas appliance — docs/04)
+**Rollback is app-level** (stock Arduino cores don't enable bootloader
+rollback): boot with `otaPending` set runs a self-test (control boot gate +
+WiFi + broker within ~5 min); failure or a #80 reset-loop-latch trip while
+pending → `esp_ota_set_boot_partition(previous)` + reboot. Result recorded to
+NVS for the UI.
 
-Non-negotiable gates for `wall-s3` (satellite/sniffer are exempt):
-- **Update only in a safe state:** no active demand, compressor idle, no pending
-  call — never mid heat/cool cycle. A staged update waits for idle.
-- **A/B partitions + automatic rollback:** boot the new image; if it fails to
-  validate/boot, roll back to the previous partition.
-- **Signed images:** verify a signature (not just sha256) before apply; reject
-  unsigned/mismatched images.
-- **Fail-to-no-demand:** an aborted/failed OTA leaves the device in no-demand;
-  the certified IFC keeps all combustion interlocks regardless.
+## 7. Safety (the wall unit controls a gas appliance — docs/04)
+
+Non-negotiable gates for `wall-s3` (`remote-p4` exempt; it has no furnace):
+- **Download/verify/stage to the inactive slot: allowed anytime** — the
+  running image keeps controlling the furnace throughout. **The REBOOT is the
+  gated action**: only at `action == idle`, no active equipment, no pending
+  demand, sustained ≥5 min. A staged update waits for idle.
+- **A/B partitions + automatic rollback** (§6) — a bad image self-recovers.
+- **Signed images:** ECDSA-P256 over the app sha256, signed by CI
+  (`OTA_SIGNING_KEY` secret), public key baked into firmware. The Controller
+  rejects unsigned/mismatched images; sha256 alone is integrity, not
+  authenticity. Key rotation = MAJOR bump + dual-key window (not built until
+  needed).
+- **Fail-to-no-demand:** boot-to-no-demand is already the codebase invariant
+  (docs/04 §3); an aborted/failed OTA leaves the running image untouched. The
+  certified IFC keeps all combustion interlocks regardless.
 - **OEM rollback preserved:** the physical OEM-thermostat fallback path is
-  unaffected by any firmware state.
+  wiring (docs/03), unaffected by any firmware state.
 
-## 6. Issue breakdown (execution)
+## 8. Issue breakdown (execution — see each issue for the concrete plan)
 
-1. **CI + GitHub Releases** — Actions build all targets on tag, attach assets,
-   emit `catalog.json`; extend `tools/release.py`.
-2. **Catalog format** — define/publish `catalog.json` (targets, versions, urls,
-   hashes, hwRev, mandatory).
-3. **On-device OTA client** — esp_https_ota, A/B partitions, version check,
-   verify + apply + rollback.
-4. **OTA safety gates (wall unit)** — idle-only apply, signing, rollback,
-   fail-to-no-demand (§5).
-5. **Satellite room panel target** — `satellite-s3` env: UI + `wifi_prov` + MQTT
-   sensor/remote, no control app/CT-485; first-class OTA target.
-6. **OTA partition table** — dual-app OTA layout on 16 MB flash for all S3 envs
-   (the app is ~1.2 MB with LVGL).
-7. **Firmware update UI** — Settings → Firmware: current version, check, update
-   (with the §5 gate on the wall unit), progress/result.
+1. **#113 versioning** — VERSION → build flag → topics/UI/HA (start-now item).
+2. **#60 catalog** — schema + `lib/OtaCatalog` parser/resolve (host-tested).
+3. **#59 CI + Releases** — build all targets on tag, sign, attach, commit catalog.
+4. **#64 partitions** — verified dual-app already; boot assert + size check in CI.
+5. **#61 on-device client** — shared download/verify/apply/rollback.
+6. **#62 safety gates** — idle-gated reboot + signing (Controller).
+7. **#65 firmware UI** — shared Settings → Firmware screen; #112 Remote persona.
+8. **#111 Remote client integration** — P4/C6 specifics, ungated apply.
