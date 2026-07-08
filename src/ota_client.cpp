@@ -33,6 +33,7 @@
 #include <mbedtls/version.h>
 
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #include "OtaCatalog.h"
@@ -59,9 +60,10 @@ extern "C" bool otaSafeToReboot();
 namespace ota {
 namespace {
 
-constexpr uint32_t kTaskStack = 12288;   // TLS + parse headroom
+constexpr uint32_t kTaskStack = 16384;   // TLS handshake + parse headroom
 constexpr UBaseType_t kTaskPrio = 1;     // below MQTT/control
 constexpr uint32_t kCheckIntervalMs = 24u * 60u * 60u * 1000u;  // daily
+constexpr uint32_t kCheckRetryMs = 5u * 60u * 1000u;  // retry cadence after a failure
 constexpr uint32_t kSelfTestTimeoutMs = 5u * 60u * 1000u;       // 5 min
 constexpr uint8_t kMaxBootAttempts = 3;
 constexpr size_t kCatalogMaxBytes = 16 * 1024;
@@ -156,9 +158,30 @@ bool signatureOk(const uint8_t digest[32], const std::string& sigB64) {
   return ok;
 }
 
+// TLS certificate validation needs a sane wall clock; before NTP syncs every
+// handshake is doomed (notBefore in the future). Gate + say so instead of
+// reporting an opaque connection error.
+bool clockSynced() { return time(nullptr) > 1600000000; }
+
+// Compose "phase: HTTP <code> (tls=<mbedtls detail>, heap=<free>)" so the
+// REAL failure reason reaches the MQTT status without a serial cable.
+void failHttp(const char* phase, int code, WiFiClientSecure& tls) {
+  char tlsErr[48] = "";
+  const int rc = tls.lastError(tlsErr, sizeof(tlsErr));
+  char b[sizeof(Status{}.error)];
+  snprintf(b, sizeof(b), "%s: HTTP %d (tls=%d %s heap=%u)", phase, code, rc,
+           tlsErr, static_cast<unsigned>(ESP.getFreeHeap()));
+  fail(b);
+}
+
 // ---- catalog check ----
 bool doCheck() {
   setStatus(State::kChecking, 0, "", "");
+  if (!clockSynced()) {
+    fail("catalog: clock unsynced (NTP pending) — will retry");
+    return false;
+  }
+  Serial.printf("[ota] check: heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
   WiFiClientSecure tls;
   tls.setCACert(ota_certs::kOtaCaBundle);
   HTTPClient http;
@@ -172,9 +195,7 @@ bool doCheck() {
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    char b[48];
-    snprintf(b, sizeof(b), "catalog: HTTP %d", code);
-    fail(b);
+    failHttp("catalog", code, tls);
     return false;
   }
   const int len = http.getSize();
@@ -243,9 +264,7 @@ bool doApply() {
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    char b[48];
-    snprintf(b, sizeof(b), "apply: HTTP %d", code);
-    fail(b);
+    failHttp("apply", code, tls);
     return false;
   }
   const int total = http.getSize();  // -1 = chunked/unknown
@@ -368,12 +387,16 @@ void otaTask(void*) {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
+      // Daily cadence after a good check; 5-min retry after a failed one
+      // (first boot attempt races WiFi/NTP — don't wait a day to recover).
+      static bool lastCheckOk = false;
+      const uint32_t interval = lastCheckOk ? kCheckIntervalMs : kCheckRetryMs;
       const bool auto_due = lastAutoCheckMs == 0 ||
-                            millis() - lastAutoCheckMs >= kCheckIntervalMs;
+                            millis() - lastAutoCheckMs >= interval;
       if (gCheckReq || (auto_due && !staged)) {
         gCheckReq = false;
         lastAutoCheckMs = millis();
-        doCheck();
+        lastCheckOk = doCheck();
       }
       if (gApplyReq && !staged) {
         gApplyReq = false;
