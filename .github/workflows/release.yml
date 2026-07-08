@@ -33,7 +33,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio esptool
 
       - name: Native test gate
         run: pio test -e native
@@ -51,7 +51,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio esptool
 
       - name: Cache PlatformIO toolchains
         uses: actions/cache@v4

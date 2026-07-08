@@ -110,18 +110,29 @@ def pio_home() -> Path:
 
 
 def find_esptool() -> list:
-    """Argv prefix that runs esptool (ships inside PlatformIO's
-    tool-esptoolpy package, not on PATH)."""
+    """Argv prefix that runs esptool. Preference order:
+    1. `python -m esptool` when the module is importable by THIS interpreter
+       (CI pip-installs it with its own deps — the pio-bundled esptool.py is
+       v5 there and crashes on a bare interpreter: ModuleNotFoundError
+       rich_click, the v0.4.2 release failure).
+    2. The pio-bundled package run with pio's own penv python (local dev).
+    3. Anything on PATH."""
+    try:
+        import esptool  # noqa: F401
+        return [sys.executable, "-m", "esptool"]
+    except ImportError:
+        pass
     home = pio_home()
     candidates = sorted(home.glob("packages/tool-esptoolpy*/esptool.py"))
     if candidates:
         penv_py = home / "penv" / "bin" / "python"
-        py = str(penv_py) if penv_py.exists() else sys.executable
-        return [py, str(candidates[0])]
+        if penv_py.exists():
+            return [str(penv_py), str(candidates[0])]
     exe = shutil.which("esptool.py") or shutil.which("esptool")
     if exe:
         return [exe]
-    die(f"esptool not found under {home}/packages/tool-esptoolpy* or on PATH")
+    die(f"esptool not importable, not under {home}/packages, not on PATH"
+        " (pip install esptool)")
 
 
 def find_boot_app0() -> Path:
