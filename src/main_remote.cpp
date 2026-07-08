@@ -143,6 +143,15 @@ void loop() {
   remote_mqtt::loop();
 
   // Feed link health + wall clock into the model (the UI renders these live).
+  // One-shot NTP once WiFi is up (same servers/TZ as the Controller, #69):
+  // feeds the top-bar clock AND the OTA client's TLS cert validation (#111 —
+  // an unsynced clock fails every X.509 date check).
+  static bool sNtpUp = false;
+  if (!sNtpUp && remote_wifi::connected()) {
+    sNtpUp = true;
+    configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
+  }
+
   static uint32_t lastTickMs = 0;
   const uint32_t nowMs = millis();
   if (nowMs - lastTickMs >= 1000) {

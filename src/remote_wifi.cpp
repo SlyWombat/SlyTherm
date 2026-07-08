@@ -3,14 +3,29 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <Preferences.h>
+
 #include <cstring>
 
+// Credentials: NVS first (namespace "wifi", the SAME one the Controller's
+// wifi_prov uses — the future on-device provisioning screen, #100/#101,
+// writes there too), falling back to the gitignored compile-time secret,
+// which is then SEEDED into NVS so an OTA'd image built WITHOUT secrets
+// (CI release assets, #111/#59) inherits the network. Without this, the
+// first OTA hop onto a release image would strand the Remote off WiFi.
+#if __has_include("remote_secrets.h")
 #include "remote_secrets.h"
+#else
+#define REMOTE_WIFI_SSID ""
+#define REMOTE_WIFI_PASS ""
+#endif
 
 namespace remote_wifi {
 namespace {
 
 uint32_t gLastTryMs = 0;
+char gSsid[48] = {};
+char gPass[64] = {};
 // #109: retry backoff — 10s after the first failure, *1.5 per retry, 60s
 // ceiling, reset on success. Never a 5s hammer, retries forever.
 constexpr uint32_t kRetryMinMs = 10000;
@@ -35,7 +50,7 @@ void scanForBest() {
   for (int i = 0; i < n; i++) {
     Serial.printf("[wifi]   \"%s\" ch=%d rssi=%d enc=%d\n", WiFi.SSID(i).c_str(),
                   WiFi.channel(i), WiFi.RSSI(i), static_cast<int>(WiFi.encryptionType(i)));
-    if (WiFi.SSID(i) == REMOTE_WIFI_SSID && WiFi.RSSI(i) > bestRssi) {
+    if (WiFi.SSID(i) == gSsid && WiFi.RSSI(i) > bestRssi) {
       bestRssi = WiFi.RSSI(i);
       gBestChannel = WiFi.channel(i);
       memcpy(gBestBssid, WiFi.BSSID(i), 6);
@@ -43,7 +58,7 @@ void scanForBest() {
     }
   }
   if (gHaveBest) {
-    Serial.printf("[wifi] strongest \"%s\" match: ch=%d rssi=%d\n", REMOTE_WIFI_SSID, gBestChannel,
+    Serial.printf("[wifi] strongest \"%s\" match: ch=%d rssi=%d\n", gSsid, gBestChannel,
                   bestRssi);
   }
 }
@@ -51,18 +66,38 @@ void scanForBest() {
 void connectToBest() {
   ++gAttempts;
   if (gHaveBest) {
-    Serial.println("[wifi] connecting to strongest \"" REMOTE_WIFI_SSID "\" BSSID...");
-    WiFi.begin(REMOTE_WIFI_SSID, REMOTE_WIFI_PASS, gBestChannel, gBestBssid);
+    Serial.printf("[wifi] connecting to strongest \"%s\" BSSID...\n", gSsid);
+    WiFi.begin(gSsid, gPass, gBestChannel, gBestBssid);
   } else {
     Serial.printf("[wifi] connecting to \"%s\" (no scan match, letting driver pick)...\n",
-                  REMOTE_WIFI_SSID);
-    WiFi.begin(REMOTE_WIFI_SSID, REMOTE_WIFI_PASS);
+                  gSsid);
+    WiFi.begin(gSsid, gPass);
   }
 }
 
 }  // namespace
 
 void begin() {
+  // NVS creds win; compile-time secret is the seed (and is persisted so
+  // the next image needs no secret). Neither present -> log and idle;
+  // retries are pointless with no SSID.
+  Preferences p;
+  p.begin("wifi", false);
+  String s = p.getString("ssid", ""), pw = p.getString("pass", "");
+  if (s.length() == 0 && strlen(REMOTE_WIFI_SSID) > 0) {
+    s = REMOTE_WIFI_SSID;
+    pw = REMOTE_WIFI_PASS;
+    p.putString("ssid", s);
+    p.putString("pass", pw);
+    Serial.println("[wifi] seeded NVS creds from compiled-in secret");
+  }
+  p.end();
+  strlcpy(gSsid, s.c_str(), sizeof(gSsid));
+  strlcpy(gPass, pw.c_str(), sizeof(gPass));
+  if (gSsid[0] == 0) {
+    Serial.println("[wifi] NO credentials (NVS empty, no remote_secrets.h) — WiFi idle");
+    return;
+  }
   WiFi.mode(WIFI_STA);
   scanForBest();
   connectToBest();
@@ -70,6 +105,7 @@ void begin() {
 }
 
 void loop() {
+  if (gSsid[0] == 0) return;  // unprovisioned: nothing to retry
   const uint32_t nowMs = millis();
   if (WiFi.status() == WL_CONNECTED) {
     gFailedTries = 0;
