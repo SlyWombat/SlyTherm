@@ -821,6 +821,19 @@ std::string lockStateJson(LockState s, LockLevel l, bool userPinSet) {
       .close();
 }
 
+std::string otaStateJson(const char* state, uint8_t progressPct,
+                          const std::string& runningVersion,
+                          const std::string& availableVersion,
+                          const std::string& error) {
+  return Obj()
+      .str("state", state ? state : "idle")
+      .num("progress", progressPct > 100 ? 100 : progressPct)
+      .str("running", runningVersion)
+      .str("available", availableVersion)
+      .str("error", error)
+      .close();
+}
+
 std::string controllerStatusJson(const std::string& cid, bool online,
                                   const std::string& version) {
   return Obj()

@@ -73,6 +73,8 @@
 #include <esp_mac.h>
 #endif
 
+#include "ota_client.h"  // #61: no-op inlines unless -DSLYTHERM_OTA
+
 #include "CompressorGuard.h"
 #include "Ct485Core.h"
 #include "Ct485Frame.h"
@@ -829,6 +831,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, hm::topic::kConfigSensors) == 0) { handleSensorRoster(buf); return; }
   if (strcmp(topic, hm::topic::kConfigPresets) == 0) { handlePresetRoster(buf); return; }
+#ifdef SLYTHERM_OTA
+  // #61: payload deliberately ignored — any message triggers; the OTA task
+  // no-ops requests that arrive mid-phase.
+  if (strcmp(topic, hm::topic::kCmdOtaCheck) == 0) { ota::requestCheck(); return; }
+  if (strcmp(topic, hm::topic::kCmdOtaApply) == 0) { ota::requestApply(); return; }
+#endif
 
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   bool accepted = true;
@@ -1026,6 +1034,10 @@ void subscribeAll() {
 #ifdef SLYTHERM_REMOTE_LINK
   gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
 #endif
+#ifdef SLYTHERM_OTA
+  gMqtt.subscribe(hm::topic::kCmdOtaCheck);  // #61
+  gMqtt.subscribe(hm::topic::kCmdOtaApply);
+#endif
 }
 
 // State publish cache: one slot per fixed topic (diff suppression).
@@ -1036,6 +1048,9 @@ enum PubIdx : uint8_t {
   PUB_LASTERR, PUB_SLEEP,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
+#endif
+#ifdef SLYTHERM_OTA
+  PUB_OTA,
 #endif
   PUB_COUNT
 };
@@ -1064,12 +1079,32 @@ void publishRemoteEcho(const Snapshot& s, bool force) {
 }
 #endif  // SLYTHERM_REMOTE_LINK
 
+// #62: furnace-busy clock for the OTA reboot gate. Updated every snapshot
+// publish (<=500 ms cadence on the mqttTask); otaSafeToReboot() below demands
+// a SUSTAINED idle window measured against this, so an OTA staged moments
+// after a heat call ends still waits the full window.
+volatile uint32_t gOtaLastBusyMs = 0;
+constexpr uint32_t kOtaIdleWindowMs = 5u * 60u * 1000u;
+
+extern "C" bool otaSafeToReboot() {
+  xSemaphoreTake(gSnapMux, portMAX_DELAY);
+  const bool idle = (strcmp(gSnap.action, "idle") == 0 ||
+                     strcmp(gSnap.action, "off") == 0) &&
+                    strcmp(gSnap.equipment, "idle") == 0;
+  xSemaphoreGive(gSnapMux);
+  if (!idle) { gOtaLastBusyMs = millis(); return false; }  // stamp even if MQTT is down
+  return millis() - gOtaLastBusyMs >= kOtaIdleWindowMs;  // idle-since-boot counts
+}
+
 void publishSnapshot(bool force) {
   Snapshot s;
   xSemaphoreTake(gSnapMux, portMAX_DELAY);
   s = gSnap;
   gSnap.lockTombstone = false;  // consumed below
   xSemaphoreGive(gSnapMux);
+  if ((strcmp(s.action, "idle") != 0 && strcmp(s.action, "off") != 0) ||
+      strcmp(s.equipment, "idle") != 0)
+    gOtaLastBusyMs = millis();
 
   char b[192];
   using namespace hm;
@@ -1119,6 +1154,13 @@ void publishSnapshot(bool force) {
   pubState(PUB_SLEEP, "slytherm/state/sleep", s.asleep ? "asleep" : "awake", force);
 #ifdef SLYTHERM_ACTUATOR_RELAY
   pubState(PUB_RELAYS, "slytherm/state/relays", s.relaysJson, force);
+#endif
+#ifdef SLYTHERM_OTA
+  { const ota::Status os = ota::status();  // #61 live client status
+    pubState(PUB_OTA, topic::kStateOta,
+             otaStateJson(ota::toString(os.state), os.progressPct,
+                          SLYTHERM_FW_VERSION, os.available, os.error).c_str(),
+             force); }
 #endif
 
   if (force) {  // per-sensor diagnostics on the heartbeat only (age ticks anyway)
@@ -1251,6 +1293,9 @@ void mqttTask(void*) {
 #ifdef SLYTHERM_REMOTE_LINK
         gRemoteEchoCache.clear();  // force a full retained-echo republish too
 #endif
+        // #61: broker connectivity = the post-OTA self-test (network stack +
+        // app alive). Confirms a pending update; no-op otherwise.
+        ota::noteSelfTestPass();
 #ifdef SLYTHERM_UI
         telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
 #else
@@ -2164,6 +2209,10 @@ void setup() {
     Serial.printf("[boot] OTA %s: running=%s next=%s\n",
                   next ? "capable" : "NOT capable (single-app table)",
                   run ? run->label : "?", next ? next->label : "none"); }
+  // #61: pending-update validation — arms the self-test (confirmed on MQTT
+  // connect) or rolls back a crash-looping new image. No-op without
+  // -DSLYTHERM_OTA or when no update is pending.
+  ota::bootValidate();
   gClock24 = gPrefs.getBool("clk24", false);  // top-bar 12/24h preference (#69)
 
   // Monotonic clock: resume from the persisted base (never backwards).
@@ -2340,6 +2389,8 @@ void setup() {
   // the control cadence and future TX turnaround (docs/03 §8, issue #28).
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 #endif
+  // #61: OTA task (core 0, below MQTT). No-op without -DSLYTHERM_OTA.
+  ota::begin();
 }
 
 void loop() {

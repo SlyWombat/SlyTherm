@@ -113,6 +113,17 @@ constexpr const char* kRemoteIntentTopicPrefix = SLYTHERM_TOPIC_PREFIX "remote/"
 constexpr const char* kRemoteIntentTopicSuffix = "/intent";
 constexpr const char* kRemoteIntentSubscribeWildcard = SLYTHERM_TOPIC_PREFIX "remote/+/intent";
 
+// ---------- OTA (issues #61/#65; docs/10) ----------
+// Live client status (NOT retained — stale "downloading" after a reboot would
+// mislead; the client republishes on every MQTT reconnect). Payload:
+// otaStateJson() below.
+constexpr const char* kStateOta = SLYTHERM_TOPIC_PREFIX "state/ota";
+// Commands: check the catalog now / apply the staged-or-available update.
+// Payload is ignored (any message triggers); both are no-ops while an OTA
+// phase is already in flight.
+constexpr const char* kCmdOtaCheck = SLYTHERM_TOPIC_PREFIX "cmd/ota_check";
+constexpr const char* kCmdOtaApply = SLYTHERM_TOPIC_PREFIX "cmd/ota_apply";
+
 constexpr const char* kDiscoveryPrefix = "homeassistant";
 
 }  // namespace topic
@@ -363,6 +374,17 @@ std::string lockStateJson(LockState s, LockLevel l, bool userPinSet);
 // version is informational only (currently the firmware build timestamp).
 std::string controllerStatusJson(const std::string& cid, bool online,
                                   const std::string& version);
+
+// slytherm/state/ota payload (#61):
+//   {"state":"downloading","progress":42,"running":"0.3.0",
+//    "available":"0.4.0","error":""}
+// state ∈ idle|checking|up_to_date|update_available|downloading|verifying|
+// staged|rebooting|failed|rolled_back; "available"/"error" are "" when not
+// applicable; progress is 0-100 (download phase only, else 0).
+std::string otaStateJson(const char* state, uint8_t progressPct,
+                          const std::string& runningVersion,
+                          const std::string& availableVersion,
+                          const std::string& error);
 
 // slytherm/remote/state payload (retained authoritative echo):
 //   {"heatC":21.0,"coolC":25.0,"mode":"heat","emHeat":false,

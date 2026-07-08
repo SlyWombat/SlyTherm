@@ -862,6 +862,26 @@ static void test_remote_state_json_round_trip() {
   TEST_ASSERT_TRUE(has(j, "\"fusedTempValid\":false"));
 }
 
+static void test_ota_topics_and_state_json() {
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/ota", topic::kStateOta);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/ota_check", topic::kCmdOtaCheck);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/ota_apply", topic::kCmdOtaApply);
+
+  std::string j = otaStateJson("downloading", 42, "0.3.0", "0.4.0", "");
+  assertCoherentJson(j);
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"state\":\"downloading\",\"progress\":42,\"running\":\"0.3.0\","
+      "\"available\":\"0.4.0\",\"error\":\"\"}",
+      j.c_str());
+
+  // Progress clamped; null state falls back to idle; error carried through.
+  j = otaStateJson(nullptr, 200, "0.3.0", "", "verify: signature rejected");
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"state\":\"idle\""));
+  TEST_ASSERT_TRUE(has(j, "\"progress\":100"));
+  TEST_ASSERT_TRUE(has(j, "\"error\":\"verify: signature rejected\""));
+}
+
 static void test_parse_remote_intent_setpoints_and_mode() {
   RemoteIntent ri;
   TEST_ASSERT_TRUE(parseRemoteIntentJson(
@@ -961,6 +981,7 @@ int main() {
   RUN_TEST(test_remote_link_topics);
   RUN_TEST(test_controller_status_json);
   RUN_TEST(test_remote_state_json_round_trip);
+  RUN_TEST(test_ota_topics_and_state_json);
   RUN_TEST(test_parse_remote_intent_setpoints_and_mode);
   RUN_TEST(test_parse_remote_intent_preset_hold_and_clear);
   RUN_TEST(test_parse_remote_intent_rejects_junk);
