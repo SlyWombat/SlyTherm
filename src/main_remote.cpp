@@ -98,9 +98,13 @@ void setup() {
 
   gUiMux = xSemaphoreCreateMutex();
   gUi.setHasBus(false);   // #101: busless persona — no RS-485/CT-485 UI
+  // Pre-link placeholder only: the #102 link overwrites setpoints/mode/hold/
+  // preset/fused-temp from the Controller's retained echo within seconds of
+  // MQTT connecting. Sensor rows/outdoor stay demo until their feed lands.
   fillDemoState();
 
   remote_wifi::begin();
+  remote_mqtt::attachModel(&gUi, gUiMux);  // #102: echo -> model, intents -> broker
   remote_mqtt::begin();
 
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
