@@ -73,6 +73,17 @@ bool FrameAccumulator::feed(uint8_t byte, bool gapBefore) {
   if (!overflowed_) {
     if (len_ < kMaxFrame) {
       buf_[len_++] = byte;
+      // Length-based close (primary framing): the header declares the total
+      // frame length, so close EXACTLY there. Gap timing measured at UART
+      // *read* time slices frames at task-poll boundaries and merges
+      // back-to-back frames (2026-07-08 field capture: badLen=567/5min on a
+      // healthy bus) — the byte count cannot lie. A bogus header (declared
+      // payload > kMaxPayload) disables this and gap framing takes over as
+      // the resync fallback.
+      if (!completed) {
+        const size_t want = expectedLen();
+        if (want != 0 && len_ == want) completed = closeFrame();
+      }
     } else {
       // Count once per runaway frame; drop bytes until the next gap.
       overflowed_ = true;
@@ -80,6 +91,13 @@ bool FrameAccumulator::feed(uint8_t byte, bool gapBefore) {
     }
   }
   return completed;
+}
+
+size_t FrameAccumulator::expectedLen() const {
+  if (len_ < kHeaderLen) return 0;
+  const uint8_t plen = buf_[kOffPayloadLen];
+  if (plen > kMaxPayload) return 0;
+  return static_cast<size_t>(plen) + kHeaderLen + kChecksumLen;
 }
 
 bool FrameAccumulator::flush() { return closeFrame(); }

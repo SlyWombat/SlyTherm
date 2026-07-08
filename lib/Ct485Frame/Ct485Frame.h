@@ -36,11 +36,15 @@ size_t encode(const Frame& frame, uint8_t* out);
 // On failure `out` is untouched.
 bool decode(const uint8_t* buf, size_t len, Frame& out);
 
-// Reassembles raw frames from the RX byte stream. The caller detects the
-// >= 3.5 ms idle gap and passes gapBefore=true on the FIRST byte received
-// after such a gap; that closes out (validates) the previously accumulated
-// frame. flush() closes the in-progress frame when the bus goes idle with
-// no following byte. Counters feed the sniffer's diagnostics.
+// Reassembles raw frames from the RX byte stream. PRIMARY framing is
+// length-based: once the 10-byte header is in, the frame closes exactly at
+// buf[9] + 12 bytes — immune to fake gaps from UART read batching and to
+// back-to-back frames merging. The caller's >= 3.5 ms gap detection
+// (gapBefore=true on the first byte after a gap) remains the RESYNC path:
+// it closes out whatever is accumulated (rejecting torn fragments) so a
+// corrupted or mid-joined stream re-locks at the next real gap. flush()
+// closes the in-progress frame when the bus goes idle with no following
+// byte. Counters feed the sniffer's diagnostics.
 class FrameAccumulator {
  public:
   struct Counters {
@@ -80,6 +84,9 @@ class FrameAccumulator {
 
  private:
   bool closeFrame();
+  // Total frame length the accumulated header declares (buf[9] + 12), or 0
+  // while the header is incomplete / declares an impossible payload.
+  size_t expectedLen() const;
 
   uint8_t buf_[kMaxFrame] = {};
   size_t  len_ = 0;
