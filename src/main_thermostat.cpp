@@ -1479,6 +1479,14 @@ void ct485Task(void*) {
   // pin-management in the path.
   Serial0.end();
   {
+    // v0.5.6 (raw UART1) still read rx=0 with lvl=1: pins ESP_OK, pad idling
+    // high, zero edges seen. Suspect the ROM/console's IOMUX claim on
+    // GPIO43 (=U0TXD, an OUTPUT driving idle-high) survives uart_set_pin and
+    // fights the transceiver. Reset both pins to plain-GPIO function FIRST,
+    // then attach UART1; afterwards dump the real IOMUX/matrix state to the
+    // telnet ring so the hardware answers instead of theories.
+    gpio_reset_pin(static_cast<gpio_num_t>(cfg::kCt485RxPin));
+    gpio_reset_pin(static_cast<gpio_num_t>(cfg::kCt485TxPin));
     uart_config_t uc = {};
     uc.baud_rate = static_cast<int>(ct485::kBaudDefault);
     uc.data_bits = UART_DATA_8_BITS;
@@ -1494,6 +1502,19 @@ void ct485Task(void*) {
                      (int)e1, (int)e2, (int)e3,
                      (int)perimanGetPinBusType(cfg::kCt485RxPin),
                      (int)perimanGetPinBusType(cfg::kCt485TxPin));
+    // X-ray the pins: gpio_dump_io_configuration renders IOMUX function,
+    // input-enable, output-enable and matrix signal routing per pin.
+    char dump[768] = {0};
+    FILE* ms = fmemopen(dump, sizeof(dump) - 1, "w");
+    if (ms) {
+      gpio_dump_io_configuration(ms, (1ULL << cfg::kCt485RxPin) |
+                                     (1ULL << cfg::kCt485TxPin));
+      fclose(ms);
+      char* save = nullptr;
+      for (char* ln = strtok_r(dump, "\n", &save); ln;
+           ln = strtok_r(nullptr, "\n", &save))
+        if (*ln) telnet_log::logf("[ct485-io] %s", ln);
+    }
   }
   gCtLastByteUs = micros();
 #endif
