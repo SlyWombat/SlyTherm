@@ -1,0 +1,19 @@
+apiVersion: 1
+
+datasources:
+  - name: SlyLog TimescaleDB
+    uid: slylog-pg
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: db:5432
+    user: $POSTGRES_USER
+    isDefault: true
+    editable: false
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: disable
+      timescaledb: true
+      postgresVersion: 1600
+      maxOpenConns: 4
+    secureJsonData:
+      password: $POSTGRES_PASSWORD

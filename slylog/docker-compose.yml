@@ -1,0 +1,111 @@
+# SlyLog — optional dockerized observability + prediction stack (#130).
+# Strictly READ-ONLY: subscribes MQTT, reads the controller telnet mirror,
+# pulls Open-Meteo. Publishes nothing, controls nothing.
+#
+# cp .env.example .env  (edit creds)  ->  docker compose up -d
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: slylog-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ:-America/Toronto}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5433:5432"   # host-local admin access only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  collector:
+    build: ./collector
+    container_name: slylog-collector
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BROKER: ${BROKER}
+      BROKER_PORT: ${BROKER_PORT:-1883}
+      CONTROLLER_IP: ${CONTROLLER_IP}
+      CONTROLLER_PORT: ${CONTROLLER_PORT:-23}
+      LAT: ${LAT}
+      LON: ${LON}
+      TZ: ${TZ:-America/Toronto}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      ARCHIVE_PATH: /captures-vol/ct485-live.log
+    volumes:
+      - captures:/captures-vol
+      # historical archives for migrate.py — READ-ONLY, never written
+      - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: slylog-grafana
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${GRAFANA_PORT:-3300}:3000"   # 3000/3030 already taken on kdocker2
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      TZ: ${TZ:-America/Toronto}
+      # consumed by provisioning/datasources/slylog.yml
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: slylog-ollama
+    restart: unless-stopped
+    # NO host port published: 11434 is already in use on kdocker2.
+    # The predictor reaches it as http://ollama:11434 on the compose network.
+    volumes:
+      - ollama_data:/root/.ollama
+
+  predictor:
+    build: ./predictor
+    container_name: slylog-predictor
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      PREDICT_INTERVAL_H: ${PREDICT_INTERVAL_H:-4}
+      OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-900}
+      TZ: ${TZ:-America/Toronto}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+
+volumes:
+  db_data:
+  grafana_data:
+  ollama_data:
+  captures:

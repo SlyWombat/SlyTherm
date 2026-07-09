@@ -1,0 +1,118 @@
+{
+  "uid": "slylog-predict",
+  "title": "SlyLog / Predictions vs Actuals",
+  "tags": ["slylog"],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "5m",
+  "time": { "from": "now-7d", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "Prediction failures",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, model || ' ' || status || ': ' || coalesce(error,'') AS text, status AS tags FROM predictions WHERE $__timeFilter(ts) AND status <> 'ok'"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Expected cooling hours (next 24 h at prediction time) — LLM vs degree-day baseline",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "custom": { "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, model || ' (' || kind || ')' AS metric, (prediction->>'expected_cooling_hours')::float AS hours FROM predictions WHERE status = 'ok' AND $__timeFilter(ts) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Expected heating hours — LLM vs baseline",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "custom": { "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, model || ' (' || kind || ')' AS metric, (prediction->>'expected_heating_hours')::float AS hours FROM predictions WHERE status = 'ok' AND $__timeFilter(ts) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Actual daily on-hours (from CT-485 cycle events)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "barAlignment": -1 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH e AS (SELECT ts, kind, detail->>'cmd' AS cmd, lead(ts) OVER (PARTITION BY detail->>'cmd' ORDER BY ts) AS nts, lead(kind) OVER (PARTITION BY detail->>'cmd' ORDER BY ts) AS nkind FROM events WHERE kind IN ('cycle_start','cycle_stop') AND $__timeFilter(ts)) SELECT time_bucket('1 day', ts) AS time, cmd AS metric, round((sum(extract(epoch FROM nts - ts)) / 3600)::numeric, 2)::float AS hours FROM e WHERE kind = 'cycle_start' AND nkind = 'cycle_stop' GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Prediction log (latest first)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "recommendation" }, "properties": [ { "id": "custom.width", "value": 420 } ] }
+        ]
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts, model, kind, status, prediction->>'expected_cooling_hours' AS \"cool h\", prediction->>'expected_heating_hours' AS \"heat h\", prediction->>'peak_window' AS \"peak\", prediction->>'confidence' AS \"conf\", coalesce(recommendation, error) AS recommendation FROM predictions WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 100"
+        }
+      ]
+    }
+  ]
+}

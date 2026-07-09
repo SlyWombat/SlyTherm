@@ -1,0 +1,175 @@
+{
+  "uid": "slylog-temps",
+  "title": "SlyLog / Rooms vs Outdoor vs Forecast",
+  "tags": ["slylog"],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now+24h" },
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "light-blue",
+        "name": "Cooling cycles",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, kind || ' ' || coalesce(detail->>'cmd','') || ' ' || coalesce(detail->>'pct','') || '%' AS text, kind AS tags FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','cycle_stop') AND detail->>'cmd' = 'COOL_DEMAND'"
+        }
+      },
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "name": "Heating cycles",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, kind || ' ' || coalesce(detail->>'cmd','') || ' ' || coalesce(detail->>'pct','') || '%' AS text, kind AS tags FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','cycle_stop') AND detail->>'cmd' = 'HEAT_DEMAND'"
+        }
+      },
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "Boots / OTA / faults",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, kind || ': ' || coalesce(detail->>'node', detail->>'topic', '') AS text, kind AS tags FROM events WHERE $__timeFilter(ts) AND kind IN ('boot','ota','novel_command')"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Room temperatures vs outdoor vs forecast",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "spanNulls": 3600000 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "forecast (latest fetch)" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "dash": [8, 6], "fill": "dash" } },
+              { "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "outdoor" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 3 },
+              { "id": "color", "value": { "fixedColor": "dark-green", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(ts, $__interval), sensor_id AS metric, avg(temp_c) AS temp FROM room_temps WHERE $__timeFilter(ts) AND temp_c IS NOT NULL GROUP BY 1, 2 ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(ts, $__interval) AS time, avg(temp_c) AS \"outdoor\" FROM outdoor_temps WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT valid_at AS time, temp_c AS \"forecast (latest fetch)\" FROM forecasts WHERE fetched_at = (SELECT max(fetched_at) FROM forecasts) ORDER BY 1"
+        },
+        {
+          "refId": "D",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (valid_at) valid_at AS time, temp_c AS \"forecast (as fetched)\" FROM forecasts WHERE $__timeFilter(valid_at) AND valid_at <= now() ORDER BY valid_at, fetched_at DESC"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Forecast: precipitation & wind (latest fetch — feeds garden watering suppression)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 20 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "precip mm" },
+            "properties": [
+              { "id": "unit", "value": "lengthmm" },
+              { "id": "custom.drawStyle", "value": "bars" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "precip prob %" },
+            "properties": [ { "id": "unit", "value": "percent" }, { "id": "max", "value": 100 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "wind km/h" },
+            "properties": [ { "id": "unit", "value": "velocitykmh" } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "gusts km/h" },
+            "properties": [
+              { "id": "unit", "value": "velocitykmh" },
+              { "id": "custom.lineStyle", "value": { "dash": [4, 4], "fill": "dash" } }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT valid_at AS time, precip_mm AS \"precip mm\", precip_prob_pct AS \"precip prob %\", wind_kmh AS \"wind km/h\", gust_kmh AS \"gusts km/h\" FROM forecasts WHERE fetched_at = (SELECT max(fetched_at) FROM forecasts) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "state-timeline",
+      "title": "Room occupancy",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 70 },
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "occupied", "color": "green" }, "0": { "text": "empty", "color": "transparent" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "mergeValues": true, "legend": { "displayMode": "hidden" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(ts, $__interval), sensor_id AS metric, max(CASE WHEN occupied THEN 1 ELSE 0 END) AS occ FROM room_temps WHERE $__timeFilter(ts) AND occupied IS NOT NULL GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}

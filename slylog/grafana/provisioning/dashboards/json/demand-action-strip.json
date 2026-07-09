@@ -1,0 +1,125 @@
+{
+  "uid": "slylog-demand",
+  "title": "SlyLog / Demand & Action Strip",
+  "tags": ["slylog"],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "name": "Novel commands",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, 'novel cmd ' || coalesce(detail->>'code_hex','') AS text, kind AS tags FROM events WHERE $__timeFilter(ts) AND kind = 'novel_command'"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "state-timeline",
+      "title": "Mode / action / equipment",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 70 },
+          "mappings": [
+            { "type": "value", "options": {
+              "cool": { "color": "blue" }, "cooling": { "color": "blue" },
+              "heat": { "color": "orange" }, "heating": { "color": "orange" },
+              "auto": { "color": "green" }, "fan": { "color": "green" },
+              "off": { "color": "dark-red" }, "idle": { "color": "transparent" }
+            } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "mergeValues": true, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, mode AS \"mode\", action AS \"action\", equipment AS \"equipment\" FROM hvac_state WHERE $__timeFilter(ts) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Demand level (from CT-485 SET_CONTROL_CMD)",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 7 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 25, "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "cool demand" }, "properties": [ { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "heat demand" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, (detail->>'pct')::float AS \"cool demand\" FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','demand_change','cycle_stop') AND detail->>'cmd' = 'COOL_DEMAND' ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, (detail->>'pct')::float AS \"heat demand\" FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','demand_change','cycle_stop') AND detail->>'cmd' = 'HEAT_DEMAND' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Novel / unknown CT-485 commands (field-dictionary leads)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts, detail->>'code_hex' AS \"command\", detail->>'payload' AS \"payload hex\", detail->>'src' AS src, detail->>'dst' AS dst FROM events WHERE kind = 'novel_command' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 100"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Bus health ([ct485-stats] snapshots)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts, (detail->>'ok')::int AS ok, (detail->>'badLen')::int AS \"badLen\", (detail->>'badCk')::int AS \"badCk\", (detail->>'over')::int AS over, (detail->>'rx')::int AS rx FROM events WHERE kind = 'ct485_stats' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 100"
+        }
+      ]
+    }
+  ]
+}
