@@ -21,9 +21,21 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import psycopg
 import requests
+
+
+def jdumps(obj, **kw) -> str:
+    """json.dumps that survives SQL numerics (Decimal) and timestamps."""
+    def default(o):
+        if isinstance(o, Decimal):
+            return float(o)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        return str(o)
+    return json.dumps(obj, default=default, **kw)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s predictor %(levelname)s %(message)s")
@@ -108,7 +120,8 @@ def build_digest(conn) -> dict:
     digest["room_temps_last_24h"] = [
         {"sensor": s, "avg_c": round(a, 2), "min_c": round(lo, 2),
          "max_c": round(hi, 2), "latest_c": round(last, 2),
-         "occupied_fraction": round(occ or 0, 2)}
+         # avg(CASE...1.0...) is SQL numeric -> Decimal; cast before rounding
+         "occupied_fraction": round(float(occ or 0), 2)}
         for s, a, lo, hi, last, occ in q(conn, """
             SELECT sensor_id, avg(temp_c), min(temp_c), max(temp_c),
                    (array_agg(temp_c ORDER BY ts DESC))[1],
@@ -200,7 +213,7 @@ def ensure_model() -> None:
 
 
 def ask_llm(digest: dict) -> dict:
-    prompt = PROMPT_TEMPLATE.format(digest=json.dumps(digest, indent=1))
+    prompt = PROMPT_TEMPLATE.format(digest=jdumps(digest, indent=1))
     resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
         "model": MODEL, "prompt": prompt, "stream": False, "format": "json",
         "options": {"temperature": 0.2, "num_ctx": 8192},
@@ -279,7 +292,7 @@ def store(conn, model: str, kind: str, status: str, inputs: dict,
         cur.execute(
             "INSERT INTO predictions (model, kind, status, inputs, prediction,"
             " recommendation, error) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (model, kind, status, json.dumps(inputs), json.dumps(prediction),
+            (model, kind, status, jdumps(inputs), jdumps(prediction),
              recommendation, error))
 
 
