@@ -117,6 +117,9 @@ enum class Command : uint8_t {
   kDehumSetPoint      = 0x5D,
   kHumSetPoint        = 0x5E,
   kDamperPosition     = 0x60,
+  kSubsystemBusy      = 0x61,  // coordinator->stat readiness handshake after operator-
+                               // initiated transitions; value 0 = not busy (field-observed
+                               // 2026-07-08/09; named per kdschlosser/ClimateTalk)
   kDehumDemand        = 0x62,
   kHumDemand          = 0x63,
   kHeatDemand         = 0x64,  // gas heat capacity request; Chinook valid band 40-100% (+0)
