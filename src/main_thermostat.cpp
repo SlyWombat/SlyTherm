@@ -1968,6 +1968,8 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   // telnet stream so it can be compared 1:1 against the OEM stat's captured
   // CT-485 demands. On-change plus a 60 s heartbeat; values are the same
   // DemandSet the actuator layer would consume if TX were authorized.
+  // telnet_log is a UI-build facility (headless env omits it — v0.5.0 lesson).
+#ifdef SLYTHERM_UI
   { static float lg = -1, lh = -1, lc = -1, lf = -1, ld = -1;
     static uint32_t beatS = 0;
     const bool chg = out.gasHeatPct != lg || out.hpHeatPct != lh ||
@@ -1984,6 +1986,7 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
                        (double)fused.value, (double)s.heatSp, (double)s.coolSp,
                        (unsigned)s.mode, s.action);
     } }
+#endif  // SLYTHERM_UI
 
   // Fusion JSON (docs/06 topic map).
   char parts[96] = "";
