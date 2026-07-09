@@ -1961,6 +1961,27 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
   s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 
+  // Shadow control (#139): mirror what OUR pipeline would command to the
+  // telnet stream so it can be compared 1:1 against the OEM stat's captured
+  // CT-485 demands. On-change plus a 60 s heartbeat; values are the same
+  // DemandSet the actuator layer would consume if TX were authorized.
+  { static float lg = -1, lh = -1, lc = -1, lf = -1, ld = -1;
+    static uint32_t beatS = 0;
+    const bool chg = out.gasHeatPct != lg || out.hpHeatPct != lh ||
+                     out.coolPct != lc || out.fanPct != lf ||
+                     out.defrostTemperPct != ld;
+    if (chg || nowS - beatS >= 60) {
+      beatS = nowS; lg = out.gasHeatPct; lh = out.hpHeatPct;
+      lc = out.coolPct; lf = out.fanPct; ld = out.defrostTemperPct;
+      telnet_log::logf("[shadow] %lu gas=%.0f hp=%.0f cool=%.0f fan=%.0f dfr=%.0f "
+                       "T=%.2f setH=%.1f setC=%.1f mode=%u action=%s",
+                       (unsigned long)millis(), (double)out.gasHeatPct,
+                       (double)out.hpHeatPct, (double)out.coolPct,
+                       (double)out.fanPct, (double)out.defrostTemperPct,
+                       (double)fused.value, (double)s.heatSp, (double)s.coolSp,
+                       (unsigned)s.mode, s.action);
+    } }
+
   // Fusion JSON (docs/06 topic map).
   char parts[96] = "";
   bool occupied = false;
