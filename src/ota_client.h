@@ -81,6 +81,12 @@ void begin();
 void requestCheck();
 void requestApply();
 
+// #129 escape hatch: LAN OTA mirror base URL (e.g. "http://192.168.10.12:8090")
+// replaces GitHub for catalog + assets. Integrity still enforced by the
+// catalog signature + sha256 (transport is not the trust anchor). Empty /
+// nullptr reverts to GitHub direct. Persisted in NVS; survives reboots.
+void setMirror(const char* baseUrl);
+
 // Thread-safe status copy for the MQTT/UI surfaces.
 Status status();
 
@@ -91,6 +97,7 @@ inline void noteSelfTestPass() {}
 inline void begin() {}
 inline void requestCheck() {}
 inline void requestApply() {}
+inline void setMirror(const char*) {}
 inline Status status() { return Status{}; }
 
 #endif  // SLYTHERM_OTA

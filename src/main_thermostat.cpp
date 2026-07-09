@@ -936,6 +936,9 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, cfg::kOatTopic) == 0) {
     auto p = hm::parseSetpoint(buf, cfg::kOatIngestMinC, cfg::kOatIngestMaxC);
     if (p.ok) { gPending.hasOat = true; gPending.oatC = p.value; } else accepted = false;
+  } else if (strcmp(topic, "slytherm/cmd/ota_mirror") == 0) {
+    // #129: set/clear the LAN OTA mirror ("" or "clear" -> GitHub direct).
+    ota::setMirror(strcmp(buf, "clear") == 0 ? "" : buf);
   } else if (strcmp(topic, "slytherm/cmd/sniff") == 0) {
     // Remote LISTEN control (#71 follow-up): start/stop the CT-485 capture
     // mirror without hands on the glass. Same persisted hooks as the LISTEN
@@ -1098,7 +1101,7 @@ void subscribeAll() {
       hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sensor/+/participating",
-      "slytherm/cmd/sleep", "slytherm/cmd/sniff"};
+      "slytherm/cmd/sleep", "slytherm/cmd/sniff", "slytherm/cmd/ota_mirror"};
   for (const char* t : topics) gMqtt.subscribe(t);
 #ifdef SLYTHERM_REMOTE_LINK
   gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104

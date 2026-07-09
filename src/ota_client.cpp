@@ -25,6 +25,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include <esp_heap_caps.h>  // largest-free-block in failHttp diagnostics
 #include <esp_ota_ops.h>
 
 #include <mbedtls/base64.h>
@@ -169,39 +170,81 @@ bool signatureOk(const uint8_t digest[32], const std::string& sigB64) {
 // reporting an opaque connection error.
 bool clockSynced() { return time(nullptr) > 1600000000; }
 
-// Compose "phase: HTTP <code> (tls=<mbedtls detail>, heap=<free>)" so the
-// REAL failure reason reaches the MQTT status without a serial cable.
-void failHttp(const char* phase, int code, WiFiClientSecure& tls) {
+// Compose "phase: HTTP <code> (tls=<mbedtls detail>, heap=<free>/<largest>)"
+// so the REAL failure reason reaches the MQTT status without a serial cable.
+// tls may be null (plain-HTTP mirror path). largest = biggest contiguous
+// internal block: mbedtls wants ~48KB contiguous, so free=95k largest=20k
+// reads as fragmentation, while free=95k largest=80k points at the transport
+// (#129 P4 hosted-WiFi SDIO).
+void failHttp(const char* phase, int code, WiFiClientSecure* tls) {
   char tlsErr[48] = "";
-  const int rc = tls.lastError(tlsErr, sizeof(tlsErr));
+  int rc = 0;
+  if (tls) rc = tls->lastError(tlsErr, sizeof(tlsErr));
   char b[sizeof(Status{}.error)];
-  snprintf(b, sizeof(b), "%s: HTTP %d (tls=%d %s heap=%u)", phase, code, rc,
-           tlsErr, static_cast<unsigned>(ESP.getFreeHeap()));
+  snprintf(b, sizeof(b), "%s: HTTP %d (tls=%d %s heap=%u/%u)", phase, code, rc,
+           tlsErr, static_cast<unsigned>(ESP.getFreeHeap()),
+           static_cast<unsigned>(
+               heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   fail(b);
+}
+
+// ---- OTA mirror (#129 escape hatch) ----
+// A LAN mirror (e.g. http://kdocker2:8090) removes GitHub TLS from the OTA
+// path entirely — the P4 Remotes' dominant failure is the TLS handshake on
+// the 2KB catalog fetch, not image size. Integrity is carried by the ECDSA
+// signature + sha256 in the catalog, not by the transport, so plain HTTP on
+// the trusted LAN is acceptable. Set/clear via MQTT cmd ota_mirror; persisted
+// in NVS; empty = GitHub direct (default).
+char gMirror[96] = "";
+
+void loadMirror() {
+  Preferences p;
+  p.begin(kNvsNs, true);
+  p.getString("mirror", gMirror, sizeof(gMirror));
+  p.end();
+  if (gMirror[0])
+    Serial.printf("[ota] mirror: %s\n", gMirror);
+}
+
+// <mirror>/catalog.json, or the compiled GitHub URL when no mirror is set.
+void catalogUrl(char* out, size_t n) {
+  if (gMirror[0]) snprintf(out, n, "%s/catalog.json", gMirror);
+  else snprintf(out, n, "%s", SLYTHERM_OTA_CATALOG_URL);
+}
+
+// Mirror serves release assets flat by their original basename.
+void assetUrl(char* out, size_t n, const std::string& upstream) {
+  if (!gMirror[0]) { snprintf(out, n, "%s", upstream.c_str()); return; }
+  const char* base = strrchr(upstream.c_str(), '/');
+  snprintf(out, n, "%s%s", gMirror, base ? base : "/");
 }
 
 // ---- catalog check ----
 bool doCheck() {
   setStatus(State::kChecking, 0, "", "");
-  if (!clockSynced()) {
+  char url[160];
+  catalogUrl(url, sizeof(url));
+  const bool secure = strncmp(url, "http://", 7) != 0;
+  if (secure && !clockSynced()) {  // cert validation needs a wall clock
     fail("catalog: clock unsynced (NTP pending) — will retry");
     return false;
   }
   Serial.printf("[ota] check: heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
+  WiFiClient plain;
   WiFiClientSecure tls;
-  tls.setCACert(ota_certs::kOtaCaBundle);
+  if (secure) tls.setCACert(ota_certs::kOtaCaBundle);
   HTTPClient http;
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   http.setConnectTimeout(15000);
   http.setTimeout(15000);
-  if (!http.begin(tls, SLYTHERM_OTA_CATALOG_URL)) {
+  if (!http.begin(secure ? static_cast<WiFiClient&>(tls) : plain, url)) {
     fail("catalog: http.begin failed");
     return false;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    failHttp("catalog", code, tls);
+    failHttp("catalog", code, secure ? &tls : nullptr);
     return false;
   }
   const int len = http.getSize();
@@ -277,20 +320,24 @@ bool doApply() {
   }
 
   setStatus(State::kDownloading, 0, gAvailable.version.c_str(), "");
+  char url[192];
+  assetUrl(url, sizeof(url), gAvailable.appUrl);
+  const bool secure = strncmp(url, "http://", 7) != 0;
+  WiFiClient plain;
   WiFiClientSecure tls;
-  tls.setCACert(ota_certs::kOtaCaBundle);
+  if (secure) tls.setCACert(ota_certs::kOtaCaBundle);
   HTTPClient http;
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   http.setConnectTimeout(15000);
   http.setTimeout(15000);
-  if (!http.begin(tls, gAvailable.appUrl.c_str())) {
+  if (!http.begin(secure ? static_cast<WiFiClient&>(tls) : plain, url)) {
     fail("apply: http.begin failed");
     return false;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    failHttp("apply", code, tls);
+    failHttp("apply", code, secure ? &tls : nullptr);
     return false;
   }
   const int total = http.getSize();  // -1 = chunked/unknown
@@ -556,12 +603,32 @@ bool bootValidate() {
 void noteSelfTestPass() { gSelfTestPass = true; }
 
 void begin() {
+  loadMirror();
   xTaskCreatePinnedToCore(otaTask, "ota", kTaskStack, nullptr, kTaskPrio,
                           nullptr, 0);
 }
 
 void requestCheck() { gCheckReq = true; }
 void requestApply() { gApplyReq = true; }
+
+void setMirror(const char* baseUrl) {
+  char clean[sizeof(gMirror)] = "";
+  if (baseUrl) strlcpy(clean, baseUrl, sizeof(clean));
+  size_t len = strlen(clean);
+  while (len && clean[len - 1] == '/') clean[--len] = '\0';  // no trailing /
+  // Accept only http(s) URLs or empty (= back to GitHub direct).
+  if (len && strncmp(clean, "http://", 7) != 0 &&
+      strncmp(clean, "https://", 8) != 0) {
+    Serial.printf("[ota] mirror REJECTED (not a URL): %s\n", clean);
+    return;
+  }
+  strlcpy(gMirror, clean, sizeof(gMirror));
+  Preferences p;
+  p.begin(kNvsNs, false);
+  p.putString("mirror", gMirror);
+  p.end();
+  Serial.printf("[ota] mirror set: %s\n", gMirror[0] ? gMirror : "(github)");
+}
 
 Status status() {
   portENTER_CRITICAL(&gMux);
