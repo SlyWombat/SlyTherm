@@ -2,6 +2,13 @@
 # Strictly READ-ONLY: subscribes MQTT, reads the controller telnet mirror,
 # pulls Open-Meteo. Publishes nothing, controls nothing.
 #
+# Persistence: bind mounts under $DATA_DIR (default /data/slylog) — kdocker2's
+# root LV (/var/lib/docker) is nearly full; /data is the 3.4 TB data LV and
+# the established home for stack data on this box. Before first up:
+#   mkdir -p /data/slylog/{postgres,grafana,ollama,captures}
+#   chown 70:70 /data/slylog/postgres && chown 472 /data/slylog/grafana
+#   (timescaledb alpine runs postgres as uid 70; grafana as 472; ollama root)
+#
 # cp .env.example .env  (edit creds)  ->  docker compose up -d
 
 services:
@@ -15,7 +22,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       TZ: ${TZ:-America/Toronto}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - ${DATA_DIR:-/data/slylog}/postgres:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:5433:5432"   # host-local admin access only
@@ -47,7 +54,7 @@ services:
       PGDATABASE: ${POSTGRES_DB}
       ARCHIVE_PATH: /captures-vol/ct485-live.log
     volumes:
-      - captures:/captures-vol
+      - ${DATA_DIR:-/data/slylog}/captures:/captures-vol
       # historical archives for migrate.py — READ-ONLY, never written
       - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
 
@@ -71,7 +78,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - grafana_data:/var/lib/grafana
+      - ${DATA_DIR:-/data/slylog}/grafana:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
 
   ollama:
@@ -81,7 +88,7 @@ services:
     # NO host port published: 11434 is already in use on kdocker2.
     # The predictor reaches it as http://ollama:11434 on the compose network.
     volumes:
-      - ollama_data:/root/.ollama
+      - ${DATA_DIR:-/data/slylog}/ollama:/root/.ollama
 
   predictor:
     build: ./predictor
@@ -103,9 +110,3 @@ services:
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
-
-volumes:
-  db_data:
-  grafana_data:
-  ollama_data:
-  captures:

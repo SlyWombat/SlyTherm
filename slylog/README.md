@@ -21,6 +21,9 @@ controls nothing — SlyTherm behaves identically whether the stack is up or dow
 ```sh
 cd slylog
 cp .env.example .env        # set POSTGRES_PASSWORD / GRAFANA_ADMIN_PASSWORD
+# persistence lives on the big /data LV (root LV is nearly full on kdocker2):
+mkdir -p /data/slylog/{postgres,grafana,ollama,captures}
+docker run --rm -v /data/slylog:/d alpine sh -c 'chown 70:70 /d/postgres; chown 472 /d/grafana'
 docker compose up -d db     # schema in db/init/ auto-applies on first boot
 docker compose up -d --build
 ```
@@ -104,8 +107,9 @@ ssh kdocker2 'cd ~/SlyTherm && nohup captures/run_capture.sh >/dev/null 2>&1 &'
   silent skips are visible.
 - Backup path (documented alternative to a pg_dump sidecar):
   `docker compose exec db pg_dump -U slylog slylog | gzip > slylog-$(date +%F).sql.gz`
-  — cron it on the host if desired. Volumes: `db_data`, `grafana_data`,
-  `ollama_data`, `captures`.
+  — cron it on the host if desired. All persistent data lives under
+  `$DATA_DIR` (default `/data/slylog`): `postgres/`, `grafana/`, `ollama/`
+  (the ~5 GB model), `captures/` (the flat-file CT-485 archive).
 - Admin DB access from the host: `psql -h 127.0.0.1 -p 5433 -U slylog slylog`.
 
 ## Data sources ingested
