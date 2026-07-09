@@ -99,6 +99,17 @@ class Db:
             (ts, mode, action, equipment, heat_sp, cool_sp, fused_temp,
              json.dumps(extra)))
 
+    def insert_shadow(self, ts, sh: dict) -> int:
+        """One [shadow] telemetry line (#139) -> shadow_demands."""
+        return self._exec(
+            "INSERT INTO shadow_demands (ts, millis, gas_pct, hp_pct, cool_pct,"
+            " fan_pct, defrost_pct, fused_temp_c, set_heat_c, set_cool_c,"
+            " mode, action) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (ts, millis) DO NOTHING",
+            (ts, sh["millis"], sh["gas_pct"], sh["hp_pct"], sh["cool_pct"],
+             sh["fan_pct"], sh["defrost_pct"], sh["fused_temp_c"],
+             sh["set_heat_c"], sh["set_cool_c"], sh["mode"], sh["action"]))
+
     def insert_weather_obs(self, ts, temp_c, precip_mm, wind_kmh, gust_kmh,
                            source="open-meteo-current") -> int:
         return self._exec(

@@ -1,0 +1,174 @@
+{
+  "uid": "slylog-shadow",
+  "title": "SlyLog / Shadow vs OEM",
+  "description": "Our controller's would-be demands ([shadow] telemetry, TX disabled) overlaid on the OEM stat's real CT-485 demands (#139). OEM pct = value byte / 2.",
+  "tags": ["slylog"],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "light-blue",
+        "name": "OEM cycles",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, kind || ' ' || coalesce(detail->>'cmd','') AS text, kind AS tags FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','cycle_stop')"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Demand overlay — OEM (solid) vs shadow (dashed)",
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 8, "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "OEM cool" }, "properties": [ { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "OEM heat" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "OEM fan" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "shadow cool" }, "properties": [ { "id": "color", "value": { "fixedColor": "light-blue", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [8, 5], "fill": "dash" } } ] },
+          { "matcher": { "id": "byName", "options": "shadow heat" }, "properties": [ { "id": "color", "value": { "fixedColor": "light-orange", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [8, 5], "fill": "dash" } } ] },
+          { "matcher": { "id": "byName", "options": "shadow fan" }, "properties": [ { "id": "color", "value": { "fixedColor": "light-green", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [8, 5], "fill": "dash" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, get_byte(payload, 3) / 2.0 AS \"OEM cool\" FROM raw_frames WHERE $__timeFilter(ts) AND msg_type = 3 AND length(payload) >= 4 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 101 ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, get_byte(payload, 3) / 2.0 AS \"OEM heat\" FROM raw_frames WHERE $__timeFilter(ts) AND msg_type = 3 AND length(payload) >= 4 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 100 ORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, get_byte(payload, 4) / 2.0 AS \"OEM fan\" FROM raw_frames WHERE $__timeFilter(ts) AND msg_type = 3 AND length(payload) >= 5 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 102 ORDER BY 1"
+        },
+        {
+          "refId": "D",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, cool_pct AS \"shadow cool\", greatest(gas_pct, hp_pct) AS \"shadow heat\", fan_pct AS \"shadow fan\" FROM shadow_demands WHERE $__timeFilter(ts) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "COOL divergence (dashboard window, 1-min grid)",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 11 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": { "noValue": "no data" }, "overrides": [
+        { "matcher": { "id": "byName", "options": "mean |Δ| %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "decimals", "value": 2 } ] }
+      ] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/" }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH oem AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(get_byte(payload, 3) / 2.0)) AS pct FROM raw_frames WHERE msg_type = 3 AND length(payload) >= 4 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 101 AND $__timeFilter(ts) GROUP BY 1), sh AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(cool_pct)) AS pct FROM shadow_demands WHERE $__timeFilter(ts) GROUP BY 1) SELECT round(avg(abs(coalesce(o.pct, 0) - coalesce(s.pct, 0)))::numeric, 2) AS \"mean |Δ| %\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) = 0) AS \"OEM only min\", count(*) FILTER (WHERE coalesce(s.pct, 0) > 0 AND coalesce(o.pct, 0) = 0) AS \"shadow only min\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) > 0) AS \"both on min\" FROM oem o JOIN sh s USING (m)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "HEAT divergence (shadow heat = max(gas, hp))",
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 11 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": { "noValue": "no data" }, "overrides": [
+        { "matcher": { "id": "byName", "options": "mean |Δ| %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "decimals", "value": 2 } ] }
+      ] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/" }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH oem AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(get_byte(payload, 3) / 2.0)) AS pct FROM raw_frames WHERE msg_type = 3 AND length(payload) >= 4 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 100 AND $__timeFilter(ts) GROUP BY 1), sh AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(greatest(gas_pct, hp_pct))) AS pct FROM shadow_demands WHERE $__timeFilter(ts) GROUP BY 1) SELECT round(avg(abs(coalesce(o.pct, 0) - coalesce(s.pct, 0)))::numeric, 2) AS \"mean |Δ| %\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) = 0) AS \"OEM only min\", count(*) FILTER (WHERE coalesce(s.pct, 0) > 0 AND coalesce(o.pct, 0) = 0) AS \"shadow only min\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) > 0) AS \"both on min\" FROM oem o JOIN sh s USING (m)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "FAN divergence (OEM offsets provisional)",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 11 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": { "noValue": "no data" }, "overrides": [
+        { "matcher": { "id": "byName", "options": "mean |Δ| %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "decimals", "value": 2 } ] }
+      ] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/" }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH oem AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(get_byte(payload, 4) / 2.0)) AS pct FROM raw_frames WHERE msg_type = 3 AND length(payload) >= 5 AND get_byte(payload, 1) = 0 AND get_byte(payload, 0) = 102 AND $__timeFilter(ts) GROUP BY 1), sh AS (SELECT time_bucket_gapfill('1 minute', ts, $__timeFrom()::timestamptz, $__timeTo()::timestamptz) AS m, locf(avg(fan_pct)) AS pct FROM shadow_demands WHERE $__timeFilter(ts) GROUP BY 1) SELECT round(avg(abs(coalesce(o.pct, 0) - coalesce(s.pct, 0)))::numeric, 2) AS \"mean |Δ| %\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) = 0) AS \"OEM only min\", count(*) FILTER (WHERE coalesce(s.pct, 0) > 0 AND coalesce(o.pct, 0) = 0) AS \"shadow only min\", count(*) FILTER (WHERE coalesce(o.pct, 0) > 0 AND coalesce(s.pct, 0) > 0) AS \"both on min\" FROM oem o JOIN sh s USING (m)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "COOL cycle-start pairing — shadow start vs nearest OEM start (±60 min)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": { "noValue": "—" }, "overrides": [] },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH sh AS (SELECT ts, cool_pct, lag(cool_pct) OVER (ORDER BY ts) AS prev FROM shadow_demands WHERE $__timeFilter(ts)), starts AS (SELECT ts FROM sh WHERE cool_pct > 0 AND coalesce(prev, 0) = 0) SELECT s.ts AS \"shadow start\", e.ts AS \"nearest OEM start\", round((extract(epoch FROM e.ts - s.ts) / 60)::numeric, 1) AS \"offset min (+ = OEM later)\" FROM starts s LEFT JOIN LATERAL (SELECT ts FROM events WHERE kind = 'cycle_start' AND detail->>'cmd' = 'COOL_DEMAND' AND ts BETWEEN s.ts - interval '60 minutes' AND s.ts + interval '60 minutes' ORDER BY abs(extract(epoch FROM ts - s.ts)) LIMIT 1) e ON true ORDER BY s.ts DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Shadow fused temp & setpoints (+ would-be action)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "celsius", "custom": { "lineWidth": 2, "spanNulls": true } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "setH" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [4, 4], "fill": "dash" } } ] },
+          { "matcher": { "id": "byName", "options": "setC" }, "properties": [ { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [4, 4], "fill": "dash" } } ] },
+          { "matcher": { "id": "byName", "options": "fused T" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, fused_temp_c AS \"fused T\", set_heat_c AS \"setH\", set_cool_c AS \"setC\" FROM shadow_demands WHERE $__timeFilter(ts) ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}

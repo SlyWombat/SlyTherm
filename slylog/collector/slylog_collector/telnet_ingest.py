@@ -29,6 +29,25 @@ MILLIS_RE = re.compile(r"\[ct485(?:\+|-rej)?\]\s+(\d+)")
 STATS_LINE_RE = re.compile(
     r"\[ct485-stats\]\s+(\d+)\s+rx=(\d+)\s+lvl=(\d+)\s+ok=(\d+)"
     r"\s+badLen=(\d+)\s+badCk=(\d+)\s+over=(\d+)")
+# Shadow control (#139, fw >= 0.5.8): the controller's would-be DemandSet,
+# emitted on change + 60 s heartbeat. TX stays disabled — telemetry only.
+SHADOW_LINE_RE = re.compile(
+    r"\[shadow\]\s+(\d+)\s+gas=([\d.]+)\s+hp=([\d.]+)\s+cool=([\d.]+)"
+    r"\s+fan=([\d.]+)\s+dfr=([\d.]+)\s+T=(-?[\d.]+|nan)\s+setH=(-?[\d.]+)"
+    r"\s+setC=(-?[\d.]+)\s+mode=(\d+)\s+action=(\S+)")
+
+
+def parse_shadow_line(line: str) -> dict | None:
+    m = SHADOW_LINE_RE.search(line)
+    if not m:
+        return None
+    g = m.groups()
+    fused = None if g[6] == "nan" else float(g[6])
+    return {"millis": int(g[0]), "gas_pct": float(g[1]), "hp_pct": float(g[2]),
+            "cool_pct": float(g[3]), "fan_pct": float(g[4]),
+            "defrost_pct": float(g[5]), "fused_temp_c": fused,
+            "set_heat_c": float(g[7]), "set_cool_c": float(g[8]),
+            "mode": int(g[9]), "action": g[10]}
 
 
 def parse_stats_line(line: str) -> tuple[int, dict] | None:
@@ -93,7 +112,14 @@ class TelnetIngest:
             self._pending = None
 
     def handle_line(self, line: str) -> None:
-        """One telnet line (any family; non-ct485 lines are ignored)."""
+        """One telnet line (any family; other lines are ignored)."""
+        if "[shadow]" in line:
+            sh = parse_shadow_line(line)
+            if sh is not None:
+                ts = self.line_ts(line)
+                self.archive_write(line, ts)   # archived alongside [ct485*]
+                self.db.insert_shadow(ts, sh)
+            return
         if "[ct485" not in line:
             return
         ts = self.line_ts(line)

@@ -61,8 +61,19 @@ apply to an already-initialized live db with:
 docker compose exec -T db psql -U slylog -d slylog < db/init/002_forecast_accuracy.sql
 ```
 
+`db/init/003_shadow_demands.sql` (#139): shadow_demands hypertable for the
+controller's `[shadow]` would-be-DemandSet telemetry (fw ≥0.5.8, TX stays
+disabled). Compared against the OEM's real CT-485 demands on the
+"Shadow vs OEM" dashboard and by the report generator:
+
+```sh
+docker compose exec -T collector python -m slylog_collector.report_shadow_vs_oem \
+    --start 2026-07-09T17:45:00Z --hours 24     # -> /data/slylog/reports/*.md
+```
+
 Dedupe keys make ingest idempotent: raw_frames `(ts, millis, payload_hash)`,
-events `(ts, kind, detail_hash)`, weather_obs `(ts, source)`.
+events `(ts, kind, detail_hash)`, weather_obs `(ts, source)`, shadow_demands
+`(ts, millis)`.
 
 ## Historical migration (#137)
 
@@ -139,5 +150,6 @@ ssh kdocker2 'cd ~/SlyTherm && nohup captures/run_capture.sh >/dev/null 2>&1 &'
 | `slytherm/controller/status`, `slytherm/remote/+/status`, `slytherm/availability` | events kind=status (transitions only) |
 | `slytherm/state/ota`, `slytherm/remote/+/state/ota` | events kind=ota |
 | controller telnet :23 `[ct485]`/`[ct485+]`/`[ct485-rej]`/`[ct485-stats]` | raw_frames + events + flat archive |
+| controller telnet :23 `[shadow]` (fw ≥0.5.8 would-be DemandSet, TX disabled) | shadow_demands + flat archive |
 | Open-Meteo hourly (next 24 h: temp, rain mm+prob, wind+gusts+dir, humidity, WMO code) | forecasts |
 | Open-Meteo hourly current conditions (temp, precip, wind, gusts) | weather_obs |

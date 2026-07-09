@@ -55,6 +55,8 @@ services:
       ARCHIVE_PATH: /captures-vol/ct485-live.log
     volumes:
       - ${DATA_DIR:-/data/slylog}/captures:/captures-vol
+      # shadow-vs-OEM comparison reports (#139, report_shadow_vs_oem.py)
+      - ${DATA_DIR:-/data/slylog}/reports:/reports
       # historical archives for migrate.py — READ-ONLY, never written
       - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
 
