@@ -139,6 +139,37 @@ def build_digest(conn) -> dict:
             FROM forecasts
             WHERE fetched_at = (SELECT max(fetched_at) FROM forecasts)
             ORDER BY valid_at""")]
+
+    # Forecast trustworthiness (#138): rolling 7d skill vs actuals, so the
+    # LLM knows how much weight the forecast above deserves. Null-safe: all
+    # fields are null until enough graded history accrues.
+    def _f(v, nd=2):
+        return round(float(v), nd) if v is not None else None
+
+    try:
+        row = q(conn, """
+            SELECT temp_mae_house, temp_bias_house, temp_mae_obs, wind_mae,
+                   precip_hit_rate, precip_false_alarm_rate,
+                   precip_hits, precip_false_alarms, precip_misses
+            FROM forecast_headline_7d""")
+        r = row[0] if row else [None] * 9
+        digest["forecast_skill_last_7d"] = {
+            "note": ("accuracy of past forecasts vs actuals; temp truth = house "
+                     "OAT sensor, rain/wind truth = open-meteo current analysis; "
+                     "nulls mean not enough graded history yet"),
+            "temp_mae_vs_house_c": _f(r[0]),
+            "temp_bias_vs_house_c": _f(r[1]),
+            "temp_mae_vs_obs_c": _f(r[2]),
+            "wind_mae_kmh": _f(r[3]),
+            "precip_hit_rate": _f(r[4]),
+            "precip_false_alarm_rate": _f(r[5]),
+            "precip_hits": int(r[6]) if r[6] is not None else None,
+            "precip_false_alarms": int(r[7]) if r[7] is not None else None,
+            "precip_misses": int(r[8]) if r[8] is not None else None,
+        }
+    except psycopg.Error:
+        log.exception("forecast_headline_7d unavailable — digest goes without it")
+        digest["forecast_skill_last_7d"] = None
     return digest
 
 

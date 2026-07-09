@@ -1,6 +1,11 @@
 """Hourly Open-Meteo forecast ingest (#134): NEXT 24 hours, keyed
 (fetched_at, valid_at) so every fetch snapshots the full horizon.
 Carries rain + wind + humidity for the garden's future watering suppression.
+
+Also ingests hourly CURRENT conditions into weather_obs (#138) as the
+rain/wind "actuals" for forecast grading — model analysis, not a house
+instrument (the schema records this caveat; a future rain gauge would
+supersede it as truth source).
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ API = "https://api.open-meteo.com/v1/forecast"
 HOURLY_VARS = ("temperature_2m,precipitation,precipitation_probability,"
                "wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
                "relative_humidity_2m,weather_code")
+CURRENT_VARS = "temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m"
 
 # WMO weather interpretation codes -> human condition
 WMO_CODES = {
@@ -52,10 +58,26 @@ def fetch_once(db: Db) -> int:
         return 0
     resp = requests.get(API, params={
         "latitude": float(config.LAT), "longitude": float(config.LON),
-        "hourly": HOURLY_VARS, "forecast_hours": 24, "timezone": "UTC",
+        "hourly": HOURLY_VARS, "current": CURRENT_VARS,
+        "forecast_hours": 24, "timezone": "UTC",
     }, timeout=30)
     resp.raise_for_status()
-    hourly = resp.json()["hourly"]
+    body = resp.json()
+
+    # current conditions -> weather_obs (#138): rain/wind "actuals" used to
+    # grade past forecasts (model analysis, not a house instrument)
+    cur = body.get("current")
+    if cur:
+        obs_ts = datetime.fromisoformat(cur["time"]).replace(tzinfo=timezone.utc)
+        db.insert_weather_obs(obs_ts, cur.get("temperature_2m"),
+                              cur.get("precipitation"),
+                              cur.get("wind_speed_10m"),
+                              cur.get("wind_gusts_10m"))
+        log.info("weather_obs: %s temp=%s precip=%s wind=%s",
+                 obs_ts.isoformat(), cur.get("temperature_2m"),
+                 cur.get("precipitation"), cur.get("wind_speed_10m"))
+
+    hourly = body["hourly"]
     fetched_at = datetime.now(timezone.utc)
     rows = []
     for i, iso in enumerate(hourly["time"]):

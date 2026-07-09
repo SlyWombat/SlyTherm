@@ -28,10 +28,14 @@ docker compose up -d db     # schema in db/init/ auto-applies on first boot
 docker compose up -d --build
 ```
 
+On kdocker2 the stack is Dockge-managed and runs from
+`/data/stacks/slylog/compose.yaml` (project `slylog`) — apply repo changes
+there too (copy files over, `docker compose up -d --build` from that dir).
+
 Grafana: http://kdocker2:3300 (admin / $GRAFANA_ADMIN_PASSWORD), folder
-"SlyLog", four dashboards: temperatures+forecast, cycle timeline+duty stats,
-demand/action strip, predictions vs actuals. Events draw on the graphs as
-annotations.
+"SlyLog", five dashboards: temperatures+forecast, cycle timeline+duty stats,
+demand/action strip, predictions vs actuals, forecast accuracy (#138).
+Events draw on the graphs as annotations.
 
 Pull the LLM early (first prediction otherwise waits on a ~4.7 GB download —
 the predictor also pulls automatically on first run):
@@ -46,8 +50,19 @@ docker compose exec ollama ollama pull qwen2.5:7b-instruct
 forecasts, hvac_state, predictions. Hypertables where high-rate; retention is
 **90 days on raw_frames only**, everything else indefinite (~10 MB/day total).
 
+`db/init/002_forecast_accuracy.sql` (#138): weather_obs (hourly Open-Meteo
+current conditions — model analysis, not a house instrument) + views
+forecast_scores / forecast_skill_7d / forecast_skill_30d /
+forecast_skill_daily / forecast_headline_7d grading every past forecast row
+against actuals (valid_at ±30 min; temp truth = house OAT). Idempotent —
+apply to an already-initialized live db with:
+
+```sh
+docker compose exec -T db psql -U slylog -d slylog < db/init/002_forecast_accuracy.sql
+```
+
 Dedupe keys make ingest idempotent: raw_frames `(ts, millis, payload_hash)`,
-events `(ts, kind, detail_hash)`.
+events `(ts, kind, detail_hash)`, weather_obs `(ts, source)`.
 
 ## Historical migration (#137)
 
@@ -125,3 +140,4 @@ ssh kdocker2 'cd ~/SlyTherm && nohup captures/run_capture.sh >/dev/null 2>&1 &'
 | `slytherm/state/ota`, `slytherm/remote/+/state/ota` | events kind=ota |
 | controller telnet :23 `[ct485]`/`[ct485+]`/`[ct485-rej]`/`[ct485-stats]` | raw_frames + events + flat archive |
 | Open-Meteo hourly (next 24 h: temp, rain mm+prob, wind+gusts+dir, humidity, WMO code) | forecasts |
+| Open-Meteo hourly current conditions (temp, precip, wind, gusts) | weather_obs |

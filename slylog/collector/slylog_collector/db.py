@@ -99,6 +99,14 @@ class Db:
             (ts, mode, action, equipment, heat_sp, cool_sp, fused_temp,
              json.dumps(extra)))
 
+    def insert_weather_obs(self, ts, temp_c, precip_mm, wind_kmh, gust_kmh,
+                           source="open-meteo-current") -> int:
+        return self._exec(
+            "INSERT INTO weather_obs (ts, temp_c, precip_mm, wind_kmh,"
+            " gust_kmh, source) VALUES (%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (ts, source) DO NOTHING",
+            (ts, temp_c, precip_mm, wind_kmh, gust_kmh, source))
+
     # -- forecasts -------------------------------------------------------------
     def insert_forecasts(self, rows: list[tuple]) -> int:
         """rows: (fetched_at, valid_at, temp_c, precip_mm, precip_prob_pct,

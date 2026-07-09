@@ -1,0 +1,122 @@
+{
+  "uid": "slylog-fcskill",
+  "title": "SlyLog / Forecast Accuracy",
+  "description": "How good are the forecasts we act on? Graded once valid_at passes. Temp truth = house OAT sensor; rain/wind truth = Open-Meteo current analysis (no local gauge yet). Fills in as data accrues.",
+  "tags": ["slylog"],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "5m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Headline skill (rolling 7 d, all lead hours)",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "none", "noValue": "no graded data yet" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "temp MAE vs house °C" }, "properties": [ { "id": "unit", "value": "celsius" }, { "id": "decimals", "value": 2 } ] },
+          { "matcher": { "id": "byName", "options": "temp bias °C" }, "properties": [ { "id": "unit", "value": "celsius" }, { "id": "decimals", "value": 2 } ] },
+          { "matcher": { "id": "byName", "options": "temp MAE vs obs °C" }, "properties": [ { "id": "unit", "value": "celsius" }, { "id": "decimals", "value": 2 } ] },
+          { "matcher": { "id": "byName", "options": "rain hit rate" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "decimals", "value": 0 } ] },
+          { "matcher": { "id": "byName", "options": "rain false-alarm rate" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "decimals", "value": 0 } ] },
+          { "matcher": { "id": "byName", "options": "wind MAE km/h" }, "properties": [ { "id": "unit", "value": "velocitykmh" }, { "id": "decimals", "value": 1 } ] }
+        ]
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/" }, "orientation": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT temp_mae_house AS \"temp MAE vs house °C\", temp_bias_house AS \"temp bias °C\", temp_mae_obs AS \"temp MAE vs obs °C\", precip_hit_rate AS \"rain hit rate\", precip_false_alarm_rate AS \"rain false-alarm rate\", wind_mae AS \"wind MAE km/h\" FROM forecast_headline_7d"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "barchart",
+      "title": "Temperature error by lead time (rolling 7 d)",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "celsius", "custom": { "fillOpacity": 80 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "bias (house)" }, "properties": [ { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } } ] }
+        ]
+      },
+      "options": { "xTickLabelRotation": 0, "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT lpad(lead_hours::text, 2, '0') AS \"lead h\", round(temp_mae_house::numeric, 2)::float AS \"MAE vs house\", round(temp_mae_obs::numeric, 2)::float AS \"MAE vs obs\", round(temp_bias_house::numeric, 2)::float AS \"bias (house)\" FROM forecast_skill_7d ORDER BY lead_hours"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "Wind speed / gust MAE by lead time (rolling 7 d)",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "velocitykmh", "custom": { "fillOpacity": 80 } },
+        "overrides": []
+      },
+      "options": { "xTickLabelRotation": 0, "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT lpad(lead_hours::text, 2, '0') AS \"lead h\", round(wind_mae::numeric, 1)::float AS \"wind MAE\", round(gust_mae::numeric, 1)::float AS \"gust MAE\" FROM forecast_skill_7d ORDER BY lead_hours"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Rolling skill trend (daily MAE, all lead hours pooled)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "temp MAE house" }, "properties": [ { "id": "unit", "value": "celsius" } ] },
+          { "matcher": { "id": "byName", "options": "temp MAE obs" }, "properties": [ { "id": "unit", "value": "celsius" } ] },
+          { "matcher": { "id": "byName", "options": "wind MAE" }, "properties": [ { "id": "unit", "value": "velocitykmh" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT day AS time, round(temp_mae_house::numeric, 2)::float AS \"temp MAE house\", round(temp_mae_obs::numeric, 2)::float AS \"temp MAE obs\", round(wind_mae::numeric, 1)::float AS \"wind MAE\" FROM forecast_skill_daily WHERE $__timeFilter(day) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Precip contingency (prob ≥50% vs observed ≥0.5 mm) — the garden's key numbers",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": { "defaults": { "noValue": "—" }, "overrides": [] },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT '7d' AS \"window\", sum(precip_hits) AS hits, sum(precip_false_alarms) AS \"false alarms\", sum(precip_misses) AS misses, sum(precip_correct_negatives) AS \"correct negatives\", round((sum(precip_hits)::numeric / nullif(sum(precip_hits) + sum(precip_misses), 0)) * 100, 0) AS \"hit rate %\", round((sum(precip_false_alarms)::numeric / nullif(sum(precip_hits) + sum(precip_false_alarms), 0)) * 100, 0) AS \"false-alarm rate %\" FROM forecast_skill_7d UNION ALL SELECT '30d', sum(precip_hits), sum(precip_false_alarms), sum(precip_misses), sum(precip_correct_negatives), round((sum(precip_hits)::numeric / nullif(sum(precip_hits) + sum(precip_misses), 0)) * 100, 0), round((sum(precip_false_alarms)::numeric / nullif(sum(precip_hits) + sum(precip_false_alarms), 0)) * 100, 0) FROM forecast_skill_30d"
+        }
+      ]
+    }
+  ]
+}
