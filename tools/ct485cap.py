@@ -44,6 +44,10 @@ def main() -> int:
     sock.settimeout(1.0)
     n = 0
     buf = b""
+    last_data = time.time()  # [ct485-stats] beats every 30s while capturing —
+    idle_limit = 120         # 2 min of silence = dead link (unit rebooted:
+                             # no FIN, recv would block forever). Exit so a
+                             # wrapper loop can reconnect.
     with open(outfile, "a", buffering=1) as f:
         f.write(f"# ct485cap {ip} @ {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         try:
@@ -51,10 +55,15 @@ def main() -> int:
                 try:
                     chunk = sock.recv(4096)
                 except socket.timeout:
+                    if time.time() - last_data > idle_limit:
+                        print(f"[ct485cap] no data for {idle_limit}s — "
+                              "assuming dead link, exiting for reconnect")
+                        break
                     continue
                 if not chunk:
                     print("[ct485cap] connection closed by unit")
                     break
+                last_data = time.time()
                 buf += chunk
                 while b"\n" in buf:
                     raw, buf = buf.split(b"\n", 1)
