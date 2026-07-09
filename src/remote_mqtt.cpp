@@ -244,6 +244,9 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     ota::requestCheck();   // payload ignored; no-op mid-phase (#111)
   } else if (strcmp(topic, gOtaApplyTopic) == 0) {
     ota::requestApply();
+  } else if (strcmp(topic, "slytherm/cmd/ota_mirror") == 0) {
+    // #129: fleet-wide LAN OTA mirror ("" or "clear" -> GitHub direct).
+    ota::setMirror(strcmp(buf, "clear") == 0 ? "" : buf);
   } else if (strcmp(topic, "slytherm/config/sensors") == 0) {  // #117 roster
     std::vector<hm::SensorRosterEntry> roster;
     if (!hm::parseSensorRosterJson(buf, roster)) return;
@@ -405,6 +408,7 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe("slytherm/sensors/+/presence");       // #117 presence
     gMqtt.subscribe(gOtaCheckTopic);     // #111 OTA drive (per-Remote)
     gMqtt.subscribe(gOtaApplyTopic);
+    gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
     { char t[48];  // #123: retained boot/crash telemetry (built once at boot)
       snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
       gMqtt.publish(t, boot_guard::statusJson(), true); }
