@@ -216,12 +216,14 @@ def degree_day_baseline(conn, digest: dict) -> dict:
         ORDER BY dd.d""", (BASE_C, BASE_C))
 
     def slope(pairs: list[tuple[float, float]]) -> float:
+        # SQL numeric arrives as Decimal — normalize to float before mixing
+        pairs = [(float(x), float(y)) for x, y in pairs]
         num = sum(x * y for x, y in pairs)
         den = sum(x * x for x, y in pairs)
         return num / den if den > 0 else 0.0
 
-    slope_cool = slope([(r[1] or 0, r[3]) for r in daily])
-    slope_heat = slope([(r[2] or 0, r[4]) for r in daily])
+    slope_cool = slope([(r[1] or 0, r[3] or 0) for r in daily])
+    slope_heat = slope([(r[2] or 0, r[4] or 0) for r in daily])
 
     fc = digest.get("forecast_next_24h", [])
     cdh24 = sum(max((h["temp_c"] or 0) - BASE_C, 0) for h in fc)
