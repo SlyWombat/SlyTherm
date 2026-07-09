@@ -13,12 +13,20 @@ Handles the day-1 file's mixed timestamping:
     2. the first wall-stamped line in the same session
     3. the session header time aligned to the session's first line (warned)
 
+Naive stamps are interpreted in the timezone of the MACHINE THAT WROTE THE
+FILE, which differs per archive: day-1 was captured from the dev machine
+(America/Toronto, matching its .anchors -04:00 offsets) while the kdocker2
+run_capture loop stamped in the host zone (Etc/UTC). Append ::ZONE to a file
+argument to override the default ($TZ):
+
+    python -m slylog_collector.migrate [--dry-run] \
+        /legacy-captures/ct485-capture-20260708.log \
+        /legacy-captures/ct485-live.log::UTC
+
 Idempotent: raw_frames dedupes on (ts, millis, payload_hash), events on
 (ts, kind, detail_hash) — safe to re-run, and the run_capture/collector
-double-capture overlap at cutover collapses to single rows.
-
-Usage (inside the collector container):
-    python -m slylog_collector.migrate [--dry-run] FILE [FILE...]
+double-capture overlap at cutover collapses to single rows (the instants
+compare equal as timestamptz regardless of source-file zone).
 """
 from __future__ import annotations
 
@@ -33,7 +41,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import config
-from .ct485_decode import (CaptureStats, Frame, TelnetAssembler, _parse_iso_ms)
+from .ct485_decode import (ISO_TS_RE, CaptureStats, Frame, TelnetAssembler)
 from .db import Db, frame_hash
 from .events import EventDeriver
 from .telnet_ingest import MILLIS_RE, frame_row, parse_stats_line
@@ -41,10 +49,22 @@ from .telnet_ingest import MILLIS_RE, frame_row, parse_stats_line
 log = logging.getLogger("migrate")
 
 HEADER_PREFIX = "# ct485cap "
-TZ = ZoneInfo(config.LOCAL_TZ)
 
 
-def load_anchors(log_path: Path) -> list[tuple[float, int]]:
+def parse_stamp_ms(text: str, tz: ZoneInfo) -> float | None:
+    """Epoch ms of an embedded ISO stamp, interpreting NAIVE stamps in `tz`
+    (the zone of the machine that wrote the file — differs per archive)."""
+    m = ISO_TS_RE.search(text)
+    if not m:
+        return None
+    try:
+        dt = datetime.fromisoformat(m.group(1) + " " + m.group(2))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=tz).timestamp() * 1000.0
+
+
+def load_anchors(log_path: Path, tz: ZoneInfo) -> list[tuple[float, int]]:
     """[(epoch_ms, millis)] from the .anchors sidecar, if present."""
     sidecar = log_path.with_suffix(".anchors")
     anchors = []
@@ -56,7 +76,7 @@ def load_anchors(log_path: Path) -> list[tuple[float, int]]:
             try:
                 dt = datetime.fromisoformat(parts[0])
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=TZ)
+                    dt = dt.replace(tzinfo=tz)
                 anchors.append((dt.timestamp() * 1000.0, int(parts[1])))
             except ValueError:
                 log.warning("unparseable anchor line: %r", line)
@@ -83,15 +103,14 @@ def split_sessions(text: str) -> list[tuple[str | None, list[tuple[int, str]]]]:
     return [(h, ls) for h, ls in sessions if ls or h]
 
 
-def header_epoch_ms(header: str | None) -> float | None:
+def header_epoch_ms(header: str | None, tz: ZoneInfo) -> float | None:
     if not header:
         return None
-    ms = _parse_iso_ms(header.replace(" @ ", " "))
-    return ms
+    return parse_stamp_ms(header, tz)
 
 
 def session_offset(lines: list[tuple[int, str]], anchors: list[tuple[float, int]],
-                   header: str | None, source: str) -> float | None:
+                   header: str | None, source: str, tz: ZoneInfo) -> float | None:
     """epoch_ms - device_millis for this session's unstamped lines."""
     millis_seen = []
     first_stamped: tuple[float, int] | None = None
@@ -102,7 +121,7 @@ def session_offset(lines: list[tuple[int, str]], anchors: list[tuple[float, int]
         mil = int(m.group(1))
         millis_seen.append(mil)
         if first_stamped is None:
-            iso = _parse_iso_ms(line)
+            iso = parse_stamp_ms(line, tz)
             if iso is not None:
                 first_stamped = (iso, mil)
     if not millis_seen:
@@ -113,7 +132,7 @@ def session_offset(lines: list[tuple[int, str]], anchors: list[tuple[float, int]
             return epoch_ms - mil
     if first_stamped is not None:
         return first_stamped[0] - first_stamped[1]
-    hdr_ms = header_epoch_ms(header)
+    hdr_ms = header_epoch_ms(header, tz)
     if hdr_ms is not None:
         log.warning("%s: session %r has no anchor/stamps — aligning first line "
                     "to the header time (approximate)", source, header)
@@ -123,33 +142,36 @@ def session_offset(lines: list[tuple[int, str]], anchors: list[tuple[float, int]
     return None
 
 
-def parse_file(path: Path) -> tuple[list[tuple[datetime, int, Frame, str]],
-                                    list[tuple[datetime, dict]],
-                                    list[tuple[datetime, dict]], CaptureStats]:
+def parse_file(path: Path, tz: ZoneInfo | None = None
+               ) -> tuple[list[tuple[datetime, int, Frame, str]],
+                          list[tuple[datetime, dict]],
+                          list[tuple[datetime, dict]], CaptureStats]:
     """-> (frames [(ts, millis, frame, source)], stats_events, session_events, stats)"""
+    tz = tz or ZoneInfo(config.LOCAL_TZ)
+    out_tz = ZoneInfo(config.LOCAL_TZ)  # display zone for stored timestamptz
     source = path.name
     text = path.read_text(errors="replace")
-    anchors = load_anchors(path)
+    anchors = load_anchors(path, tz)
     cap_stats = CaptureStats()
     frames_out: list[tuple[datetime, int, Frame, str]] = []
     stats_out: list[tuple[datetime, dict]] = []
     sessions_out: list[tuple[datetime, dict]] = []
 
     for header, lines in split_sessions(text):
-        offset = session_offset(lines, anchors, header, source)
+        offset = session_offset(lines, anchors, header, source, tz)
 
         def line_wall(line: str, millis: int | None) -> datetime | None:
-            iso = _parse_iso_ms(line)
+            iso = parse_stamp_ms(line, tz)
             if iso is not None:
-                return datetime.fromtimestamp(iso / 1000.0, TZ)
+                return datetime.fromtimestamp(iso / 1000.0, out_tz)
             if offset is not None and millis is not None:
-                return datetime.fromtimestamp((offset + millis) / 1000.0, TZ)
+                return datetime.fromtimestamp((offset + millis) / 1000.0, out_tz)
             return None
 
-        hdr_ms = header_epoch_ms(header)
+        hdr_ms = header_epoch_ms(header, tz)
         if hdr_ms is not None:
             sessions_out.append((
-                datetime.fromtimestamp(hdr_ms / 1000.0, TZ),
+                datetime.fromtimestamp(hdr_ms / 1000.0, out_tz),
                 {"header": header, "source": source}))
 
         asm = TelnetAssembler(source, cap_stats)
@@ -198,7 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     time.tzset()
 
     ap = argparse.ArgumentParser(description="SlyLog historical backfill (#137)")
-    ap.add_argument("files", nargs="+", help="capture archive(s), oldest first")
+    ap.add_argument("files", nargs="+",
+                    help="capture archive(s), oldest first; append ::ZONE to "
+                         "override the zone naive stamps were written in "
+                         "(e.g. ct485-live.log::UTC — kdocker2 stamps in UTC)")
     ap.add_argument("--dry-run", action="store_true",
                     help="parse + count only, no database writes")
     args = ap.parse_args(argv)
@@ -207,12 +232,14 @@ def main(argv: list[str] | None = None) -> int:
     all_stats: list[tuple[datetime, dict]] = []
     all_sessions: list[tuple[datetime, dict]] = []
     for path_s in args.files:
-        path = Path(path_s)
-        frames, stats_ev, sessions, cs = parse_file(path)
-        log.info("%s: %d lines -> %d valid frames (%d garbage bytes), "
+        path_part, _, zone = path_s.partition("::")
+        path = Path(path_part)
+        tz = ZoneInfo(zone) if zone else None
+        frames, stats_ev, sessions, cs = parse_file(path, tz)
+        log.info("%s (stamps=%s): %d lines -> %d valid frames (%d garbage bytes), "
                  "%d stats snapshots, %d sessions",
-                 path.name, cs.lines, len(frames), cs.garbage_bytes,
-                 len(stats_ev), len(sessions))
+                 path.name, zone or config.LOCAL_TZ, cs.lines, len(frames),
+                 cs.garbage_bytes, len(stats_ev), len(sessions))
         all_frames.extend(frames)
         all_stats.extend(stats_ev)
         all_sessions.extend(sessions)

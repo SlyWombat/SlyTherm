@@ -54,9 +54,13 @@ One-shot backfill of the pre-SlyLog capture archives (mounted read-only at
 ```sh
 docker compose exec collector python -m slylog_collector.migrate \
     /legacy-captures/ct485-capture-20260708.log \
-    /legacy-captures/ct485-live.log
+    /legacy-captures/ct485-live.log::UTC
 ```
 
+- Naive stamps are interpreted in the zone of the machine that wrote the
+  file: day-1 came from the dev machine (America/Toronto, matching its
+  `.anchors` `-04:00`), while kdocker2's run_capture stamped in host UTC —
+  hence the `::UTC` suffix. Default is `$TZ`.
 - Day-1 unstamped prefix is wall-mapped via the `.anchors` sidecar; sessions
   are segmented on `# ct485cap` headers (device millis resets per reboot).
 - Events (cycle_start/cycle_stop/demand_change/novel_command/ct485_stats)
