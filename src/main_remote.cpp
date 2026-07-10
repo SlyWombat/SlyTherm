@@ -27,6 +27,12 @@
 #include "telnet_log.h"       // #126: live logs on :23 (ring-replay on connect)
 #include "ui/ui_port.h"
 #include "wifi_prov.h"        // #121: wifi_prov owns the radio (NVS + on-device setup)
+#ifdef SLYTHERM_WG
+#include "remote_vpn.h"       // #148: WireGuard uplink (env:remote_p4_vpn only)
+#endif
+#ifdef SLYTHERM_CAM
+#include "remote_camera.h"    // #150: HTTP MJPEG camera server (pilot Remote only)
+#endif
 
 // Dev builds may carry a compiled-in seed; production images ship secretless
 // and provision on-glass (#121). Same pattern as thermostat_secrets.h.
@@ -80,8 +86,12 @@ void fillDemoState() {
 // Wall-UI task (core 0), mirroring the Controller's uiTask: renders gUi and
 // routes touch into it. Never touches the network.
 void uiTask(void*) {
+#ifndef SLYTHERM_CAM
   // #122: >=3 consecutive abnormal boots -> the shared reduced safe screen.
+  // (SLYTHERM_CAM builds run slytherm_ui::begin() in setup() instead — see
+  // the I2C-safety ordering comment there.)
   slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), gFirstRun);
+#endif
   for (;;) {
     slytherm_ui::service();
     remote_net_guard::service();  // #109 blocking panel (lv top layer)
@@ -157,6 +167,16 @@ void setup() {
   remote_mqtt::attachModel(&gUi, gUiMux);  // #102: echo -> model, intents -> broker
   remote_mqtt::begin();
 
+#ifdef SLYTHERM_CAM
+  // #150 I2C-safety ordering — DO NOT REORDER: slytherm_ui::begin() brings up
+  // the panel port (Wire on GPIO7/8, the bus shared by GT911 touch + ES8311 +
+  // the camera's SCCB) here in setup(), then remote_camera::begin() performs
+  // ALL of its SCCB traffic while no UI task exists to poll touch. Only after
+  // the camera is done touching I2C do we start uiTask. The camera never uses
+  // the bus again after begin(), so the two can't contend at runtime.
+  slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), gFirstRun);
+  remote_camera::begin();
+#endif
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 
   // #111: OTA task (checks the GitHub catalog; reboot ungated on the Remote).
@@ -178,6 +198,12 @@ void loop() {
     sNtpUp = true;
     configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
   }
+
+#ifdef SLYTHERM_WG
+  // #149: fallback ladder — direct broker first; the tunnel escalates only
+  // on sustained direct failure and tears down when back on the home LAN.
+  remote_vpn::service(millis(), wifi_prov::connected(), remote_mqtt::connected());
+#endif
 
   static uint32_t lastTickMs = 0;
   const uint32_t nowMs = millis();

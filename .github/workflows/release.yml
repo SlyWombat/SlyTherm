@@ -70,6 +70,20 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
 
+      - name: Materialize remote_secrets.h (WG keys for the remote-p4-vpn target)
+        env:
+          REMOTE_SECRETS_H: ${{ secrets.REMOTE_SECRETS_H }}
+        run: |
+          # #148/#149: the VPN target must never build secretless — a
+          # tunnel-disabled image strands off-LAN devices on apply. Absent
+          # secret => release.py skips the target (its 'requires' guard).
+          if [ -n "$REMOTE_SECRETS_H" ]; then
+            printf '%s\n' "$REMOTE_SECRETS_H" > src/remote_secrets.h
+            echo "remote_secrets.h materialized"
+          else
+            echo "REMOTE_SECRETS_H secret absent — remote-p4-vpn will be skipped"
+          fi
+
       - name: Build images + manifests + catalog
         env:
           OTA_SIGNING_KEY_PEM: ${{ secrets.OTA_SIGNING_KEY_PEM }}

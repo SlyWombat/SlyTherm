@@ -1,0 +1,37 @@
+// remote_camera.h — #150 tier 2: OV02C10 → ISP (RGB565) → hardware JPEG →
+// HTTP MJPEG/snapshot server on :8080, for HA's generic-camera integration.
+// Compiled only when SLYTHERM_CAM (currently env:remote_p4_vpn — the
+// non-critical pilot Remote; coexistence with DSI/LVGL is under evaluation).
+//
+// Privacy model: the sensor streams internally from boot (it has no
+// hardware indicator either way); the ENFORCED gate is the HTTP layer —
+// when disabled, no frame ever leaves the device. Enable/disable rides
+// MQTT (slytherm/remote/<id>/cmd/camera, "0"/"1") and the top bar shows a
+// dot whenever a client is actually being served.
+#pragma once
+
+#include <cstdint>
+
+namespace remote_camera {
+
+// Bring up XCLK + sensor SCCB + CSI/ISP/JPEG and start the capture + HTTP
+// tasks. MUST be called after the UI port has initialized Wire, and BEFORE
+// the UI task starts polling touch — the bring-up SCCB burst happens here.
+// (Runtime SCCB is limited to the slow AE task, serialized by wireLock.)
+void begin();
+
+void setEnabled(bool on);  // privacy switch (MQTT-driven; default on, pilot)
+bool enabled();
+bool clientActive();       // a stream/snapshot client is being served now
+uint32_t frames();         // captured frame count (diagnostics)
+
+// AE follow-up: the OV02C10 has no working internal AEC (0x3503 accepts
+// writes but exposure never adapts — bench-verified), so a slow (2 Hz)
+// host-side AE task writes the sensor's exposure/gain registers over the
+// SHARED I2C bus at runtime. Every other Wire user (the GT911 touch poll in
+// ui_port_p4) must bracket its bus access with this lock. No-ops before
+// begin().
+void wireLock();
+void wireUnlock();
+
+}  // namespace remote_camera

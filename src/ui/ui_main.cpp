@@ -9,6 +9,12 @@
 
 #include "ui_shared.h"
 #include "mqtt_cfg.h"
+#ifdef SLYTHERM_WG
+#include "remote_vpn.h"  // #148: Settings-page VPN status word + retry
+#endif
+#ifdef SLYTHERM_CAM
+#include "remote_camera.h"  // #150: top-bar dot while a camera client is served
+#endif
 
 // #113: injected by tools/version_flag.py; fallback keeps ad-hoc builds compiling.
 #ifndef SLYTHERM_FW_BUILD
@@ -37,6 +43,10 @@ lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows a
 lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): "Vacation until <date>"
 lv_obj_t *gPresetHold=nullptr;                   // Presets page: centered hold status ("On hold - Xh Ym left")
 lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
+lv_obj_t *wSetVpn=nullptr;   // #148: Settings VPN status word (remote_p4_vpn builds only)
+#ifdef SLYTHERM_CAM
+lv_obj_t *wCamDot=nullptr;   // #150: red top-bar dot while a camera client is being served
+#endif
 // System 12 h trend graph (#76): ~5-min RAM ring, 144 pts (temps x10 as lv_coord_t).
 constexpr int kGraphPts=144;
 lv_obj_t *gSysChart=nullptr,*wSysGraphLbl=nullptr;
@@ -213,6 +223,9 @@ void clkEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } uiToggleCloc
 void setPinEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
 void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
 void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
+#ifdef SLYTHERM_WG
+void vpnRetryEvt(lv_event_t*){ remote_vpn::requestRetry(); }  // #148: posts; the radio task executes
+#endif
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
   wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,50);
   // Lock actions (12/24h moved to its own labelled row below, #77)
@@ -233,6 +246,14 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_color(sb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(sb,openServer,LV_EVENT_CLICKED,nullptr);
   lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl);
   wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,"");
+#ifdef SLYTHERM_WG
+  // #148: VPN status + tap-to-retry, right column beside the WiFi row.
+  { lv_obj_t*vb=lv_btn_create(tab); lv_obj_set_size(vb,180,56); lv_obj_align(vb,LV_ALIGN_TOP_LEFT,460,228);
+    lv_obj_set_style_bg_color(vb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(vb,vpnRetryEvt,LV_EVENT_CLICKED,nullptr);
+    lv_obj_t*vl=lv_label_create(vb); lv_label_set_text(vl,LV_SYMBOL_REFRESH "  VPN"); lv_obj_center(vl);
+    wSetVpn=lv_label_create(tab); lv_obj_set_style_text_font(wSetVpn,&lv_font_montserrat_20,0);
+    lv_obj_align(wSetVpn,LV_ALIGN_TOP_LEFT,656,244); lv_label_set_text(wSetVpn,""); }
+#endif
   // #113: firmware identity line (VERSION file + git sha, injected at build)
   { lv_obj_t*fw=lv_label_create(tab); lv_label_set_text(fw,"Firmware " SLYTHERM_FW_BUILD);
     lv_obj_set_style_text_color(fw,lv_color_hex(COL_MUTED),0); lv_obj_align(fw,LV_ALIGN_BOTTOM_LEFT,4,-4); } }
@@ -254,6 +275,12 @@ void buildTopBar(lv_obj_t*scr){
   lv_obj_t*wm=lv_label_create(brand); lv_label_set_text(wm,"SlyTherm"); lv_obj_set_style_text_color(wm,lv_color_hex(COL_INK),0); lv_obj_align(wm,LV_ALIGN_LEFT_MID,54,0);
   wCaret=lv_label_create(brand); lv_label_set_text(wCaret,LV_SYMBOL_DOWN); lv_obj_set_style_text_color(wCaret,lv_color_hex(COL_TEXT3),0); lv_obj_align(wCaret,LV_ALIGN_LEFT_MID,158,0);
   wOnline=lv_obj_create(bar); lv_obj_set_size(wOnline,8,8); lv_obj_set_style_radius(wOnline,LV_RADIUS_CIRCLE,0); lv_obj_set_style_border_width(wOnline,0,0); lv_obj_align(wOnline,LV_ALIGN_RIGHT_MID,-232,0);  // #fix8: 8px dot, re-pinned just left of "Outside" in renderMain
+#ifdef SLYTHERM_CAM
+  // #150: camera-serving indicator, same 8px-dot pattern as wOnline; hidden
+  // unless remote_camera::clientActive() (toggled in renderMain).
+  wCamDot=lv_obj_create(bar); lv_obj_set_size(wCamDot,8,8); lv_obj_set_style_radius(wCamDot,LV_RADIUS_CIRCLE,0); lv_obj_set_style_border_width(wCamDot,0,0);
+  lv_obj_set_style_bg_color(wCamDot,lv_color_hex(0xE05555),0); lv_obj_align(wCamDot,LV_ALIGN_RIGHT_MID,-260,0); lv_obj_add_flag(wCamDot,LV_OBJ_FLAG_HIDDEN);
+#endif
   wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-178,0);
   // #127: WiFi RSSI bars between Outside and the clock; tap opens WiFi status.
   wRssiBox=lv_btn_create(bar); lv_obj_set_size(wRssiBox,28,24); lv_obj_align(wRssiBox,LV_ALIGN_RIGHT_MID,-140,0);
@@ -385,6 +412,10 @@ void renderMain(const DisplayState& s){ char b[128];
   lv_obj_set_style_bg_color(wOnline,lv_color_hex((s.wifiOk&&s.mqttOk)?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0);
   if(s.outdoorValid){ snprintf(b,sizeof(b),"Outside %.0f\xC2\xB0",(double)s.outdoorTempC); setTxt(wOat,b);} else setTxt(wOat,"Outside --");
   if(wOnline&&wOat) lv_obj_align_to(wOnline,wOat,LV_ALIGN_OUT_LEFT_MID,-8,0);  // #fix8: dot rides just left of the OAT label
+#ifdef SLYTHERM_CAM
+  if(wCamDot){ if(wOnline) lv_obj_align_to(wCamDot,wOnline,LV_ALIGN_OUT_LEFT_MID,-8,0);  // ride left of the online dot (fixed -260 overlapped the OAT text)
+    if(remote_camera::clientActive()) lv_obj_clear_flag(wCamDot,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(wCamDot,LV_OBJ_FLAG_HIDDEN); }  // #150
+#endif
   // #127 RSSI bars. Thresholds from real bench data on this hardware (P4
   // mesh: association fails ~-75, solid at -59) — keep as named constants.
   { constexpr int8_t kRssi4=-55, kRssi3=-65, kRssi2=-75;
@@ -490,7 +521,18 @@ void renderMain(const DisplayState& s){ char b[128];
     lv_obj_set_style_text_color(wSetWifi,lv_color_hex(s.wifiOk?COL_OK:COL_CRIT),0); }
   if(wSetHome){ const bool setup=mqtt_cfg::hostSet();
     setTxt(wSetHome, s.mqttOk?"Connected":(setup?"Offline":"Not set up"));
-    lv_obj_set_style_text_color(wSetHome,lv_color_hex(s.mqttOk?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0); } }
+    lv_obj_set_style_text_color(wSetHome,lv_color_hex(s.mqttOk?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0); }
+#ifdef SLYTHERM_WG
+  if(wSetVpn){ const auto vs=remote_vpn::state();   // #148/#149 status word
+    setTxt(wSetVpn, vs==remote_vpn::State::kUp?"Connected":
+                    vs==remote_vpn::State::kHandshaking?"Connecting":
+                    vs==remote_vpn::State::kStandby?"Standby":"Off");
+    lv_obj_set_style_text_color(wSetVpn,lv_color_hex(
+      vs==remote_vpn::State::kUp?COL_OK:
+      vs==remote_vpn::State::kHandshaking?COL_WARN:
+      vs==remote_vpn::State::kStandby?COL_MUTED:COL_CRIT),0); }
+#endif
+  }
 
 // #76: push one 12 h-graph sample (~5 min cadence). Rings shift left so the
 // newest point is always last (no visual wrap); Y auto-ranges around the data.

@@ -19,6 +19,10 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_ldo_regulator.h"
 
+#ifdef SLYTHERM_CAM
+#include "remote_camera.h"  // #150 AE follow-up: shared-I2C lock (AE task vs this touch poll)
+#endif
+
 extern "C" void uiNoteTouch();   // #90 sleep-state touch note (press edge)
 
 namespace slytherm_ui {
@@ -57,6 +61,13 @@ bool gtRead(uint16_t& x, uint16_t& y) {
   static bool down = false;
   static uint32_t readyMs = 0;
   uint8_t status = 0;
+#ifdef SLYTHERM_CAM
+  // #150 AE follow-up: the camera's 2 Hz AE task writes sensor registers on
+  // this same Wire bus at runtime — serialize every touch-poll transaction
+  // against it. (Boot-time Wire users don't need this: the camera tasks
+  // don't exist yet when the port initializes.)
+  remote_camera::wireLock();
+#endif
   if (gtReg(0x814E, &status, 1) == 1 && (status & 0x80)) {
     readyMs = millis();
     if ((status & 0x0F) > 0) {
@@ -77,6 +88,9 @@ bool gtRead(uint16_t& x, uint16_t& y) {
   } else if (down && millis() - readyMs > 150) {
     down = false;  // no fresh GT911 sample -> released (frees LVGL idle timer)
   }
+#ifdef SLYTHERM_CAM
+  remote_camera::wireUnlock();
+#endif
   x = lx;
   y = ly;
   return down;

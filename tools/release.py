@@ -90,6 +90,20 @@ TARGETS = [
         "ota": {"id": "remote-p4", "hwRev": "p4-m3-r1", "slot": 0x640000},
         "optional": True,
     },
+    {
+        "env": "remote_p4_vpn",
+        "name": "SlyTherm Remote + WireGuard uplink (#148/#149 off-LAN)",
+        "chip": "esp32p4", "chipFamily": "ESP32-P4",
+        "offsets": ["0x2000", "0x8000", "0xe000", "0x10000"],
+        "max_flash": 16 * 1024 * 1024,
+        "ota": {"id": "remote-p4-vpn", "hwRev": "p4-m3-r1", "slot": 0x640000},
+        "optional": True,
+        # A build without the WG keys ships a tunnel-DISABLED image — an
+        # off-LAN device that applies it is stranded (USB rescue). Never
+        # release this target secretless: CI materializes the file from the
+        # REMOTE_SECRETS_H repo secret; absent -> the target is skipped.
+        "requires": "src/remote_secrets.h",
+    },
 ]
 
 
@@ -217,6 +231,12 @@ def main() -> None:
                 print(f"release.py: WARNING: [env:{env}] not in platformio.ini — skipped")
                 continue
             die(f"[env:{env}] missing from platformio.ini")
+        req = t.get("requires")
+        if req and not Path(req).exists():
+            # See the TARGETS comment: a secretless build of this target is
+            # worse than no build (applying it strands off-LAN devices).
+            print(f"release.py: WARNING: [env:{env}] requires {req} (absent) — skipped")
+            continue
         if not args.skip_build:
             run([pio, "run", "-e", env])
         if esptool is None:

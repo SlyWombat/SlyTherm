@@ -17,6 +17,9 @@
 #include "boot_guard.h"   // #123: boot/crash telemetry payload
 #include "mqtt_cfg.h"
 #include "wifi_prov.h"   // #121: wifi_prov owns the radio
+#ifdef SLYTHERM_CAM
+#include "remote_camera.h"  // #150: MQTT privacy switch for the camera
+#endif
 
 namespace remote_mqtt {
 namespace {
@@ -50,6 +53,9 @@ char gIntentTopic[48] = {};
 char gOtaCheckTopic[56] = {};
 char gOtaApplyTopic[56] = {};
 char gOtaStateTopic[56] = {};
+#ifdef SLYTHERM_CAM
+char gCamTopic[56] = {};  // #150: slytherm/remote/<id>/cmd/camera ("0" = off)
+#endif
 char gOtaStateCache[192] = {};  // diff suppression ("" -> republish)
 
 // Topic literals (the Remote build doesn't compile the Controller's src/;
@@ -244,6 +250,12 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     ota::requestCheck();   // payload ignored; no-op mid-phase (#111)
   } else if (strcmp(topic, gOtaApplyTopic) == 0) {
     ota::requestApply();
+#ifdef SLYTHERM_CAM
+  } else if (strcmp(topic, gCamTopic) == 0) {
+    // #150 privacy switch: "0" disables (no frame leaves the device), anything
+    // else re-enables. Default at boot is enabled (pilot device).
+    remote_camera::setEnabled(strcmp(buf, "0") != 0);
+#endif
   } else if (strcmp(topic, "slytherm/cmd/ota_mirror") == 0) {
     // #129: fleet-wide LAN OTA mirror ("" or "clear" -> GitHub direct).
     ota::setMirror(strcmp(buf, "clear") == 0 ? "" : buf);
@@ -344,6 +356,9 @@ void deriveIds() {
   snprintf(gOtaCheckTopic, sizeof(gOtaCheckTopic), "slytherm/remote/%s/cmd/ota_check", gId);
   snprintf(gOtaApplyTopic, sizeof(gOtaApplyTopic), "slytherm/remote/%s/cmd/ota_apply", gId);
   snprintf(gOtaStateTopic, sizeof(gOtaStateTopic), "slytherm/remote/%s/state/ota", gId);
+#ifdef SLYTHERM_CAM
+  snprintf(gCamTopic, sizeof(gCamTopic), "slytherm/remote/%s/cmd/camera", gId);
+#endif
 }
 
 void discoverBroker(uint32_t nowMs) {
@@ -408,10 +423,14 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe("slytherm/sensors/+/presence");       // #117 presence
     gMqtt.subscribe(gOtaCheckTopic);     // #111 OTA drive (per-Remote)
     gMqtt.subscribe(gOtaApplyTopic);
+#ifdef SLYTHERM_CAM
+    gMqtt.subscribe(gCamTopic);          // #150 camera privacy switch
+#endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
-    { char t[48];  // #123: retained boot/crash telemetry (built once at boot)
+    { char t[48];  // #123/#145: retained boot/crash telemetry (uptimeS marks
+      // a reconnect echo vs a fresh boot)
       snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
-      gMqtt.publish(t, boot_guard::statusJson(), true); }
+      gMqtt.publish(t, boot_guard::statusJson(millis() / 1000u).c_str(), true); }
     gOtaStateCache[0] = 0;               // republish OTA status after (re)connect
     // #111: broker connectivity = the post-OTA self-test (the Controller is
     // deliberately NOT required — OTA must work on a Remote with no
