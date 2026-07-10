@@ -37,7 +37,11 @@ void service(){
     DisplayState s; L(); s=gM->state(); U();
     if(gWelcomeActive){   // #82: first-run onboarding gate — stay here until Wi-Fi is up
       if(wifi_prov::connected()){ gWelcomeActive=false; gWifiOpen=false; if(wifiOv) lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);
-        lv_scr_load(scrMain); if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF); }   // connected -> Home automatically
+        // #147: onboarding lands on the #92 warm-up splash (pulsing logo +
+        // link checklist), not a half-populated Home — the splash's own gate
+        // rolls to Home once the connections and temps are live.
+        gBootActive=true; gBootStartMs=millis(); lv_scr_load(scrBoot);
+        Serial.println("[ui] onboarding connected -> #92 warm-up splash"); }
       else { if(!gWifiOpen && lv_scr_act()!=scrWelcome) lv_scr_load(scrWelcome);   // backed out of WiFi setup -> Welcome (never a bare screen)
         renderWifi(); screenshotPoll(); lv_timer_handler(); return; } }
     if(gBootActive){   // #92: warm-up splash — hold Home until outdoor + current temp are live (<=60s)

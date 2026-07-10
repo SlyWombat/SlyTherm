@@ -906,17 +906,40 @@ static void test_remote_state_json_extras() {  // #116/#118
   TEST_ASSERT_TRUE(has(j, "\"vacation\":false"));
 }
 
-static void test_boot_status_json() {  // #123
-  std::string j = bootStatusJson("panic", true, 8130, "0.5.0", 3);
+static void test_boot_status_json() {  // #123/#145
+  BootStatus s;
+  s.reason = "panic";
+  s.coredump = true;
+  s.prevUptimeS = 8130;
+  s.version = "0.5.0";
+  s.bootCount = 3;
+  s.rawReason = 4;
+  s.rtcReason0 = 1;
+  s.rtcReason1 = 14;
+  s.lastAliveUptimeS = 28458;
+  s.lastAliveEpoch = 1783148392;
+  s.uptimeS = 7;
+  std::string j = bootStatusJson(s);
   assertCoherentJson(j);
   TEST_ASSERT_TRUE(has(j, "\"reason\":\"panic\""));
   TEST_ASSERT_TRUE(has(j, "\"coredump\":true"));
   TEST_ASSERT_TRUE(has(j, "\"prevUptimeS\":8130"));
   TEST_ASSERT_TRUE(has(j, "\"version\":\"0.5.0\""));
   TEST_ASSERT_TRUE(has(j, "\"bootCount\":3"));
-  j = bootStatusJson(nullptr, false, 0, nullptr, 0);
+  TEST_ASSERT_TRUE(has(j, "\"rawReason\":4"));
+  TEST_ASSERT_TRUE(has(j, "\"rtcReason0\":1"));
+  TEST_ASSERT_TRUE(has(j, "\"rtcReason1\":14"));
+  TEST_ASSERT_TRUE(has(j, "\"lastAliveUptimeS\":28458"));
+  TEST_ASSERT_TRUE(has(j, "\"lastAliveEpoch\":1783148392"));
+  TEST_ASSERT_TRUE(has(j, "\"uptimeS\":7"));
+  BootStatus d;  // defaults: nulls read unknown/empty, extras zero
+  d.reason = nullptr;
+  d.version = nullptr;
+  j = bootStatusJson(d);
+  assertCoherentJson(j);
   TEST_ASSERT_TRUE(has(j, "\"reason\":\"unknown\""));
   TEST_ASSERT_TRUE(has(j, "\"coredump\":false"));
+  TEST_ASSERT_TRUE(has(j, "\"uptimeS\":0"));
 }
 
 static void test_parse_remote_intent_vacation_and_ack() {  // #118

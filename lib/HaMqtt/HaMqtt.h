@@ -416,13 +416,31 @@ std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
                              bool vacationActive = false,
                              const char* vacBanner = "");
 
-// #123: retained boot/crash telemetry (slytherm/boot, slytherm/remote/<id>/boot):
-//   {"reason":"panic","coredump":true,"prevUptimeS":8130,"version":"0.4.3","bootCount":17}
+// #123/#145: retained boot/crash telemetry (slytherm/boot, slytherm/remote/<id>/boot):
+//   {"reason":"panic","coredump":true,"prevUptimeS":8130,"version":"0.4.3","bootCount":17,
+//    "rawReason":4,"rtcReason0":1,"rtcReason1":14,
+//    "lastAliveUptimeS":28458,"lastAliveEpoch":1783148392,"uptimeS":3}
 // reason is the fixed esp_reset_reason() mapping in src/boot_guard.cpp;
-// prevUptimeS==0 means unknown (RTC lost, e.g. true power cycle).
-std::string bootStatusJson(const char* reason, bool coredump,
-                            uint32_t prevUptimeS, const char* version,
-                            uint32_t bootCount);
+// prevUptimeS==0 means unknown (RTC lost, e.g. true power cycle). The #145
+// fields survive that case: lastAlive* is the NVS heartbeat from the previous
+// run (0 = unknown/no heartbeat yet), rawReason/rtcReason* are the numeric
+// esp_reset_reason() and per-CPU ROM reset codes, and uptimeS is stamped at
+// PUBLISH time — the topic is republished retained on every MQTT reconnect,
+// so uptimeS well above 0 marks a reconnect echo, not a fresh boot.
+struct BootStatus {
+  const char* reason = "unknown";
+  bool coredump = false;
+  uint32_t prevUptimeS = 0;
+  const char* version = "";
+  uint32_t bootCount = 0;
+  uint32_t rawReason = 0;         // esp_reset_reason() numeric
+  uint32_t rtcReason0 = 0;        // ROM reset reason, CPU0
+  uint32_t rtcReason1 = 0;        // ROM reset reason, CPU1
+  uint32_t lastAliveUptimeS = 0;  // previous run's last NVS heartbeat
+  uint32_t lastAliveEpoch = 0;    // wall clock of that heartbeat (0 = no NTP)
+  uint32_t uptimeS = 0;           // THIS run's uptime at publish time
+};
+std::string bootStatusJson(const BootStatus& s);
 
 // Discovery payloads for the diagnostic entities (docs/06 "Entities" table).
 std::string activeEquipmentDiscoveryJson();      // sensor

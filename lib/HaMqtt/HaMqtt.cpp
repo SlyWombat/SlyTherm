@@ -558,7 +558,12 @@ namespace {
 
 std::string numStr(double v) {
   char buf[32];
-  std::snprintf(buf, sizeof buf, "%g", v);
+  // %g goes scientific past 6 significant digits, which mangles big integers
+  // (epochs, long uptimes) — emit integral values as plain integers.
+  if (std::floor(v) == v && std::fabs(v) < 9.007199254740992e15)
+    std::snprintf(buf, sizeof buf, "%.0f", v);
+  else
+    std::snprintf(buf, sizeof buf, "%g", v);
   return buf;
 }
 
@@ -863,15 +868,19 @@ std::string controllerStatusJson(const std::string& cid, bool online,
       .close();
 }
 
-std::string bootStatusJson(const char* reason, bool coredump,
-                            uint32_t prevUptimeS, const char* version,
-                            uint32_t bootCount) {
+std::string bootStatusJson(const BootStatus& s) {
   return Obj()
-      .str("reason", reason ? reason : "unknown")
-      .raw("coredump", coredump ? "true" : "false")
-      .num("prevUptimeS", prevUptimeS)
-      .str("version", version ? version : "")
-      .num("bootCount", bootCount)
+      .str("reason", s.reason ? s.reason : "unknown")
+      .raw("coredump", s.coredump ? "true" : "false")
+      .num("prevUptimeS", s.prevUptimeS)
+      .str("version", s.version ? s.version : "")
+      .num("bootCount", s.bootCount)
+      .num("rawReason", s.rawReason)
+      .num("rtcReason0", s.rtcReason0)
+      .num("rtcReason1", s.rtcReason1)
+      .num("lastAliveUptimeS", s.lastAliveUptimeS)
+      .num("lastAliveEpoch", s.lastAliveEpoch)
+      .num("uptimeS", s.uptimeS)
       .close();
 }
 

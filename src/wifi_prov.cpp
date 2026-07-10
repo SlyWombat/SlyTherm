@@ -33,6 +33,12 @@ bool      gForgetReq = false;
 uint32_t gLastBeginMs = 0, gConnStartMs = 0, gScanStartMs = 0;
 bool     gScanning    = false;
 uint32_t gAttempts    = 0;   // #109/#121: every WiFi.begin counts
+// #146: user-entered creds not yet persisted. The 12s kConnecting window
+// regularly expires on a slow association (P4 at a mesh edge), after which
+// the maintenance branch connects fine — the save must follow WHENEVER the
+// association lands, not only inside the window, or the creds live in RAM
+// only and the next reboot returns to the Welcome screen.
+bool     gSavePending = false;
 
 // #121 (Remote-only, flag-gated so the Controller binary is untouched): the
 // P4 bench sits at the edge of a 2.4GHz mesh — associating to the driver's
@@ -117,22 +123,32 @@ void service(uint32_t nowMs){
   // forget
   L(); bool fReq=gForgetReq; gForgetReq=false; U();
   if(fReq){ Preferences p; p.begin("wifi",false); p.remove("ssid"); p.remove("pass"); p.end();
-    gActiveSsid[0]=0; gActivePass[0]=0; WiFi.disconnect(); L(); gConnSt=ConnState::kIdle; U(); }
+    gActiveSsid[0]=0; gActivePass[0]=0; gSavePending=false;
+    WiFi.disconnect(); L(); gConnSt=ConnState::kIdle; U(); }
 
   // connect request
   L(); bool cReq=gConnReq; gConnReq=false; char rs[33],rp[65];
   strlcpy(rs,gReqSsid,sizeof(rs)); strlcpy(rp,gReqPass,sizeof(rp)); U();
   if(cReq && rs[0]){ strlcpy(gActiveSsid,rs,sizeof(gActiveSsid)); strlcpy(gActivePass,rp,sizeof(gActivePass));
+    gSavePending = true;  // #146: persist on association, however long it takes
 #ifdef SLYTHERM_WIFI_PIN_BSSID
     gHaveBest = false;  // a user-chosen (possibly different) SSID: let the driver pick first
 #endif
     WiFi.disconnect(); radioBegin(); gConnStartMs=nowMs;
     L(); gConnSt=ConnState::kConnecting; U(); }
 
+  // #146: persist user-entered creds on the association that finally lands —
+  // including one the maintenance branch made after the 12s UI window
+  // expired (UI shows Failed, the driver associates seconds later).
+  if(gSavePending && WiFi.status()==WL_CONNECTED){
+    saveCreds(gActiveSsid,gActivePass); gSavePending=false;
+    Serial.println("[wifi] credentials persisted");
+  }
+
   // connect state machine + maintenance
   L(); ConnState cs=gConnSt; U();
   if(cs==ConnState::kConnecting){
-    if(WiFi.status()==WL_CONNECTED){ saveCreds(gActiveSsid,gActivePass); L(); gConnSt=ConnState::kConnected; U(); }
+    if(WiFi.status()==WL_CONNECTED){ L(); gConnSt=ConnState::kConnected; U(); }
     else if(nowMs-gConnStartMs>12000){ L(); gConnSt=ConnState::kFailed; U(); }
   }
 #ifdef SLYTHERM_WIFI_PIN_BSSID

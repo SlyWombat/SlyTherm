@@ -1369,8 +1369,10 @@ void mqttTask(void*) {
 #ifdef SLYTHERM_REMOTE_LINK
         gRemoteEchoCache.clear();  // force a full retained-echo republish too
 #endif
-        // #123: retained boot/crash telemetry (built once at boot).
-        gMqtt.publish("slytherm/boot", boot_guard::statusJson(), true);
+        // #123/#145: retained boot/crash telemetry. uptimeS is stamped per
+        // publish so a reconnect echo is distinguishable from a fresh boot.
+        gMqtt.publish("slytherm/boot",
+                      boot_guard::statusJson(millis() / 1000u).c_str(), true);
         // #61: broker connectivity = the post-OTA self-test (network stack +
         // app alive). Confirms a pending update; no-op otherwise.
         ota::noteSelfTestPass();
