@@ -15,6 +15,7 @@
 #include <Wire.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "driver/i2s_std.h"
 #include "driver/isp.h"
@@ -55,9 +56,38 @@ constexpr uint16_t kGainMin = 0x10, kGainMax = 0xf8;  // code units, 16 = 1x
 // the ladder for scenes darker than exp-max + 15.5x analog can reach. Capped
 // at 4x — beyond that it's just amplified noise.
 constexpr uint32_t kDgainMin = 0x400, kDgainMax = 0x1000;
-constexpr uint32_t kAeTargetLuma = 26;     // green-channel mean, 0..63 (~105/255)
+constexpr uint32_t kAeTargetLuma = 22;     // green-channel mean, 0..63 (~88/255).
+                                           // Round 3: lowered from 26 to shrink the
+                                           // clipped (green-tinting) lamp cores.
 constexpr uint32_t kAeDeadband = 4;
 constexpr uint32_t kAePeriodMs = 500;      // 2 Hz — slow, per the I2C-sharing rule
+
+// Round-3 AWB (host-side, ISP-only — zero SCCB, no Wire mutex): the round-2
+// FIXED gray-world CCM hit the global mean only because clipped-green lamp
+// highlights cancelled magenta midtones (owner-measured: midtones R/G=1.09
+// B/G=1.10, highlights 0.87). This loop meters ONLY unclipped midtone pixels
+// of the latest post-CCM frame and walks the CCM diagonal toward neutralizing
+// THOSE (closed loop), heavily rate-limited and gated on AE being settled so
+// the two loops can't chase each other.
+constexpr uint32_t kAwbEveryNthTick = 4;   // 4 x 500ms = ~0.5 Hz
+constexpr uint32_t kAwbAeSettleMs = 3000;  // AE quiet this long before AWB moves
+constexpr float kAwbGainMin = 0.6f, kAwbGainMax = 1.6f;
+constexpr float kAwbStepMax = 1.04f;       // <=4% gain change per step
+constexpr float kAwbDeadband = 0.01f;      // stop inside +-1% of neutral (EMA'd)
+constexpr float kAwbEmaAlpha = 0.3f;       // smooth the per-frame metering noise
+                                           // (bench: +-3.5% frame-to-frame) so the
+                                           // loop centers instead of hunting
+constexpr uint32_t kAwbLumaLo = 60, kAwbLumaHi = 160;  // midtone band (8-bit luma)
+constexpr uint32_t kAwbClip = 240;         // any channel at/above = excluded
+constexpr uint32_t kAwbMinSamples = 400;   // else scene has no usable midtones
+// Pipeline calibration (bench 2026-07-10): the SERVED JPEG's midtone ratios
+// read slightly above the device's RGB565 metering (hw JPEG chroma path +
+// different band populations after downsampling) — B by ~+2%, R by ~+1% on a
+// stable scene, with some scene dependence. Acceptance is measured on the
+// JPEG, so steer the device-domain ratios a hair below neutral. (Bracketed
+// on-bench: B target 1.00 -> JPEG 1.03; 0.98 -> JPEG 0.95-0.99.)
+constexpr float kAwbTargetRG = 0.995f;
+constexpr float kAwbTargetBG = 0.99f;
 
 // state
 bool gBegun = false;
@@ -66,6 +96,9 @@ SemaphoreHandle_t gWireMux = nullptr;  // shared-I2C lock (AE task vs touch poll
 uint16_t gAeExp = 0x046c;              // running AE state, seeded from the table
 uint16_t gAeGain = 0x80;               // code units (0x80 = 8x, table default)
 uint32_t gAeDgain = kDgainMin;         // code units (0x400 = 1x)
+volatile uint32_t gAeLastAdjMs = 0;    // last AE register write (gates AWB)
+isp_proc_handle_t gIsp = nullptr;      // kept for runtime CCM (AWB) updates
+float gWbR = 0.77f, gWbB = 0.78f;      // live CCM diagonal (seed = round-2 bench fit)
 volatile bool gEnabled = true;   // privacy switch — default ON (pilot device)
 volatile bool gClientActive = false;
 volatile uint32_t gFrames = 0;   // every frame the CSI DMA finished
@@ -119,6 +152,24 @@ bool writeTable(const ov02c10_reginfo_t* t) {
     }
   }
   return true;
+}
+
+// Program the live WB gains into the ISP CCM, NORMALIZED so the smallest
+// diagonal entry is 1.0 (G scales UP instead of R/B scaling down). Ratios —
+// and thus the midtone correction — are identical, but sensor-clipped whites
+// (lamps, a sunlit shirt) saturate to WHITE instead of blooming green, and
+// the extra G headroom lets AE shed digital gain. saturation=true clamps
+// in-hardware; entries stay well under the 4.0 matrix limit.
+esp_err_t applyCcm() {
+  if (!gIsp) return ESP_FAIL;
+  const float k = 1.0f / std::min(std::min(gWbR, gWbB), 1.0f);
+  esp_isp_ccm_config_t ccm = {};
+  ccm.matrix[0][0] = gWbR * k;
+  ccm.matrix[1][1] = k;
+  ccm.matrix[2][2] = gWbB * k;
+  ccm.saturation = true;
+  ccm.flags.update_once_configured = 1;
+  return esp_isp_ccm_configure(gIsp, &ccm);
 }
 
 // ---- CSI callbacks (ISR context) ----
@@ -226,24 +277,38 @@ bool initHw() {
   icfg.h_res = kW;
   icfg.v_res = kH;
   icfg.bayer_order = COLOR_RAW_ELEMENT_ORDER_GBRG;
-  isp_proc_handle_t isp = nullptr;
-  esp_err_t ei = esp_isp_new_processor(&icfg, &isp);
+  esp_err_t ei = esp_isp_new_processor(&icfg, &gIsp);
   if (ei != ESP_OK) { telnet_log::logf("[cam] ISP new FAILED: 0x%x", ei); return false; }
-  ei = esp_isp_enable(isp);
+  ei = esp_isp_enable(gIsp);
   if (ei != ESP_OK) { telnet_log::logf("[cam] ISP enable FAILED: 0x%x", ei); return false; }
-  // WB follow-up: fixed gray-world CCM, measured on-bench 2026-07-10 under
-  // the room's actual lighting (channel means R56/G43/B56 — magenta cast,
-  // raw sensor + no AWB). Diagonal gains normalize R/B to G; the AE loop
-  // recovers the slight overall dimming. A fixed matrix costs nothing at
-  // runtime and can't color-hunt; refine per-site if the pilot moves.
-  { esp_isp_ccm_config_t ccm = {};
-    ccm.matrix[0][0] = 0.77f;  // R
-    ccm.matrix[1][1] = 1.00f;  // G
-    ccm.matrix[2][2] = 0.78f;  // B
-    ccm.saturation = true;
-    esp_err_t ec = esp_isp_ccm_configure(isp, &ccm);
-    if (ec == ESP_OK) ec = esp_isp_ccm_enable(isp);
+  // Round-3 WB: the CCM diagonal is now LIVE — awbStep() re-fits it from
+  // midtone statistics at ~0.5Hz (see constants above). Seed with the round-2
+  // bench fit so the first frames aren't wildly off under this room's light.
+  { esp_err_t ec = applyCcm();
+    if (ec == ESP_OK) ec = esp_isp_ccm_enable(gIsp);
     if (ec != ESP_OK) telnet_log::logf("[cam] CCM FAILED: 0x%x (colors uncorrected)", ec);
+  }
+  // Round-3 BLC: subtract the OmniVision sensor pedestal (64 in the RAW10
+  // domain — matching the format table's BLC target, reg 0x4003=0x40) in the
+  // ISP so shadows don't carry the cast through the CCM gains. Non-fatal.
+  { esp_isp_blc_config_t blc = {};
+    blc.window.top_left.x = 0;
+    blc.window.top_left.y = 0;
+    blc.window.btm_right.x = kW - 1;
+    blc.window.btm_right.y = kH - 1;
+    blc.filter_enable = false;
+    blc.flags.update_once_configured = 1;
+    esp_err_t eb = esp_isp_blc_configure(gIsp, &blc);
+    if (eb == ESP_OK) eb = esp_isp_blc_enable(gIsp);
+    if (eb == ESP_OK) {
+      esp_isp_blc_offset_t off = {};
+      off.top_left_chan_offset = 64;
+      off.top_right_chan_offset = 64;
+      off.bottom_left_chan_offset = 64;
+      off.bottom_right_chan_offset = 64;
+      eb = esp_isp_blc_set_correction_offset(gIsp, &off);
+    }
+    if (eb != ESP_OK) telnet_log::logf("[cam] BLC FAILED: 0x%x (pedestal uncorrected)", eb);
   }
 
   esp_cam_ctlr_evt_cbs_t cbs = {};
@@ -317,13 +382,74 @@ uint32_t meanLuma() {
   return sum / 4096;
 }
 
+// ---- round-3 AWB step (~0.5 Hz, called from aeTask): meter midtone-only
+// R/G and B/G of the latest post-CCM frame and walk the live CCM diagonal
+// toward neutral. ISP-register-only — zero SCCB, no Wire mutex. ----
+void awbStep() {
+  if (!gIsp || gSeq == 0) return;
+  uint8_t* b = gBuf[gLatest];
+  esp_cache_msync(b, kFrameBytes,
+                  ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+  uint32_t sumR = 0, sumG = 0, sumB = 0, n = 0;
+  constexpr int kN = 8192;
+  const size_t stride = (kFrameBytes / 2 / kN) * 2;
+  for (int i = 0; i < kN; i++) {
+    const uint16_t px = *(const uint16_t*)(b + (size_t)i * stride);
+    // RGB565 -> 8-bit with bit replication (plain shifts bias the ratios low)
+    const uint32_t r = ((px >> 11) << 3) | ((px >> 11) >> 2);
+    const uint32_t g = (((px >> 5) & 0x3F) << 2) | (((px >> 5) & 0x3F) >> 4);
+    const uint32_t bl = ((px & 0x1F) << 3) | ((px & 0x1F) >> 2);
+    const uint32_t luma = (r + 2 * g + bl) >> 2;
+    if (luma < kAwbLumaLo || luma > kAwbLumaHi) continue;       // midtones only
+    if (r >= kAwbClip || g >= kAwbClip || bl >= kAwbClip) continue;  // no clipped px
+    sumR += r; sumG += g; sumB += bl; n++;
+  }
+  if (n < kAwbMinSamples || sumG == 0) return;  // no usable midtones this frame
+  // EMA the per-frame ratios: single-frame metering noise is ~+-3.5% on this
+  // scene, larger than the acceptance band — adjust toward the smoothed cast.
+  static float sRg = 0.0f, sBg = 0.0f;
+  static bool sEmaInit = false;
+  const float fRg = (float)sumR / sumG, fBg = (float)sumB / sumG;
+  if (!sEmaInit) { sEmaInit = true; sRg = fRg; sBg = fBg; }
+  else {
+    sRg += kAwbEmaAlpha * (fRg - sRg);
+    sBg += kAwbEmaAlpha * (fBg - sBg);
+  }
+  const float rg = sRg / kAwbTargetRG, bg = sBg / kAwbTargetBG;  // residual vs calibrated neutral
+  if (fabsf(rg - 1.0f) < kAwbDeadband && fabsf(bg - 1.0f) < kAwbDeadband) return;
+  // Closed loop: divide the residual cast out of the current gains, but move
+  // at most kAwbStepMax per step and stay inside the sane range.
+  float nR = std::min(std::max(gWbR / rg, gWbR / kAwbStepMax), gWbR * kAwbStepMax);
+  float nB = std::min(std::max(gWbB / bg, gWbB / kAwbStepMax), gWbB * kAwbStepMax);
+  nR = std::min(std::max(nR, kAwbGainMin), kAwbGainMax);
+  nB = std::min(std::max(nB, kAwbGainMin), kAwbGainMax);
+  if (nR == gWbR && nB == gWbB) return;
+  // The next frames' measured cast scales with the gain change — rescale the
+  // EMA by the same factor so it doesn't feed back stale residuals.
+  sRg *= nR / gWbR;
+  sBg *= nB / gWbB;
+  gWbR = nR;
+  gWbB = nB;
+  const esp_err_t ec = applyCcm();
+  telnet_log::logf("[cam] AWB: mid R/G %.3f B/G %.3f (n=%lu) -> gains R %.3f B %.3f (%s)",
+                   (double)rg, (double)bg, (unsigned long)n, (double)gWbR, (double)gWbB,
+                   ec == ESP_OK ? "ok" : "CCM FAIL");
+}
+
 // ---- host-side AE task (2 Hz): meter the latest frame, steer exposure then
 // analog gain toward the target. The ONLY runtime SCCB in the firmware; every
-// register write is serialized against the touch poll via gWireMux. ----
+// register write is serialized against the touch poll via gWireMux. Also
+// paces the ~0.5 Hz AWB step, which only runs while AE has been settled for
+// kAwbAeSettleMs (so the two loops never chase each other). ----
 void aeTask(void*) {
+  uint32_t tick = 0;
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(kAePeriodMs));
     if (gSeq == 0) continue;
+    if (++tick % kAwbEveryNthTick == 0 &&
+        millis() - gAeLastAdjMs > kAwbAeSettleMs) {
+      awbStep();
+    }
     uint32_t m = meanLuma();
     if (m == 0) m = 1;
     const uint32_t lo = kAeTargetLuma - kAeDeadband, hi = kAeTargetLuma + kAeDeadband;
@@ -352,6 +478,7 @@ void aeTask(void*) {
     gAeExp = exp;
     gAeGain = gain;
     gAeDgain = dgain;
+    gAeLastAdjMs = millis();  // AE moved -> hold AWB off until it settles
     const uint16_t greg = gain << 4;       // 16-bit reg value = code<<4 (Linux semantics)
     const uint32_t dreg = dgain << 6;      // 24-bit reg value = code<<6
     wireLock();
