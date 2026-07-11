@@ -205,6 +205,51 @@ static void test_starts_window_survives_reboot() {
   TEST_ASSERT_EQUAL(Deny::kStartsPerHour, d.reason);
 }
 
+// Pre-TX gate proof (2026-07-11 review): an OTA reboot landing RIGHT AFTER a
+// compressor stop must not permit an instant restart. Firmware chain: the
+// stop edge saves the blob within one control cycle (persistOnChange on the
+// running() change), the monotonic clock base ("clk") resumes from a value
+// persisted every 60 s, and setup() feeds the blob to bootRestore() — so the
+// restored `now` is never AHEAD of true elapsed time and min-off can only be
+// over-served, never shorted. The two tests below pin both halves.
+
+static void test_ota_reboot_immediately_after_stop_no_short_cycle() {
+  CompressorGuard a = freshGuard(0);
+  TEST_ASSERT_TRUE(a.requestStart(300).allowed);
+  TEST_ASSERT_TRUE(a.requestStop(700, /*safety=*/false).allowed);  // normal comfort stop
+  Blob b;
+  a.save(&b);  // persisted on the stop edge, then the OTA reboot lands
+
+  CompressorGuard g;
+  g.bootRestore(&b, 705, false);  // back up 5 s after the stop
+  auto d = g.requestStart(706);   // first demand post-boot (boot-to-no-demand)
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
+  TEST_ASSERT_EQUAL_UINT32(294, d.waitS);          // remainder of 300 from t=700
+  TEST_ASSERT_FALSE(g.requestStart(999).allowed);  // 1 s short: still held
+  TEST_ASSERT_TRUE(g.requestStart(1000).allowed);  // min-off truly served
+}
+
+static void test_reboot_clock_behind_stop_serves_full_min_off() {
+  // The 60 s clock-persist cadence means boot can resume BEHIND the last-stop
+  // stamp. elapsedS() clamps backwards time to zero -> the FULL min-off is
+  // served from the restored now, never a negative/underflowed wait.
+  CompressorGuard a = freshGuard(0);
+  TEST_ASSERT_TRUE(a.requestStart(300).allowed);
+  TEST_ASSERT_TRUE(a.requestStop(1000, /*safety=*/true).allowed);
+  Blob b;
+  a.save(&b);
+
+  CompressorGuard g;
+  g.bootRestore(&b, 950, false);  // clock resumed 50 s behind the stop
+  auto d = g.requestStart(950);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
+  TEST_ASSERT_EQUAL_UINT32(dettson::kCompressorMinOffS, d.waitS);  // full 300
+  TEST_ASSERT_FALSE(g.requestStart(1240).allowed);
+  TEST_ASSERT_TRUE(g.requestStart(1300).allowed);  // 1000(blob stop) + 300
+}
+
 // ---------- reset-loop lockout ----------
 
 static void test_reset_loop_latches_and_manual_clear() {
@@ -295,6 +340,8 @@ int main() {
   RUN_TEST(test_min_off_survives_reboot_via_blob);
   RUN_TEST(test_reboot_while_running_assumes_stop_at_boot);
   RUN_TEST(test_starts_window_survives_reboot);
+  RUN_TEST(test_ota_reboot_immediately_after_stop_no_short_cycle);
+  RUN_TEST(test_reboot_clock_behind_stop_serves_full_min_off);
   RUN_TEST(test_reset_loop_latches_and_manual_clear);
   RUN_TEST(test_reset_loop_window_and_normal_boots);
   RUN_TEST(test_locked_out_still_allows_stop);
