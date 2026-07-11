@@ -65,7 +65,8 @@ LEFT JOIN LATERAL (
 WHERE f.valid_at <= now();
 
 -- ---------------------------------------------------------------------------
--- Per-lead-hour skill (1..24), rolling 7d / 30d windows over valid_at.
+-- Per-lead-hour skill (1..48 — collector fetches a 48 h horizon since #141),
+-- rolling 7d / 30d windows over valid_at.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW forecast_skill_7d AS
 SELECT
@@ -85,7 +86,7 @@ SELECT
     count(*) FILTER (WHERE NOT precip_predicted AND precip_observed)     AS precip_misses,
     count(*) FILTER (WHERE NOT precip_predicted AND NOT precip_observed) AS precip_correct_negatives
 FROM forecast_scores
-WHERE valid_at > now() - interval '7 days' AND lead_hours BETWEEN 1 AND 24
+WHERE valid_at > now() - interval '7 days' AND lead_hours BETWEEN 1 AND 48
 GROUP BY lead_hours;
 
 CREATE OR REPLACE VIEW forecast_skill_30d AS
@@ -106,10 +107,13 @@ SELECT
     count(*) FILTER (WHERE NOT precip_predicted AND precip_observed)     AS precip_misses,
     count(*) FILTER (WHERE NOT precip_predicted AND NOT precip_observed) AS precip_correct_negatives
 FROM forecast_scores
-WHERE valid_at > now() - interval '30 days' AND lead_hours BETWEEN 1 AND 24
+WHERE valid_at > now() - interval '30 days' AND lead_hours BETWEEN 1 AND 48
 GROUP BY lead_hours;
 
--- Daily rollup (all lead hours pooled) for the rolling-skill trend panel.
+-- Daily rollup for the rolling-skill trend panel. DELIBERATELY lead 1..24
+-- only: pooling in 48h leads (which mature 24 h later and score worse) would
+-- shift the trend baseline as an artifact, not a real skill change. Per-lead
+-- 48h skill lives in forecast_skill_7d/30d; LLM grading in forecast_confidence.
 CREATE OR REPLACE VIEW forecast_skill_daily AS
 SELECT
     time_bucket('1 day', valid_at)               AS day,
@@ -123,7 +127,8 @@ FROM forecast_scores
 WHERE lead_hours BETWEEN 1 AND 24
 GROUP BY 1;
 
--- Headline single-row summaries (all lead hours pooled).
+-- Headline single-row summary. DELIBERATELY lead 1..24 only: it grades the
+-- next-24h horizon the predictor's load-forecast digest consumes.
 CREATE OR REPLACE VIEW forecast_headline_7d AS
 SELECT
     avg(abs(temp_err_house))                    AS temp_mae_house,

@@ -46,6 +46,7 @@ services:
       CONTROLLER_PORT: ${CONTROLLER_PORT:-23}
       LAT: ${LAT}
       LON: ${LON}
+      FORECAST_HOURS: ${FORECAST_HOURS:-48}
       TZ: ${TZ:-America/Toronto}
       PGHOST: db
       PGPORT: "5432"
@@ -106,6 +107,11 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
       PREDICT_INTERVAL_H: ${PREDICT_INTERVAL_H:-4}
       OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-900}
+      # weather-source confidence review (#141): daily, staggered 30 min after
+      # start so it never coincides with a load-forecast run
+      CONFIDENCE_INTERVAL_H: ${CONFIDENCE_INTERVAL_H:-24}
+      CONFIDENCE_STAGGER_S: ${CONFIDENCE_STAGGER_S:-1800}
+      CONFIDENCE_WINDOW_DAYS: ${CONFIDENCE_WINDOW_DAYS:-7}
       TZ: ${TZ:-America/Toronto}
       PGHOST: db
       PGPORT: "5432"

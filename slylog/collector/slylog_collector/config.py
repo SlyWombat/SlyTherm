@@ -8,6 +8,9 @@ CONTROLLER_PORT = int(os.environ.get("CONTROLLER_PORT", "23"))
 LAT = os.environ.get("LAT", "CHANGE_ME")
 LON = os.environ.get("LON", "CHANGE_ME")
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "/captures-vol/ct485-live.log")
+# Forecast horizon (hours ahead per Open-Meteo fetch). 48 accumulates both
+# 24h- and 48h-lead rows for confidence grading (#141).
+FORECAST_HOURS = int(os.environ.get("FORECAST_HOURS", "48"))
 LOCAL_TZ = os.environ.get("TZ", "America/Toronto")
 
 # psycopg reads PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE from the env itself.

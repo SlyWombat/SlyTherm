@@ -14,7 +14,7 @@ controls nothing — SlyTherm behaves identically whether the stack is up or dow
 | collector | ./collector (python:3.12-slim) | MQTT ingest (#132), CT-485 telnet ingest + live decode (#133), hourly Open-Meteo pull (#134) |
 | grafana   | grafana/grafana                | provisioned dashboards + event annotations (#135), host port **3300** |
 | ollama    | ollama/ollama                  | local CPU LLM (no host port — 11434 is taken on kdocker2) |
-| predictor | ./predictor (python:3.12-slim) | 4-hourly LLM load forecast + degree-day baseline, record-only (#136) |
+| predictor | ./predictor (python:3.12-slim) | 4-hourly LLM load forecast + degree-day baseline, record-only (#136); daily LLM forecast-confidence review (#141) |
 
 ## Run
 
@@ -54,11 +54,29 @@ forecasts, hvac_state, predictions. Hypertables where high-rate; retention is
 current conditions — model analysis, not a house instrument) + views
 forecast_scores / forecast_skill_7d / forecast_skill_30d /
 forecast_skill_daily / forecast_headline_7d grading every past forecast row
-against actuals (valid_at ±30 min; temp truth = house OAT). Idempotent —
+against actuals (valid_at ±30 min; temp truth = house OAT). Per-lead views
+cover lead 1–48 h (the collector fetches a 48 h horizon since #141); the
+pooled daily/headline views deliberately stay lead 1–24 h. Idempotent —
 apply to an already-initialized live db with:
 
 ```sh
 docker compose exec -T db psql -U slylog -d slylog < db/init/002_forecast_accuracy.sql
+```
+
+`db/init/004_forecast_confidence.sql` (#141): forecast_confidence — one row
+per (daily review, lead bucket '24h'/'48h'). The predictor's sibling
+confidence loop (`predictor/confidence.py`, `CONFIDENCE_INTERVAL_H`, default
+24 h, staggered 30 min off the load-forecast runs) snapshots the matured
+numeric skill (temp MAE/bias, precip hit/false-alarm rates, wind MAE over the
+last `CONFIDENCE_WINDOW_DAYS`) from forecast_scores, has the local LLM grade
+the weather source 0–100 with a ≤2-sentence rationale (strict JSON, one
+retry), and inserts score + rationale + the numbers it saw. If the LLM is
+unusable twice, a deterministic MAE-threshold score lands with
+`model='fallback'` — no silent gaps. Buckets without enough matured data
+(48h for the first ~2 days) are skipped with a log line. One-shot run:
+
+```sh
+docker compose exec predictor python confidence.py
 ```
 
 `db/init/003_shadow_demands.sql` (#139): shadow_demands hypertable for the
@@ -151,5 +169,5 @@ ssh kdocker2 'cd ~/SlyTherm && nohup captures/run_capture.sh >/dev/null 2>&1 &'
 | `slytherm/state/ota`, `slytherm/remote/+/state/ota` | events kind=ota |
 | controller telnet :23 `[ct485]`/`[ct485+]`/`[ct485-rej]`/`[ct485-stats]` | raw_frames + events + flat archive |
 | controller telnet :23 `[shadow]` (fw ≥0.5.8 would-be DemandSet, TX disabled) | shadow_demands + flat archive |
-| Open-Meteo hourly (next 24 h: temp, rain mm+prob, wind+gusts+dir, humidity, WMO code) | forecasts |
+| Open-Meteo hourly (next 48 h: temp, rain mm+prob, wind+gusts+dir, humidity, WMO code) | forecasts |
 | Open-Meteo hourly current conditions (temp, precip, wind, gusts) | weather_obs |

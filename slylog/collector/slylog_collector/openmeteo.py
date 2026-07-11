@@ -1,4 +1,5 @@
-"""Hourly Open-Meteo forecast ingest (#134): NEXT 24 hours, keyed
+"""Hourly Open-Meteo forecast ingest (#134): next FORECAST_HOURS hours
+(default 48 so both 24h- and 48h-lead skill accumulates, #141), keyed
 (fetched_at, valid_at) so every fetch snapshots the full horizon.
 Carries rain + wind + humidity for the garden's future watering suppression.
 
@@ -50,7 +51,7 @@ def coords_configured() -> bool:
 
 
 def fetch_once(db: Db) -> int:
-    """One fetch of the next 24 h; returns rows inserted."""
+    """One fetch of the next FORECAST_HOURS h; returns rows inserted."""
     if not coords_configured():
         log.warning("LAT/LON not configured (LAT=%r LON=%r) — skipping forecast "
                     "fetch until real coordinates are set in .env",
@@ -59,7 +60,7 @@ def fetch_once(db: Db) -> int:
     resp = requests.get(API, params={
         "latitude": float(config.LAT), "longitude": float(config.LON),
         "hourly": HOURLY_VARS, "current": CURRENT_VARS,
-        "forecast_hours": 24, "timezone": "UTC",
+        "forecast_hours": config.FORECAST_HOURS, "timezone": "UTC",
     }, timeout=30)
     resp.raise_for_status()
     body = resp.json()

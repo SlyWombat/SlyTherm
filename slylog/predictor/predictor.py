@@ -329,6 +329,16 @@ def run_once(conn) -> None:
 def main() -> None:
     conn = connect_db()
     ensure_model()
+
+    # sibling loop (#141): daily LLM-graded weather-source confidence review.
+    # Imported here (not at module top) — confidence.py imports helpers from
+    # this module, so a top-level import would be circular.
+    import threading
+
+    import confidence
+    threading.Thread(target=confidence.run_forever, name="confidence",
+                     daemon=True).start()
+
     while True:
         started = time.time()
         try:

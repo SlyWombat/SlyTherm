@@ -80,7 +80,7 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Rolling skill trend (daily MAE, all lead hours pooled)",
+      "title": "Rolling skill trend (daily MAE, lead 1-24 h pooled)",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 15 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
       "fieldConfig": {
@@ -115,6 +115,53 @@
           "format": "table",
           "rawQuery": true,
           "rawSql": "SELECT '7d' AS \"window\", sum(precip_hits) AS hits, sum(precip_false_alarms) AS \"false alarms\", sum(precip_misses) AS misses, sum(precip_correct_negatives) AS \"correct negatives\", round((sum(precip_hits)::numeric / nullif(sum(precip_hits) + sum(precip_misses), 0)) * 100, 0) AS \"hit rate %\", round((sum(precip_false_alarms)::numeric / nullif(sum(precip_hits) + sum(precip_false_alarms), 0)) * 100, 0) AS \"false-alarm rate %\" FROM forecast_skill_7d UNION ALL SELECT '30d', sum(precip_hits), sum(precip_false_alarms), sum(precip_misses), sum(precip_correct_negatives), round((sum(precip_hits)::numeric / nullif(sum(precip_hits) + sum(precip_misses), 0)) * 100, 0), round((sum(precip_false_alarms)::numeric / nullif(sum(precip_hits) + sum(precip_false_alarms), 0)) * 100, 0) FROM forecast_skill_30d"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "LLM-graded source confidence by lead bucket (#141, 0-100)",
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 24 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "min": 0, "max": 100, "noValue": "no reviews yet",
+          "custom": { "lineWidth": 2, "pointSize": 7, "showPoints": "always", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "48h" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT reviewed_at AS time, lead_bucket AS metric, confidence_score::float AS value FROM forecast_confidence WHERE $__timeFilter(reviewed_at) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Latest confidence reviews (local LLM; model='fallback' = deterministic stand-in)",
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 24 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "slylog-pg" },
+      "fieldConfig": {
+        "defaults": { "noValue": "no reviews yet" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "rationale" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } } ] }
+        ]
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT reviewed_at AS \"reviewed\", lead_bucket AS \"lead\", confidence_score AS \"score\", n_samples AS \"n\", model, rationale FROM forecast_confidence ORDER BY reviewed_at DESC LIMIT 12"
         }
       ]
     }
