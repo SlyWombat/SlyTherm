@@ -372,6 +372,158 @@ static void test_hp_relay_invalid_input_still_respects_min_on() {
   TEST_ASSERT_TRUE(r.inputAlarm());
 }
 
+// ------------------------------------------------------------ StagedCoolShaper
+
+// Timing tests use round numbers instead of the field-derived defaults:
+// duty 50 % -> period max(1200, 600/0.5, 300/0.5) = 1200 -> 600 on / 600 off.
+static StagedCoolShaper::Config coolCfg() {
+  StagedCoolShaper::Config c;
+  c.stagePct = 30.0f;
+  c.maxStartsPerH = 3;
+  c.minOnS = 600;
+  c.minOffS = 300;
+  c.cyclePeriodS = 1200;
+  c.fullDutyErrC = 0.5f;
+  return c;
+}
+
+static void test_cool_boot_state_no_demand() {
+  FakeGate gate;
+  StagedCoolShaper s(gate);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(0.0f, 0));
+  TEST_ASSERT_FALSE(s.on());
+  TEST_ASSERT_FALSE(s.alarm());
+}
+
+static void test_cool_output_is_stage_pct_never_request() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 0));  // honest 30 % intent (#140)
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(73.0f, 60));
+}
+
+static void test_cool_request_from_error_band() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // band top 0.5 C
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.requestFromError(0.0f));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.requestFromError(-1.0f));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.requestFromError(NAN));
+  TEST_ASSERT_EQUAL_FLOAT(50.0f, s.requestFromError(0.25f));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, s.requestFromError(0.5f));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, s.requestFromError(2.0f));  // saturates, never >100
+}
+
+static void test_cool_duty_cycle_timing() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // duty 50 % -> 600 on / 600 off
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(50.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(50.0f, 599));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(50.0f, 600));    // on-phase served
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(50.0f, 1199));   // off-phase pending
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(50.0f, 1200));  // next cycle
+  TEST_ASSERT_EQUAL_UINT8(2, s.startsInLastHour(1200));
+}
+
+static void test_cool_low_duty_stretches_period_for_min_run() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // duty 20 % -> P = 600/0.2 = 3000: 600 on / 2400 off
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(20.0f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(20.0f, 599));   // min-run never truncated
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(20.0f, 600));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(20.0f, 2999));   // duty fraction preserved
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(20.0f, 3000));
+}
+
+static void test_cool_high_duty_pins_off_time_at_min_off() {
+  FakeGate gate;
+  // duty 87.5 % (exactly representable) -> P = 300/0.125 = 2400: 2100 on / 300 off
+  StagedCoolShaper s(gate, coolCfg());
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(87.5f, 0));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(87.5f, 2099));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(87.5f, 2100));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(87.5f, 2399));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(87.5f, 2400));
+}
+
+static void test_cool_full_duty_runs_continuously() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 5000));    // > any period: no cycling
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 100000));  // no runtime cap (docs/05: HP alarm-only)
+  TEST_ASSERT_EQUAL_UINT8(0, s.startsInLastHour(100000));
+}
+
+static void test_cool_comfort_stop_held_to_min_run() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(0.0f, 100));  // call ended early: hold the run
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(0.0f, 599));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(0.0f, 600));   // min-run served -> off
+}
+
+static void test_cool_restart_after_stop_waits_min_off() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  s.shape(0.0f, 600);  // comfort stop at min-run
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 899));  // full duty: off-time = minOffS
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 900));
+}
+
+static void test_cool_invalid_input_drops_without_min_run_hold() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(NAN, 60));  // safety-flavored: no demand hold
+  TEST_ASSERT_TRUE(s.inputAlarm());
+  TEST_ASSERT_TRUE(gate.stopAsks > 0);  // ...but the drop still went through the gate
+}
+
+static void test_cool_invalid_input_still_respects_gate_min_on() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  gate.allowStop = false;
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(NAN, 5));  // alarm, but no timer violation
+  TEST_ASSERT_TRUE(s.inputAlarm());
+}
+
+static void test_cool_gate_refuses_start_stays_off() {
+  FakeGate gate;
+  gate.allowStart = false;
+  StagedCoolShaper s(gate, coolCfg());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 0));
+  TEST_ASSERT_EQUAL_UINT8(0, s.startsInLastHour(0));
+  gate.allowStart = true;
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 60));
+}
+
+static void test_cool_starts_per_hour_cap_holds_even_with_permissive_gate() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // cap 3/h
+  // Invalid-input drops bypass the demand min-run, making rapid restart
+  // attempts possible — the budget ring must still hold the line.
+  s.shape(100.0f, 0);      // start 1
+  s.shape(NAN, 10);        // off
+  s.shape(100.0f, 310);    // start 2 (min-off 300 served)
+  s.shape(NAN, 320);       // off
+  s.shape(100.0f, 620);    // start 3
+  s.shape(NAN, 630);       // off
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 930));  // budget spent
+  TEST_ASSERT_EQUAL_UINT8(3, s.startsInLastHour(930));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 3601));  // start 1 aged out
+}
+
+static void test_cool_config_clamps_period_to_starts_cap() {
+  StagedCoolShaper::Config c = coolCfg();
+  c.cyclePeriodS = 100;  // shorter than 3600/maxStartsPerH: hygiene floor wins
+  FakeGate gate;
+  StagedCoolShaper s(gate, c);
+  TEST_ASSERT_EQUAL_UINT32(1200, s.config().cyclePeriodS);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_gas_boot_state_no_demand);
@@ -408,5 +560,19 @@ int main() {
   RUN_TEST(test_hp_relay_full_demand_runs_continuously);
   RUN_TEST(test_hp_relay_invalid_input_drops_and_alarms);
   RUN_TEST(test_hp_relay_invalid_input_still_respects_min_on);
+  RUN_TEST(test_cool_boot_state_no_demand);
+  RUN_TEST(test_cool_output_is_stage_pct_never_request);
+  RUN_TEST(test_cool_request_from_error_band);
+  RUN_TEST(test_cool_duty_cycle_timing);
+  RUN_TEST(test_cool_low_duty_stretches_period_for_min_run);
+  RUN_TEST(test_cool_high_duty_pins_off_time_at_min_off);
+  RUN_TEST(test_cool_full_duty_runs_continuously);
+  RUN_TEST(test_cool_comfort_stop_held_to_min_run);
+  RUN_TEST(test_cool_restart_after_stop_waits_min_off);
+  RUN_TEST(test_cool_invalid_input_drops_without_min_run_hold);
+  RUN_TEST(test_cool_invalid_input_still_respects_gate_min_on);
+  RUN_TEST(test_cool_gate_refuses_start_stays_off);
+  RUN_TEST(test_cool_starts_per_hour_cap_holds_even_with_permissive_gate);
+  RUN_TEST(test_cool_config_clamps_period_to_starts_cap);
   return UNITY_END();
 }

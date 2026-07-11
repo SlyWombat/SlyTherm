@@ -73,9 +73,11 @@ constexpr uint32_t kGuardSaveS      = 300;  // CompressorGuard blob persist cade
 // fan_mode "circulate": blower for the first N minutes of each hour
 // (docs/06: duty-cycled FAN_DEMAND).
 constexpr uint32_t kFanCirculateMinPerHour = 15;
-// Staged-HP request map (HpRelayShaper input; docs/05 "PID->duty" — kept
-// proportional, not PID, per the HP-paths-are-staged rule): request ramps
-// from kHpDutyMinPct at zero error to 100% at kHpFullScaleErrC past setpoint.
+// Staged-HP request map (HpRelayShaper input, HEAT path only since #140 —
+// cooling maps error->duty via StagedCoolShaper::requestFromError; docs/05
+// "PID->duty" — kept proportional, not PID, per the HP-paths-are-staged
+// rule): request ramps from kHpDutyMinPct at zero error to 100% at
+// kHpFullScaleErrC past setpoint.
 constexpr float kHpDutyMinPct     = 40.0f;
 constexpr float kHpFullScaleErrC  = 2.0f;
 // DS18B20-only degraded mode demand cap (docs/04 §4 "demand capped").

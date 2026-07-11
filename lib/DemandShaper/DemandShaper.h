@@ -1,4 +1,4 @@
-// DemandShaper.h — one interface, three implementations (docs/05 module layout).
+// DemandShaper.h — one interface, four implementations (docs/05 module layout).
 //
 // Converts an upstream capacity request (0-100 %) into a demand that is legal
 // for the selected actuator:
@@ -11,6 +11,12 @@
 //   HpRelayShaper    — staged HP via relay: demand -> on/off duty at
 //                      <= max starts/hour, gated by a CompressorGuard-like
 //                      callback (docs/04 §1a: our timers are primary).
+//   StagedCoolShaper — single-stage cooling on the CT-485 (issue #140):
+//                      request is a RUNTIME FRACTION, realized as slow on/off
+//                      cycling at the stage's fixed engage demand with hard
+//                      cycle hygiene (min-run, min-off, starts cap) enforced
+//                      at the demand level; same gate contract as the relay
+//                      shaper (CompressorGuard hardware timers stay downstream).
 //
 // Safety semantics (docs/04 §2, binding): boot state = no demand; a
 // non-finite or negative request is invalid -> demand 0 + alarm flag.
@@ -163,6 +169,76 @@ class HpRelayShaper : public DemandShaper {
   uint8_t startsInLastHour(uint32_t nowS) const;
 
  private:
+  bool startBudgetOk(uint32_t nowS) const;
+  void recordStart(uint32_t nowS);
+
+  CompressorGate& gate_;
+  Config   cfg_;
+  bool     on_          = false;
+  bool     everCycled_  = false;  // first start needs no off-phase wait (gate owns boot hold-off)
+  uint32_t phaseStartS_ = 0;
+  bool     inputAlarm_  = false;
+  uint32_t startTimesS_[kMaxStartHistory] = {};
+  uint8_t  startCount_  = 0;  // valid entries, oldest overwritten ring-style
+  uint8_t  startHead_   = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Single-stage cooling as long-low modulation (issue #140, docs/13 §4).
+//
+// Equipment truth (field-confirmed): this furnace's cooling is one stage,
+// engaged at CT-485 demand kCoolStagePct (30%) — the only value the OEM stat
+// ever sends. A capacity PID is meaningless here; what CAN be modulated is
+// RUNTIME. shape()'s request is therefore a runtime-duty request (0-100 % of
+// time running), realized as slow on/off cycling at stagePct:
+//
+//   period P(d) = max(cyclePeriodS, minOnS/d, minOffS/(1-d))
+//   on for d*P, off for (1-d)*P     (d >= 1: continuous — never cycle off)
+//
+// so every run is >= minOnS, every rest >= minOffS, and steady cycling can
+// never exceed the starts budget (cyclePeriodS is clamped to at least
+// 3600/maxStartsPerH; an own start-history ring enforces the cap even
+// against a permissive gate, mirroring HpRelayShaper). requestFromError()
+// is the matching proportional-band map from degrees-above-cool-setpoint to
+// duty (derivation from the 2026-07-09/10 field data in the .cpp).
+//
+// Stop semantics (docs/04 §1/§2, GasShaper's comfort/safety split):
+//   - a VALID request drop (call ended) is a comfort stop: held until minOnS
+//     has been served — long-cycle hygiene is the whole point of this shaper;
+//   - invalid input raises the alarm and drops without the demand-level hold
+//     (the gate is still consulted — compressor timers are never violated,
+//     on the way down or back up).
+class StagedCoolShaper : public DemandShaper {
+ public:
+  struct Config {
+    float    stagePct      = kCoolStagePct;       // fixed engage demand (equipment truth)
+    uint8_t  maxStartsPerH = kCoolMaxStartsPerH;  // hard cap; clamped to history depth
+    uint32_t minOnS        = kCoolMinOnS;         // min run, enforced at the DEMAND level
+    uint32_t minOffS       = kCoolMinOffS;        // min rest, ditto
+    uint32_t cyclePeriodS  = kCoolCyclePeriodS;   // base duty period (>= 3600/maxStartsPerH)
+    float    fullDutyErrC  = kCoolFullDutyErrC;   // proportional band top (requestFromError)
+  };
+  static constexpr uint8_t kMaxStartHistory = 16;
+
+  explicit StagedCoolShaper(CompressorGate& gate) : StagedCoolShaper(gate, Config{}) {}
+  StagedCoolShaper(CompressorGate& gate, const Config& cfg);
+
+  // Proportional band: degrees above the cool setpoint -> duty request %.
+  // errC <= 0 or NaN -> 0; saturates to 100 at fullDutyErrC (see .cpp).
+  float requestFromError(float errC) const;
+
+  float shape(float requestPct, uint32_t nowS) override;  // output: 0 or stagePct
+  void reset() override;  // clears phase state, keeps start history + alarms
+  bool alarm() const override { return inputAlarm_; }
+
+  bool on() const { return on_; }
+  bool inputAlarm() const { return inputAlarm_; }
+  void clearAlarms() { inputAlarm_ = false; }
+  uint8_t startsInLastHour(uint32_t nowS) const;
+  const Config& config() const { return cfg_; }
+
+ private:
+  float periodS(float duty) const;  // P(d) above; duty must be in (0,1)
   bool startBudgetOk(uint32_t nowS) const;
   void recordStart(uint32_t nowS);
 

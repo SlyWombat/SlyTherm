@@ -408,6 +408,9 @@ struct GuardGate : public CompressorGate {
 };
 GuardGate gGuardGate;
 HpRelayShaper gHpShaper(gGuardGate);
+// Cooling is single-stage at 30% on this furnace (#140, field-confirmed):
+// its own runtime-duty shaper, sharing the one compressor's guard gate.
+StagedCoolShaper gCoolShaper(gGuardGate);
 
 bool compressorProvenIdle(uint32_t nowS) {
   return !gGuard.running() &&
@@ -421,6 +424,7 @@ void compressorSafetyStop(uint32_t nowS) {
     gCompStopAnchorS = nowS;
   }
   gHpShaper.reset();
+  gCoolShaper.reset();
 }
 
 struct IdleGate : public CompressorIdleGate {
@@ -1613,7 +1617,6 @@ uint32_t gLastInboundS = 0;       // last accepted MQTT traffic (stale clock)
 bool gFallbackApplied = false;
 bool gWdtPetLevel = false;
 float gLastHpEmittedPct = 0.0f;
-bool gHpRouteHeat = false;        // which family the shared compressor serves
 
 #ifdef SLYTHERM_DS18B20
 void pollLocalSensors(uint32_t nowS);
@@ -2185,7 +2188,9 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       // Cooling lockouts (docs/05 table): indoor floor + unknown OAT.
       const bool lockedOut = !oat.valid || fused.degraded ||
                              fused.value < kCoolingIndoorLockoutC;
-      if (!lockedOut) coolReq = stagedRequestPct(call.errorC);
+      // #140: the request is a RUNTIME-DUTY fraction (proportional band on
+      // the error), not a capacity — the stage only understands 30%.
+      if (!lockedOut) coolReq = gCoolShaper.requestFromError(call.errorC);
       changeReason = lockedOut ? "lockout" : changeReason;
     }
   }
@@ -2224,13 +2229,13 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     gActuator->goSilent();
   } else {
     req.gasHeatPct = gGasShaper.shape(gasReq, nowS);
-    // One compressor, one shaper: route its (possibly min-on-held) output to
-    // the family that last requested it, so a held output can never flip
-    // heat<->cool mid-run.
-    if (hpReq > 0) gHpRouteHeat = true;
-    else if (coolReq > 0) gHpRouteHeat = false;
-    const float hpOut = gHpShaper.shape(fmaxf(hpReq, coolReq), nowS);
-    if (gHpRouteHeat) req.hpHeatPct = hpOut; else req.coolPct = hpOut;
+    // One compressor, two family shapers (#140): each owns its channel, so a
+    // min-on-held output can never flip heat<->cool mid-run. Simultaneous
+    // nonzero requests are unreachable (one Call type at a time and the AUTO
+    // changeover dwell of 30 min dwarfs every demand-level hold), and the
+    // shared guard gate + arbiter invariant back that up downstream.
+    req.hpHeatPct = gHpShaper.shape(hpReq, nowS);
+    req.coolPct = gCoolShaper.shape(coolReq, nowS);
     req.fanPct = fanReq;
     req.defrostTemperPct = temperActive ? dfo.temperHeatPct : 0.0f;
 #if defined(SLYTHERM_CT485_UART) && defined(SLYTHERM_CT485_TX_ENABLE)

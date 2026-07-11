@@ -81,6 +81,21 @@ constexpr float    kHpSlewPctPerMin         = 10.0f;
 constexpr float    kHpStepPct               = 5.0f;
 constexpr float    kHpFloorPct              = 30.0f;  // verify against installed model
 
+// ---------- Staged cooling (StagedCoolShaper; issue #140, docs/13 §4) ----------
+// Equipment truth (field-confirmed, 2026-07-08 CT-485 capture + 24 h shadow
+// run): this furnace's cooling is SINGLE-STAGE, engaged at CT-485 demand 30%
+// — the only value the OEM stat ever sends; commanding more is meaningless.
+// "Long-low modulation" for cooling therefore means RUNTIME shaping: PID
+// error -> runtime fraction -> slow on/off duty at kCoolStagePct.
+// Timing defaults are derived from the 2026-07-09/10 shadow-vs-OEM field
+// data (see test/test_cool_replay and the derivation in DemandShaper.cpp).
+constexpr float    kCoolStagePct            = 30.0f;  // the stage's engage demand
+constexpr uint8_t  kCoolMaxStartsPerH       = 2;      // hard demand-level cap (< guard's 3)
+constexpr uint32_t kCoolMinOnS              = 780;    // 13 min; OEM's shortest observed run was 14.5 min
+constexpr uint32_t kCoolMinOffS             = 480;    // 8 min demand-level rest (guard min-off 300 stays downstream)
+constexpr uint32_t kCoolCyclePeriodS        = 4500;   // base duty period ~= OEM's mean cycle period (45-115 min observed)
+constexpr float    kCoolFullDutyErrC        = 0.45f;  // proportional band top: err >= this -> continuous run
+
 // ---------- Relay sequencing (RelaySequencer; Case B, docs/03 §7) ----------
 constexpr uint32_t kRelayMinTransitionMs    = 500;   // min spacing between relay output transitions
                                                      //  (contact-chatter guard; goSilent/watchdog never spaced)
