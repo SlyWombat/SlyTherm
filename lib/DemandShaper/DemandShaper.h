@@ -226,6 +226,13 @@ class StagedCoolShaper : public DemandShaper {
   // Proportional band: degrees above the cool setpoint -> duty request %.
   // errC <= 0 or NaN -> 0; saturates to 100 at fullDutyErrC (see .cpp).
   float requestFromError(float errC) const;
+  // #141 seam: same band with a crossing-prediction bias added to the error
+  // (RecoveryEstimator::crossingBias, docs/13 §2). The bias is advisory and
+  // ADDITIVE only — NaN/negative bias is clamped to 0, so it can raise a
+  // request early but never suppress the plain-error request. This is what
+  // lets a predicted crossing start a gentle ramp while the error is still
+  // small (or slightly negative), instead of the deadband slam.
+  float requestFromError(float errC, float predBiasC) const;
 
   float shape(float requestPct, uint32_t nowS) override;  // output: 0 or stagePct
   void reset() override;  // clears phase state, keeps start history + alarms

@@ -254,6 +254,168 @@ static void test_restarted_segment_discards_the_open_one() {
   TEST_ASSERT_FALSE(re.endSegment(std::nanf(""), 20000 + 3600));
 }
 
+// ---------- #141 steady-state crossing prediction (docs/13 §2) ----------
+
+static void test_crossing_bias_predicts_inside_horizon_only() {
+  // 0.1 C to go at 0.6 C/h -> crossing in 600 s: inside the 1200 s horizon,
+  // bias at the linear midpoint.
+  CrossingBias cb = RecoveryEstimator::crossingBias(0.1f, 0.6f, 1200, 0.10f);
+  TEST_ASSERT_TRUE(cb.predicted);
+  TEST_ASSERT_UINT32_WITHIN(1, 600, cb.inS);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.05f, cb.biasC);
+
+  // Same margin at a slower approach -> outside the horizon: no prediction.
+  cb = RecoveryEstimator::crossingBias(0.1f, 0.25f, 1200, 0.10f);
+  TEST_ASSERT_FALSE(cb.predicted);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.0f, cb.biasC);
+
+  // Crossing imminent -> bias approaches the cap (and never exceeds it).
+  cb = RecoveryEstimator::crossingBias(0.001f, 0.9f, 1200, 0.10f);
+  TEST_ASSERT_TRUE(cb.predicted);
+  TEST_ASSERT_TRUE(cb.biasC > 0.09f && cb.biasC <= 0.10f);
+}
+
+static void test_crossing_bias_needs_a_real_approach() {
+  // Receding or flat: no crossing ahead, whatever the margin.
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(0.1f, 0.0f, 1200, 0.1f).predicted);
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(0.1f, -0.6f, 1200, 0.1f).predicted);
+  // Already at/past the crossing: the call machinery owns violations.
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(0.0f, 0.6f, 1200, 0.1f).predicted);
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(-0.2f, 0.6f, 1200, 0.1f).predicted);
+  // Degenerate parameters and NaN inputs -> no prediction, never NaN out.
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(0.1f, 0.6f, 0, 0.1f).predicted);
+  TEST_ASSERT_FALSE(RecoveryEstimator::crossingBias(0.1f, 0.6f, 1200, 0.0f).predicted);
+  TEST_ASSERT_FALSE(
+      RecoveryEstimator::crossingBias(std::nanf(""), 0.6f, 1200, 0.1f).predicted);
+  const CrossingBias cb =
+      RecoveryEstimator::crossingBias(0.1f, std::nanf(""), 1200, 0.1f);
+  TEST_ASSERT_FALSE(cb.predicted);
+  TEST_ASSERT_FALSE(std::isnan(cb.biasC));
+}
+
+static void test_crossing_bias_ramps_linearly_toward_the_crossing() {
+  // Fixed approach rate, shrinking margin: bias must increase monotonically.
+  float last = -1.0f;
+  for (float toGo = 0.19f; toGo > 0.005f; toGo -= 0.02f) {
+    const CrossingBias cb =
+        RecoveryEstimator::crossingBias(toGo, 0.6f, 1200, 0.10f);
+    TEST_ASSERT_TRUE(cb.predicted);
+    TEST_ASSERT_TRUE(cb.biasC > last);
+    TEST_ASSERT_TRUE(cb.biasC <= 0.10f);
+    last = cb.biasC;
+  }
+}
+
+// ---------- #141 two-ramp recovery (heat fallback ramp) ----------
+
+static RecoveryEstimator twoRampEstimator() {
+  RecoveryConfig cfg;
+  cfg.enabled = true;
+  cfg.twoRampEnabled = true;
+  return RecoveryEstimator(cfg);
+}
+
+static void test_two_ramp_disabled_by_default_and_gated() {
+  TEST_ASSERT_FALSE(kRecoveryTwoRampEnabledDefault);  // WINTER task (#141)
+  RecoveryTarget t;
+  t.setpointC = 21.0f;
+  t.mode = RecoveryMode::kHeat;
+  t.inS = 3600;
+
+  RecoveryEstimator off;  // both gates off
+  TEST_ASSERT_FALSE(off.adviseRamps(t, 15.0f).fallbackValid);
+
+  RecoveryConfig cfg;  // recovery on, two-ramp still off -> pre-#141 behavior
+  cfg.enabled = true;
+  RecoveryEstimator re(cfg);
+  const RecoveryRamps r = re.adviseRamps(t, 18.0f);
+  TEST_ASSERT_FALSE(r.fallbackValid);
+  TEST_ASSERT_FALSE(r.gasAdvised);
+  // ...while the hp arm still mirrors advise() exactly.
+  const RecoveryAdvice a = re.advise(t, 18.0f, RecoveryEquipment::kHp);
+  TEST_ASSERT_EQUAL_UINT32(a.startEarlyByS, r.hp.startEarlyByS);
+  TEST_ASSERT_EQUAL(a.startNow, r.hp.startNow);
+}
+
+static void test_fallback_ramp_line_math() {
+  RecoveryEstimator re = twoRampEstimator();
+  // Seeded gas rate is kRecoverySeedHeatCPerH (1.0), derated by the 0.85
+  // margin -> 0.85 C/h effective. The line ends AT the setpoint...
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, re.fallbackTempAt(21.0f, 0));
+  // ...and one hour out sits 0.85 C below it.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f - kRecoveryFallbackMargin,
+                           re.fallbackTempAt(21.0f, 3600));
+  // Learned gas rate steepens the line: teach ~2 C/h and re-check.
+  uint32_t t = 1000;
+  feedSegments(re, RecoveryMode::kHeat, RecoveryEquipment::kGas, 2.0f, 15, t);
+  const float rate =
+      re.rateCPerH(RecoveryMode::kHeat, RecoveryEquipment::kGas);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f - rate * kRecoveryFallbackMargin,
+                           re.fallbackTempAt(21.0f, 3600));
+}
+
+static void test_fallback_gas_advised_exactly_below_the_line() {
+  RecoveryEstimator re = twoRampEstimator();
+  RecoveryTarget t;
+  t.setpointC = 21.0f;
+  t.mode = RecoveryMode::kHeat;
+  t.inS = 3600;  // line now = 21.0 - 0.85 = 20.15
+  const float lineNow = re.fallbackTempAt(t.setpointC, t.inS);
+
+  RecoveryRamps r = re.adviseRamps(t, lineNow + 0.1f);  // above: HP holds it
+  TEST_ASSERT_TRUE(r.fallbackValid);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, lineNow, r.fallbackTempNowC);
+  TEST_ASSERT_FALSE(r.gasAdvised);
+
+  r = re.adviseRamps(t, lineNow - 0.1f);  // below: even gas would miss it
+  TEST_ASSERT_TRUE(r.gasAdvised);
+
+  // The verdict tightens as target time nears (the line rises toward the
+  // setpoint): the same room temp flips from fine to gas-advised.
+  t.inS = 900;  // line now = 21.0 - 0.2125 = 20.79
+  r = re.adviseRamps(t, 20.5f);
+  TEST_ASSERT_TRUE(r.gasAdvised);
+  t.inS = 7200;  // line now = 19.3: plenty of runway again
+  r = re.adviseRamps(t, 20.5f);
+  TEST_ASSERT_FALSE(r.gasAdvised);
+}
+
+static void test_deep_cold_advises_gas_from_the_recovery_start() {
+  // docs/13 §2 "one rule": when HP-alone cannot make the target even from
+  // the capped early start, the room already sits below the fallback line at
+  // the recovery start — gas blends in from the first minute.
+  RecoveryEstimator re = twoRampEstimator();
+  RecoveryTarget t;
+  t.setpointC = 21.0f;
+  t.mode = RecoveryMode::kHeat;
+  // 5 C deficit needs 5 h at the 1.0 C/h HP seed; the lead caps at 7200 s.
+  RecoveryRamps r = re.adviseRamps(t, 16.0f);
+  TEST_ASSERT_EQUAL_UINT32(kRecoveryMaxLookaheadS, r.hp.startEarlyByS);
+  t.inS = r.hp.startEarlyByS;  // evaluate AT the early start
+  r = re.adviseRamps(t, 16.0f);
+  // Line at 2 h out = 21 - 0.85*2 = 19.3 > 16.0 -> gas advised immediately.
+  TEST_ASSERT_TRUE(r.fallbackValid);
+  TEST_ASSERT_TRUE(r.gasAdvised);
+}
+
+static void test_two_ramp_cool_targets_have_no_fallback() {
+  RecoveryEstimator re = twoRampEstimator();
+  RecoveryTarget t;
+  t.setpointC = 24.0f;
+  t.mode = RecoveryMode::kCool;  // single fuel: nothing to fall back to
+  t.inS = 3600;
+  const RecoveryRamps r = re.adviseRamps(t, 27.0f);
+  TEST_ASSERT_FALSE(r.fallbackValid);
+  TEST_ASSERT_FALSE(r.gasAdvised);
+  TEST_ASSERT_TRUE(r.hp.startEarlyByS > 0);  // hp arm still advises
+
+  // NaN inputs: hp arm already guards; the fallback must too.
+  t.mode = RecoveryMode::kHeat;
+  TEST_ASSERT_FALSE(re.adviseRamps(t, std::nanf("")).fallbackValid);
+  t.setpointC = std::nanf("");
+  TEST_ASSERT_FALSE(re.adviseRamps(t, 20.0f).fallbackValid);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_disabled_by_default_gives_no_advice);
@@ -266,5 +428,13 @@ int main() {
   RUN_TEST(test_ratio_outlier_rejected_after_min_samples);
   RUN_TEST(test_before_min_samples_plausible_rates_accepted);
   RUN_TEST(test_restarted_segment_discards_the_open_one);
+  RUN_TEST(test_crossing_bias_predicts_inside_horizon_only);
+  RUN_TEST(test_crossing_bias_needs_a_real_approach);
+  RUN_TEST(test_crossing_bias_ramps_linearly_toward_the_crossing);
+  RUN_TEST(test_two_ramp_disabled_by_default_and_gated);
+  RUN_TEST(test_fallback_ramp_line_math);
+  RUN_TEST(test_fallback_gas_advised_exactly_below_the_line);
+  RUN_TEST(test_deep_cold_advises_gas_from_the_recovery_start);
+  RUN_TEST(test_two_ramp_cool_targets_have_no_fallback);
   return UNITY_END();
 }

@@ -32,6 +32,8 @@
 #include "DemandShaper.h"
 #include "DettsonConfig.h"
 #include "ModeStateMachine.h"
+#include "RecoveryEstimator.h"
+#include "TrendEstimator.h"
 
 using namespace dettson;
 
@@ -109,13 +111,22 @@ struct Metrics {
   double onHours    = 0;
   int    safetyCut  = 0;  // runs ended by a sensor-invalid safety stop
   bool   openEnded  = false;  // last run still on at end of trace
+  // #141 urgency/comfort context. Peak error is a property of the recorded
+  // (open-loop) trace — identical across chains by construction; it is
+  // reported/asserted so a future closed-loop harness inherits the check.
+  double peakErrC     = 0;  // max (fused - setpoint) over valid rows
+  double meanStartErrC = 0; // mean error at cycle start — LOWER = gentler start
+  double maxStartErrC  = -1e18;
 };
 
 class MetricsCollector {
  public:
-  void sample(uint32_t nowS, bool on, bool safetyStop) {
+  // errC = fused - cool setpoint at this sample (NaN when sensor-invalid).
+  void sample(uint32_t nowS, bool on, bool safetyStop, double errC) {
+    if (!std::isnan(errC) && errC > peakErr_) peakErr_ = errC;
     if (on && !wasOn_) {
       starts_.push_back(nowS);
+      startErrs_.push_back(errC);  // never NaN: safety stop forces off
       if (haveOffStart_) offLens_.push_back(nowS - offStartS_);
       runStartS_ = nowS;
     } else if (!on && wasOn_) {
@@ -161,6 +172,16 @@ class MetricsCollector {
       if (n > m.maxStartsHr) m.maxStartsHr = n;
     }
     m.onHours = onS_ / 3600.0;
+    m.peakErrC = peakErr_;
+    double errSum = 0;
+    int errN = 0;
+    for (double e : startErrs_) {
+      if (std::isnan(e)) continue;
+      errSum += e;
+      if (e > m.maxStartErrC) m.maxStartErrC = e;
+      ++errN;
+    }
+    m.meanStartErrC = errN ? errSum / errN : 0;
     return m;
   }
 
@@ -168,9 +189,10 @@ class MetricsCollector {
   bool wasOn_ = false;
   bool haveOffStart_ = false;
   uint32_t runStartS_ = 0, offStartS_ = 0, lastS_ = 0;
-  double onS_ = 0;
+  double onS_ = 0, peakErr_ = -1e18;
   std::vector<uint32_t> starts_, runLens_, offLens_;
   std::vector<bool> runSafety_;
+  std::vector<double> startErrs_;
 };
 
 // ----------------------------------------------------------------- replay
@@ -178,8 +200,12 @@ class MetricsCollector {
 // One control tick per trace row (60 s cadence, the shadow scoreboard's own
 // resolution). Mirrors the firmware loop: sensor validity -> supervisor
 // safety stop; ModeStateMachine call; cooling lockouts; request -> shaper.
-template <typename ShaperT, typename RequestFn>
-static Metrics replay(ShaperT& shaper, CompressorGuard& guard, RequestFn requestPct) {
+// tick(row, valid, nowS) runs EVERY row (the #141 predictor feeds its trend
+// there) and returns the predictive request, consumed only when NO call is
+// active — exactly the firmware glue's predict branch.
+template <typename ShaperT, typename RequestFn, typename TickFn>
+static Metrics replay(ShaperT& shaper, CompressorGuard& guard, RequestFn requestPct,
+                      TickFn tick) {
   ModeStateMachine sm;
   const uint32_t t0 = gRows.front().epochS;
   guard.bootRestore(nullptr, t0, /*abnormalReset=*/false);  // unknown -> full hold-off
@@ -197,6 +223,7 @@ static Metrics replay(ShaperT& shaper, CompressorGuard& guard, RequestFn request
     // a SAFETY stop in firmware (guard stop + shaper reset), never comfort.
     const bool valid = std::isfinite(r.tempC) && r.tempC >= kSensorRangeMinC &&
                        r.tempC <= kSensorRangeMaxC;
+    const float predReq = tick(r, valid, nowS);
     bool safetyStop = false;
     Call call{};
     if (!valid) {
@@ -208,14 +235,21 @@ static Metrics replay(ShaperT& shaper, CompressorGuard& guard, RequestFn request
       call = sm.update(r.tempC, true, nowS);
     }
     float req = 0.0f;
-    if (valid && call.type == CallType::kCool &&
-        r.tempC >= kCoolingIndoorLockoutC) {  // cooling indoor lockout (docs/05)
-      req = requestPct(call.errorC);
+    if (valid && r.tempC >= kCoolingIndoorLockoutC) {  // cooling indoor lockout (docs/05)
+      if (call.type == CallType::kCool) req = requestPct(call.errorC);
+      else if (call.type == CallType::kNone) req = predReq;  // #141 pre-action
     }
     const float out = safetyStop ? 0.0f : shaper.shape(req, nowS);
-    mc.sample(nowS, out > 0.0f, safetyStop);
+    mc.sample(nowS, out > 0.0f, safetyStop,
+              valid ? static_cast<double>(r.tempC - r.coolSpC) : std::nan(""));
   }
   return mc.finish(gRows.back().epochS);
+}
+
+template <typename ShaperT, typename RequestFn>
+static Metrics replay(ShaperT& shaper, CompressorGuard& guard, RequestFn requestPct) {
+  return replay(shaper, guard, requestPct,
+                [](const Row&, bool, uint32_t) { return 0.0f; });
 }
 
 static Metrics runNewChain() {
@@ -233,6 +267,33 @@ static Metrics runOldChain() {
   return replay(shaper, guard, [](float errC) { return oldStagedRequestPct(errC); });
 }
 
+// #141: the #140 chain + crossing prediction, mirroring the firmware glue's
+// predict branch verbatim: the trend feeds every tick; with no call active
+// and a deadband crossing projected inside the horizon, the biased band
+// raises a gentle early request. predStarts counts pre-action requests that
+// were live while no call was (prediction actually engaging).
+static Metrics runPredictedChain(int* predTicks = nullptr) {
+  CompressorGuard guard;
+  GuardGate gate(guard);
+  StagedCoolShaper shaper(gate);
+  TrendEstimator trend;
+  return replay(
+      shaper, guard,
+      [&shaper](float errC) { return shaper.requestFromError(errC); },
+      [&](const Row& r, bool valid, uint32_t nowS) {
+        trend.update(r.tempC, valid, nowS);
+        if (!valid || !trend.valid()) return 0.0f;
+        const CrossingBias cb = RecoveryEstimator::crossingBias(
+            r.coolSpC + kCallHysteresisC - r.tempC, trend.slopeCPerH(),
+            kCoolPredictHorizonS, kCoolPredictBiasMaxC);
+        if (!cb.predicted) return 0.0f;
+        const float req = shaper.requestFromError(r.tempC - r.coolSpC, cb.biasC);
+        if (req < kCoolPredictMinReqPct) return 0.0f;  // pre-action floor (see config)
+        if (predTicks) ++*predTicks;
+        return req;
+      });
+}
+
 static double windowHours() {
   return (gRows.back().epochS - gRows.front().epochS) / 3600.0;
 }
@@ -240,9 +301,11 @@ static double windowHours() {
 static void printMetrics(const char* name, const Metrics& m, double hrs) {
   std::printf(
       "%-9s cycles=%d (%.1f/24h)  run min/mean/max=%.1f/%.1f/%.1f min  "
-      "off min=%.1f min  max starts/h=%d  on=%.2f h  safety-cut=%d%s\n",
+      "off min=%.1f min  max starts/h=%d  on=%.2f h  safety-cut=%d  "
+      "start-err mean/max=%.2f/%.2f C  peak-err=%.2f C%s\n",
       name, m.cycles, m.cycles * 24.0 / hrs, m.minRunMin, m.meanRunMin,
       m.maxRunMin, m.minOffMin, m.maxStartsHr, m.onHours, m.safetyCut,
+      m.meanStartErrC, m.maxStartErrC, m.peakErrC,
       m.openEnded ? "  (trailing run open)" : "");
 }
 
@@ -293,10 +356,68 @@ static void test_new_chain_beats_old_chain_cycle_count() {
                            "new chain must not start more often per hour");
 }
 
+// #141 crossing prediction on top of the #140 chain: cycle starts must get
+// EARLIER and GENTLER (lower error at start) without giving back any of the
+// #140 cycle-hygiene acceptance.
+//
+// Open-loop honesty (matters for reading the numbers): the trace does not
+// respond to our demands, and the FIELD room was held under our call
+// threshold for long stretches by the OEM'S OWN COOLING. The predicted
+// chain engages in exactly those stretches (it is doing the work the OEM
+// was doing), so its raw cycle count sits between the #140 chain's
+// deadband-idle 6 and the OEM's 18 — that is workload recovered, not
+// regression. The binding caps are therefore the #140 ACCEPTANCE bar and
+// the OEM's own same-day workload (18 cycles, 9.8 on-hours); peak error is
+// trace-fixed (asserted to hold, not improve). The closed-loop smoothness
+// claim is the shadow scoreboard's to settle (#141 validation plan).
+static void test_predicted_chain_starts_earlier_without_regression() {
+  TEST_ASSERT_TRUE(loadFixture());
+  const double hrs = windowHours();
+  const Metrics base = runNewChain();
+  int predTicks = 0;
+  const Metrics pred = runPredictedChain(&predTicks);
+  std::printf("\n--- #141 crossing prediction vs #140 chain (%.1f h trace, "
+              "horizon %us, bias max %.2f C, floor %.0f%%) ---\n",
+              hrs, static_cast<unsigned>(kCoolPredictHorizonS),
+              static_cast<double>(kCoolPredictBiasMaxC),
+              static_cast<double>(kCoolPredictMinReqPct));
+  printMetrics("#140", base, hrs);
+  printMetrics("#141 pred", pred, hrs);
+  std::printf("predictive pre-action ticks: %d\n", predTicks);
+
+  // Prediction must actually engage on this trace...
+  TEST_ASSERT_TRUE_MESSAGE(predTicks > 0, "prediction never engaged");
+  // ...and buy gentler starts: mean error at cycle start strictly lower.
+  char msg[160];
+  std::snprintf(msg, sizeof(msg), "start-err mean %.2f -> %.2f C (must drop)",
+                base.meanStartErrC, pred.meanStartErrC);
+  TEST_ASSERT_TRUE_MESSAGE(pred.meanStartErrC < base.meanStartErrC, msg);
+
+  // #140 acceptance stays, verbatim thresholds.
+  std::snprintf(msg, sizeof(msg), "cycles/24h = %.1f (limit 18)", pred.cycles * 24.0 / hrs);
+  TEST_ASSERT_TRUE_MESSAGE(pred.cycles * 24.0 / hrs <= 18.0, msg);
+  std::snprintf(msg, sizeof(msg), "min run = %.1f min (limit 12)", pred.minRunMin);
+  TEST_ASSERT_TRUE_MESSAGE(pred.minRunMin >= 12.0, msg);
+  std::snprintf(msg, sizeof(msg), "max starts/h = %d (limit 3)", pred.maxStartsHr);
+  TEST_ASSERT_TRUE_MESSAGE(pred.maxStartsHr <= 3, msg);
+  std::snprintf(msg, sizeof(msg), "min off = %.1f min (limit 8)", pred.minOffMin);
+  TEST_ASSERT_TRUE_MESSAGE(pred.minOffMin >= 8.0, msg);
+
+  // Workload cap: pre-action must never out-work the OEM's same-day cooling
+  // (9.8 on-hours over this trace) — the guard against runaway pre-cooling.
+  std::snprintf(msg, sizeof(msg), "on-hours = %.2f (OEM did 9.8)", pred.onHours);
+  TEST_ASSERT_TRUE_MESSAGE(pred.onHours <= 9.8, msg);
+  TEST_ASSERT_TRUE_MESSAGE(pred.cycles <= 18, "more cycles than the OEM's 18");
+  // Peak error: open-loop trace property — must hold exactly.
+  TEST_ASSERT_TRUE_MESSAGE(pred.peakErrC <= base.peakErrC + 1e-9,
+                           "peak error regressed?! harness bug");
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fixture_loads);
   RUN_TEST(test_new_chain_meets_cycle_acceptance);
   RUN_TEST(test_new_chain_beats_old_chain_cycle_count);
+  RUN_TEST(test_predicted_chain_starts_earlier_without_regression);
   return UNITY_END();
 }

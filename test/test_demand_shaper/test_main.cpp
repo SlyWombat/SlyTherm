@@ -413,6 +413,27 @@ static void test_cool_request_from_error_band() {
   TEST_ASSERT_EQUAL_FLOAT(100.0f, s.requestFromError(2.0f));  // saturates, never >100
 }
 
+static void test_cool_request_from_error_with_prediction_bias() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // band top 0.5 C
+  // #141 seam: the bias is additive degrees through the same band...
+  TEST_ASSERT_EQUAL_FLOAT(50.0f, s.requestFromError(0.15f, 0.10f));
+  // ...and lets a predicted crossing raise a gentle request while the error
+  // is still at/below zero (pre-crossing) — the whole point of the seam.
+  TEST_ASSERT_EQUAL_FLOAT(20.0f, s.requestFromError(0.0f, 0.10f));
+  TEST_ASSERT_EQUAL_FLOAT(10.0f, s.requestFromError(-0.05f, 0.10f));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.requestFromError(-0.20f, 0.10f));
+  // Zero bias reproduces the plain band exactly (#140 unchanged).
+  TEST_ASSERT_EQUAL_FLOAT(s.requestFromError(0.25f),
+                          s.requestFromError(0.25f, 0.0f));
+  // Advisory contract: NaN/negative bias never reduces the request...
+  TEST_ASSERT_EQUAL_FLOAT(50.0f, s.requestFromError(0.25f, -0.30f));
+  TEST_ASSERT_EQUAL_FLOAT(50.0f, s.requestFromError(0.25f, NAN));
+  // ...a NaN error still yields no demand, and saturation still caps at 100.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.requestFromError(NAN, 0.10f));
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, s.requestFromError(0.45f, 0.10f));
+}
+
 static void test_cool_duty_cycle_timing() {
   FakeGate gate;
   StagedCoolShaper s(gate, coolCfg());  // duty 50 % -> 600 on / 600 off
@@ -563,6 +584,7 @@ int main() {
   RUN_TEST(test_cool_boot_state_no_demand);
   RUN_TEST(test_cool_output_is_stage_pct_never_request);
   RUN_TEST(test_cool_request_from_error_band);
+  RUN_TEST(test_cool_request_from_error_with_prediction_bias);
   RUN_TEST(test_cool_duty_cycle_timing);
   RUN_TEST(test_cool_low_duty_stretches_period_for_min_run);
   RUN_TEST(test_cool_high_duty_pins_off_time_at_min_off);

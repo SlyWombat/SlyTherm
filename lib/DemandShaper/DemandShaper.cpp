@@ -240,6 +240,14 @@ float StagedCoolShaper::requestFromError(float errC) const {
   return 100.0f * errC / cfg_.fullDutyErrC;
 }
 
+// #141 crossing-prediction seam: the same pure band over (error + bias). A
+// NaN errC still falls through to 0 (NaN + bias is NaN); a NaN/negative bias
+// is discarded — prediction may only ever ADD urgency, never remove it.
+float StagedCoolShaper::requestFromError(float errC, float predBiasC) const {
+  if (!std::isfinite(predBiasC) || predBiasC < 0.0f) predBiasC = 0.0f;
+  return requestFromError(errC + predBiasC);
+}
+
 float StagedCoolShaper::periodS(float duty) const {
   // P(d) = max(base, minOn/d, minOff/(1-d)): on-time >= minOnS and off-time
   // >= minOffS at the requested duty, stretching the period rather than

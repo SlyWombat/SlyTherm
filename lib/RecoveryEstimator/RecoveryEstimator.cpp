@@ -104,4 +104,51 @@ RecoveryAdvice RecoveryEstimator::advise(const RecoveryTarget& target,
   return advice;
 }
 
+CrossingBias RecoveryEstimator::crossingBias(float toGoC, float approachCPerH,
+                                             uint32_t horizonS,
+                                             float biasMaxC) {
+  CrossingBias out;
+  if (!std::isfinite(toGoC) || !std::isfinite(approachCPerH)) return out;
+  if (horizonS == 0 || !(biasMaxC > 0.0f)) return out;
+  if (!(approachCPerH > 0.0f)) return out;  // receding/flat: no crossing ahead
+  if (toGoC <= 0.0f) return out;            // already crossed: calls own it
+  const float tCrossS = toGoC * 3600.0f / approachCPerH;
+  if (tCrossS > static_cast<float>(horizonS)) return out;
+  out.predicted = true;
+  out.inS = static_cast<uint32_t>(tCrossS);
+  out.biasC = biasMaxC * (1.0f - tCrossS / static_cast<float>(horizonS));
+  return out;
+}
+
+float RecoveryEstimator::fallbackTempAt(float setpointC,
+                                        uint32_t remainS) const {
+  const float rate =
+      channel(RecoveryMode::kHeat, RecoveryEquipment::kGas).rateCPerH *
+      cfg_.fallbackMargin;
+  return setpointC - rate * static_cast<float>(remainS) / 3600.0f;
+}
+
+RecoveryRamps RecoveryEstimator::adviseRamps(const RecoveryTarget& target,
+                                             float currentTempC) const {
+  RecoveryRamps r;
+  r.hp = advise(target, currentTempC, RecoveryEquipment::kHp);
+  if (!cfg_.enabled || !cfg_.twoRampEnabled) return r;  // WINTER task (#141)
+  if (target.mode != RecoveryMode::kHeat) return r;     // no second fuel to fall
+                                                        //  back on when cooling
+  if (std::isnan(currentTempC) || std::isnan(target.setpointC)) return r;
+  const float rate =
+      channel(RecoveryMode::kHeat, RecoveryEquipment::kGas).rateCPerH *
+      cfg_.fallbackMargin;
+  if (!(rate > 0.0f)) return r;  // margin misconfigured: no line, never NaN
+  r.fallbackValid = true;
+  r.fallbackRateCPerH = rate;
+  r.fallbackTempNowC = fallbackTempAt(target.setpointC, target.inS);
+  // Strictly below the line: even gas (derated) would miss the target ->
+  // advise staging it now. At the HP-lead start in deep cold the line can
+  // already sit above the room — gas blends in from the start, the docs/13
+  // §2 "one rule" behavior.
+  r.gasAdvised = currentTempC < r.fallbackTempNowC;
+  return r;
+}
+
 }  // namespace dettson

@@ -95,6 +95,7 @@
 #include "SafetySupervisor.h"
 #include "SensorFusion.h"
 #include "SleepState.h"
+#include "TrendEstimator.h"
 #include "UiModel.h"
 
 // Running-partition app hash (reset-loop latch clear on a new flash) + the
@@ -310,6 +311,7 @@ DemandArbiter*      gArbiter  = nullptr;
 PidShaper           gPid;
 GasShaper           gGasShaper;
 RecoveryEstimator   gRecovery;
+TrendEstimator      gTrend;  // fused-temp slope for crossing prediction (#141)
 ui::UiModel         gUi;
 ui::UiModel::LockPersistBlob gShadowLock{};  // last lock state written to NVS (change-detect)
 safety::SafetySupervisor* gSup = nullptr;
@@ -1627,6 +1629,11 @@ bool gHaveTarget = false;
 hm::NextTarget gTarget;
 uint32_t gTargetRxS = 0;
 bool gTargetApplied = false;
+// #141 two-ramp fallback verdict (advisory; refreshed every adviseRecovery,
+// consumed by the next cycle's heat-source pick). Dead until BOTH
+// kRecoveryEnabledDefault and kRecoveryTwoRampEnabledDefault are on —
+// heating validation is a WINTER task.
+bool gRecoveryGasAdvised = false;
 
 // Run-segment tracking for RecoveryEstimator learning.
 enum class Serving : uint8_t { kNone, kGas, kHpHeat, kCool };
@@ -1911,6 +1918,8 @@ void updateRunSegments(const DemandSet& out, const FusedTemp& fused, uint32_t no
 }
 
 void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS) {
+  const bool wasGasAdvised = gRecoveryGasAdvised;  // log on the rising edge only
+  gRecoveryGasAdvised = false;  // re-derived below; clears when the target lapses
   if (!gHaveTarget || !fused.valid) return;
   const uint32_t elapsed = nowS - gTargetRxS;
   if (elapsed >= gTarget.inS) { gHaveTarget = false; return; }
@@ -1933,6 +1942,24 @@ void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS
     gTargetApplied = true;
     Serial.printf("[recovery] early start: %.1fC in %lus\n",
                   static_cast<double>(t.setpointC), static_cast<unsigned long>(t.inS));
+  }
+  // #141 two-ramp fallback (docs/13 §2, Honeywell two-ramp scheme) — WINTER
+  // validation task, doubly gated OFF by default (adviseRamps() itself
+  // requires enabled AND twoRampEnabled). While an early-started heat
+  // recovery is pending, gas is advised only when the measured temperature
+  // falls below the fallback ramp — the line at the derated gas rate that
+  // still makes the target on time. Advisory: the verdict feeds next cycle's
+  // heat-source pick; GasShaper/arbiter/guard gate everything downstream.
+  if (gTargetApplied && t.mode == RecoveryMode::kHeat) {
+    const RecoveryRamps ramps = gRecovery.adviseRamps(t, fused.value);
+    if (ramps.fallbackValid && ramps.gasAdvised) {
+      gRecoveryGasAdvised = true;
+      if (!wasGasAdvised) {
+        Serial.printf("[recovery] below fallback ramp (%.2fC < %.2fC): gas advised\n",
+                      static_cast<double>(fused.value),
+                      static_cast<double>(ramps.fallbackTempNowC));
+      }
+    }
   }
 }
 
@@ -2088,6 +2115,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 #endif
   const FusedTemp fused = gFusion.fusedTemp(nowS);
   const OatReading oat = gOat.read(nowS);
+  // #141: fused-temp slope for crossing prediction (dropouts skipped inside).
+  gTrend.update(fused.value, fused.valid, nowS);
 
   // ---- Stale-MQTT fallback profile (docs/04 §2 MQTT row; docs/06) ----
   const bool setpointFresh = nowS - gLastInboundS < kMqttStaleS;
@@ -2168,13 +2197,18 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   if (call.type == CallType::kHeat) {
     // EMERGENCY_HEAT is gas-only by definition; the user's explicit choice
     // overrides the high-OAT gas lockout (decision flagged in the report).
-    const HeatSource src = call.gasOnly ? HeatSource::kGas : dfo.source;
+    // #141: a recovery that fell below the fallback ramp also picks gas
+    // (advisory verdict from adviseRecovery, default OFF — winter task);
+    // GasShaper timers/lockouts still gate downstream.
+    const HeatSource src = (call.gasOnly || gRecoveryGasAdvised)
+                               ? HeatSource::kGas : dfo.source;
     if (src == HeatSource::kGas) {
       gPid.selectMode(call.gasOnly ? 1 : 0);
       gasReq = gPid.update(gModeSm->heatSetpoint(), fused.value, fused.valid,
                            temperActive, nowS);
       if (fused.degraded) gasReq = fminf(gasReq, cfg::kDegradedGasCapPct);
       changeReason = call.gasOnly ? "manual"
+                     : gRecoveryGasAdvised ? "recovery_ramp"
                      : dfo.escalated ? "escalation"
                      : dfo.oatInvalidAlarm ? "fail_cold" : "balance_point";
     } else if (src == HeatSource::kHeatPump) {
@@ -2184,14 +2218,37 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     }
   } else {
     gPid.reset();
+    // Cooling lockouts (docs/05 table): indoor floor + unknown OAT.
+    const bool coolLockedOut = !oat.valid || fused.degraded ||
+                               fused.value < kCoolingIndoorLockoutC;
     if (call.type == CallType::kCool) {
-      // Cooling lockouts (docs/05 table): indoor floor + unknown OAT.
-      const bool lockedOut = !oat.valid || fused.degraded ||
-                             fused.value < kCoolingIndoorLockoutC;
       // #140: the request is a RUNTIME-DUTY fraction (proportional band on
       // the error), not a capacity — the stage only understands 30%.
-      if (!lockedOut) coolReq = gCoolShaper.requestFromError(call.errorC);
-      changeReason = lockedOut ? "lockout" : changeReason;
+      if (!coolLockedOut) coolReq = gCoolShaper.requestFromError(call.errorC);
+      changeReason = coolLockedOut ? "lockout" : changeReason;
+    } else if (kCoolPredictEnabledDefault && call.type == CallType::kNone &&
+               gModeSm->mode() == UserMode::kCool && fused.valid &&
+               !coolLockedOut && gTrend.valid()) {
+      // #141 crossing prediction (docs/13 §2): when the fused slope projects
+      // a deadband crossing within the horizon, begin the gentle duty ramp
+      // through the #140 band early instead of waiting for the slam at
+      // +hysteresis. COOL mode only (in AUTO a pre-cool without a call would
+      // sidestep the changeover dwell bookkeeping — winter/AUTO follow-ups
+      // stay with #141). Advisory shaping of the REQUEST only: min-run/
+      // min-off/starts-cap and CompressorGuard still gate downstream.
+      const CrossingBias cb = RecoveryEstimator::crossingBias(
+          gModeSm->coolSetpoint() + kCallHysteresisC - fused.value,
+          gTrend.slopeCPerH(), kCoolPredictHorizonS, kCoolPredictBiasMaxC);
+      if (cb.predicted) {
+        const float req = gCoolShaper.requestFromError(
+            fused.value - gModeSm->coolSetpoint(), cb.biasC);
+        // Pre-action floor: below it the predicted duty's first on-phase
+        // could end before the call opens and fragment the cycle.
+        if (req >= kCoolPredictMinReqPct) {
+          coolReq = req;
+          changeReason = "predict";
+        }
+      }
     }
   }
   if (gModeSm->mode() != UserMode::kOff) {

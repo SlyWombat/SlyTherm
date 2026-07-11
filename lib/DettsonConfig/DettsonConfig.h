@@ -162,6 +162,36 @@ constexpr float    kRecoveryRateMaxCPerH      = 10.0f; //  rate; outside -> segm
 constexpr float    kRecoveryOutlierRatio      = 3.0f;  // after kRecoveryOutlierMinSamples accepted
 constexpr uint8_t  kRecoveryOutlierMinSamples = 3;     //  segments, reject rates > ratio off the
                                                        //  estimate (robust EMA, docs/05 table)
+// #141 two-ramp scheduled recovery (docs/13 §2, Honeywell US 5,622,310):
+// underneath the HP-alone recovery ramp sits a steeper FALLBACK ramp at the
+// (derated) learned gas rate arriving at the same target — gas is advised
+// only when the measured temperature falls below that line. OFF by default:
+// heating validation is a WINTER task; code + unit tests land now.
+constexpr bool     kRecoveryTwoRampEnabledDefault = false;
+constexpr float    kRecoveryFallbackMargin        = 0.85f; // assume gas achieves only this fraction of
+                                                           //  its learned ramp -> the line sits higher,
+                                                           //  so gas engages a little early, never late
+
+// ---------- Fused-temp trend + crossing prediction (issue #141, docs/13 §2) ----------
+// TrendEstimator (lib/SensorFusion): EMA'd slope of the fused temperature,
+// robust to fusion dropouts. Feeds RecoveryEstimator::crossingBias — an
+// ADVISORY error bias into StagedCoolShaper::requestFromError so a predicted
+// setpoint crossing begins a gentle early duty ramp instead of waiting for
+// the deadband slam. All shaper hygiene + CompressorGuard stay downstream.
+// Horizon/bias validated on the 2026-07-09/10 trace (test/test_cool_replay).
+constexpr uint32_t kTrendTauS                 = 600;    // slope EMA time constant (10-20 min window)
+constexpr uint32_t kTrendMaxGapS              = 600;    // valid-to-valid gap beyond this -> trend resets
+constexpr uint32_t kTrendWarmupS              = 300;    // observed span before the slope is trusted
+constexpr float    kTrendMaxSlopeCPerH        = 10.0f;  // per-sample clamp (spike rejection; matches
+                                                        //  the kRecoveryRateMaxCPerH plausibility band)
+constexpr bool     kCoolPredictEnabledDefault = true;   // advisory shaping only; replay-validated
+constexpr uint32_t kCoolPredictHorizonS       = 900;    // act when a deadband crossing is inside 15 min
+constexpr float    kCoolPredictBiasMaxC       = 0.10f;  // error bias ramps 0 -> this as crossing nears
+constexpr float    kCoolPredictMinReqPct      = 50.0f;  // pre-action floor: below this the predicted
+                                                        //  duty's first on-phase could end BEFORE the
+                                                        //  call opens and fragment the cycle — at >=50%
+                                                        //  duty the on-phase (>=37 min) always bridges
+                                                        //  the horizon into the call (replay-tuned)
 
 // ---------- Fallback / degraded modes ----------
 constexpr float    kFallbackHeatSetpointC   = 18.0f;  // MQTT stale >30 min: dual-bounded, last user mode,
