@@ -81,6 +81,7 @@
 #include "CompressorGuard.h"
 #include "Ct485Core.h"
 #include "Ct485Frame.h"
+#include "CopLearner.h"
 #include "Ct485Thermostat.h"
 #include "DemandArbiter.h"
 #include "DemandShaper.h"
@@ -226,6 +227,9 @@ struct Pending {
   PresenceSample presence[16]; size_t presenceCount = 0;
   // #90: HA sleep override (retained slytherm/cmd/sleep: on/off/auto).
   bool hasSleepOverride = false; SleepOverride sleepOverride = SleepOverride::kAuto;
+  // #143: retained energy prices (slytherm/cmd/energy_prices) for the
+  // economic switchover; validated again by DualFuelArbiter::setConfig.
+  bool hasEnergyPrices = false; hm::EnergyPrices energyPrices;
   // #118: Remote vacation/ack intents (applied via the same control-task
   // functions the local UI's popIntent path uses).
   bool hasVacation = false;
@@ -286,6 +290,8 @@ size_t gPresetNameCount = 0;
 volatile bool gDiscoveryDirty = false;
 volatile bool gRosterPubReq = false;   // UI sensor-toggle -> mqttTask republishes the rebuilt roster
 std::string   gRosterPubJson;          // guarded by gCmdMux
+volatile bool gCopProxyPubReq = false; // #143: control task staged fresh COP-proxy telemetry
+std::string   gCopProxyJson;           // guarded by gCmdMux
 
 volatile bool gMqttConnected = false;
 volatile bool gWifiConnected = false;
@@ -312,6 +318,7 @@ DemandArbiter*      gArbiter  = nullptr;
 PidShaper           gPid;
 GasShaper           gGasShaper;
 RecoveryEstimator   gRecovery;
+CopLearner          gCopLearner;  // #143: record-only COP proxy (docs/13 §5)
 TrendEstimator      gTrend;  // fused-temp slope for crossing prediction (#141)
 PreCirculator       gPreCirc;  // blower-first pre-circulation (#142, docs/13 §3+§8)
 ui::UiModel         gUi;
@@ -585,6 +592,8 @@ float clampF(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : 
 
 struct Tunables {
   float balancePointC, compressorMinOatC, auxMaxOatC, minSetpointDeltaC;
+  bool economicEnabled;
+  float elecPricePerKwh, gasPricePerM3;
 };
 
 Tunables loadTunables() {
@@ -595,6 +604,14 @@ Tunables loadTunables() {
   t.auxMaxOatC        = clampF(gPrefs.getFloat("amo", kAuxMaxOatC),        -30.0f, 30.0f);
   t.minSetpointDeltaC = clampF(gPrefs.getFloat("spd", kMinSetpointDeltaC),
                                kMinSetpointDeltaFloorC, 8.0f);
+  // #143 economic switchover: default OFF (winter validation); prices are
+  // last-accepted slytherm/cmd/energy_prices (the retained topic re-feeds
+  // them on connect anyway — NVS covers broker-less boots).
+  t.economicEnabled  = gPrefs.getBool("dfec", kDualFuelEconomicEnabledDefault);
+  t.elecPricePerKwh  = clampF(gPrefs.getFloat("epk", kElecPricePerKwhDefault),
+                              0.001f, kEnergyPriceMax);
+  t.gasPricePerM3    = clampF(gPrefs.getFloat("gpm", kGasPricePerM3Default),
+                              0.001f, kEnergyPriceMax);
   return t;
 }
 
@@ -941,6 +958,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     hm::NextTarget t;
     if (hm::parseNextTargetJson(buf, t)) { gPending.hasTarget = true; gPending.target = t; }
     else accepted = false;
+  } else if (strcmp(topic, hm::topic::kCmdEnergyPrices) == 0) {
+    // #143: retained energy prices for the economic switchover. Strict parse;
+    // a rejected payload never moves the switchover point.
+    hm::EnergyPrices ep;
+    if (hm::parseEnergyPricesJson(buf, ep)) { gPending.hasEnergyPrices = true; gPending.energyPrices = ep; }
+    else accepted = false;
   } else if (strcmp(topic, cfg::kOatTopic) == 0) {
     auto p = hm::parseSetpoint(buf, cfg::kOatIngestMinC, cfg::kOatIngestMaxC);
     if (p.ok) { gPending.hasOat = true; gPending.oatC = p.value; } else accepted = false;
@@ -1106,7 +1129,8 @@ void subscribeAll() {
       hm::topic::kCmdSetpoint, hm::topic::kCmdTargetTempLow, hm::topic::kCmdTargetTempHigh,
       hm::topic::kCmdMode, hm::topic::kCmdFanMode, hm::topic::kCmdPreset,
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
-      hm::topic::kCmdNextTarget, hm::topic::kConfigSensors, hm::topic::kConfigPresets,
+      hm::topic::kCmdNextTarget, hm::topic::kCmdEnergyPrices,
+      hm::topic::kConfigSensors, hm::topic::kConfigPresets,
       cfg::kOatTopic, "slytherm/sensors/+/state", "slytherm/sensors/+/presence",
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sensor/+/participating",
       "slytherm/cmd/sleep", "slytherm/cmd/sniff", "slytherm/cmd/ota_mirror"};
@@ -1404,6 +1428,9 @@ void mqttTask(void*) {
       if (gRosterPubReq) {  // UI sensor-toggle staged a roster; publish it here (mqttTask owns gMqtt)
         xSemaphoreTake(gCmdMux, portMAX_DELAY); std::string j = gRosterPubJson; gRosterPubReq = false; xSemaphoreGive(gCmdMux);
         pubRetained(hm::topic::kConfigSensors, j); }
+      if (gCopProxyPubReq) {  // #143: control task staged COP-proxy telemetry (retained)
+        xSemaphoreTake(gCmdMux, portMAX_DELAY); std::string j = gCopProxyJson; gCopProxyPubReq = false; xSemaphoreGive(gCmdMux);
+        pubRetained(hm::topic::kStateCopProxy, j); }
       static uint32_t lastSnapMs = 0;
       const bool heartbeat = nowMs - lastHeartbeatMs >= cfg::kStateHeartbeatS * 1000u;
       if (heartbeat) lastHeartbeatMs = nowMs;
@@ -1801,6 +1828,21 @@ void consumeCommands(uint32_t nowS) {
     gTargetRxS = nowS;
     gTargetApplied = false;
   }
+  if (p.hasEnergyPrices) {  // #143: parse already gated (0, kEnergyPriceMax]
+    DualFuelConfig dc = gDualFuel->config();
+    dc.elecPricePerKwh = p.energyPrices.elecPerKwh;
+    dc.gasPricePerM3 = p.energyPrices.gasPerM3;
+    if (gDualFuel->setConfig(dc)) {  // full re-validation, docs/04 §4
+      gPrefs.putFloat("epk", dc.elecPricePerKwh);  // survive reboots (NVS)
+      gPrefs.putFloat("gpm", dc.gasPricePerM3);
+      Serial.printf("[econ] prices elec=%.3f$/kWh gas=%.3f$/m3 -> COP*=%.2f "
+                    "balance=%.1fC (economic %s)\n",
+                    (double)dc.elecPricePerKwh, (double)dc.gasPricePerM3,
+                    (double)gDualFuel->breakEvenCop(),
+                    (double)gDualFuel->effectiveBalancePointC(),
+                    dc.economicEnabled ? "ON" : "OFF");
+    }
+  }
 
   // Wall-UI intents (no LVGL binding yet; queue stays wired so the binding
   // is drop-in). Control task re-validates through ModeStateMachine.
@@ -1931,7 +1973,7 @@ void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS
   t.inS = gTarget.inS - elapsed;
   const RecoveryEquipment equip =
       (t.mode == RecoveryMode::kHeat && oat.valid &&
-       oat.valueC <= gDualFuel->config().balancePointC)
+       oat.valueC <= gDualFuel->effectiveBalancePointC())  // follows #143 economics
           ? RecoveryEquipment::kGas
           : RecoveryEquipment::kHp;
   const RecoveryAdvice a = gRecovery.advise(t, fused.value, equip);
@@ -2372,6 +2414,42 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   updateRunSegments(out, fused, nowS);
   adviseRecovery(fused, oat, nowS);
 
+  // ---- #143 record-only COP proxy (docs/13 §5) ----
+  // Accumulate HP-heat runtime vs indoor-outdoor delta per OAT bucket, then
+  // surface it as TELEMETRY ONLY (NVS blob + [copx] telnet + retained MQTT).
+  // Deliberately NOT fed back into the arbiter's COP curve — that closes
+  // after a season of data (see the correction seam in CopLearner.h).
+  gCopLearner.tick(out.hpHeatPct > 0, fused.value, fused.valid, oat.valueC,
+                   oat.valid, nowS);
+  {
+    static uint32_t lastSaveS = 0, lastPubS = 0;
+    static uint32_t savedRunS = 0, pubbedRunS = 0;
+    const uint32_t runS = gCopLearner.totalRuntimeS();
+    if (runS != savedRunS && nowS - lastSaveS >= kCopSaveMinS) {
+      CopLearner::PersistBlob blob;
+      gCopLearner.save(&blob);
+      gPrefs.putBytes("copx", &blob, sizeof(blob));
+      lastSaveS = nowS;
+      savedRunS = runS;
+    }
+    if (runS > 0 && (runS != pubbedRunS || lastPubS == 0) &&
+        nowS - lastPubS >= kCopPublishMinS) {
+      xSemaphoreTake(gCmdMux, portMAX_DELAY);
+      gCopProxyJson = gCopLearner.proxyJson();
+      gCopProxyPubReq = true;  // mqttTask publishes retained (owns gMqtt)
+      xSemaphoreGive(gCmdMux);
+      lastPubS = nowS;
+      pubbedRunS = runS;
+    }
+#ifdef SLYTHERM_UI  // telnet_log is a UI-build facility (v0.5.0 lesson)
+    static uint32_t lastLogS = 0;
+    if (runS > 0 && nowS - lastLogS >= kCopLogMinS) {
+      telnet_log::logf("[copx] %s", gCopLearner.proxyJson().c_str());
+      lastLogS = nowS;
+    }
+#endif
+  }
+
   // ---- UI model sync (rendered by the wall-UI task, SLYTHERM_UI) ----
   uiLock();
   gUi.tick(nowS);
@@ -2622,9 +2700,30 @@ void setup() {
     dc.balancePointC = tun.balancePointC;
     dc.compressorMinOatC = tun.compressorMinOatC;
     dc.auxMaxOatC = tun.auxMaxOatC;
+    dc.economicEnabled = tun.economicEnabled;      // #143 (default OFF)
+    dc.elecPricePerKwh = tun.elecPricePerKwh;
+    dc.gasPricePerM3 = tun.gasPricePerM3;
     gConfigOk = DualFuelArbiter::configValid(dc);  // hard rule, docs/04 §4
     gDualFuel = new DualFuelArbiter(dc);           // invalid -> validated defaults
     gArbiter = new DemandArbiter(nowS);
+    Serial.printf("[econ] %s: elec=%.3f$/kWh gas=%.3f$/m3 afue=%.2f COP*=%.2f "
+                  "balance=%.1fC\n",
+                  gDualFuel->config().economicEnabled ? "ON" : "OFF (fixed balance)",
+                  (double)gDualFuel->config().elecPricePerKwh,
+                  (double)gDualFuel->config().gasPricePerM3,
+                  (double)gDualFuel->config().afue,
+                  (double)gDualFuel->breakEvenCop(),
+                  (double)gDualFuel->effectiveBalancePointC());
+  }
+
+  // ---- #143 COP-proxy record restore (record-only; a bad blob starts fresh) ----
+  {
+    CopLearner::PersistBlob blob;
+    if (gPrefs.getBytes("copx", &blob, sizeof(blob)) == sizeof(blob) &&
+        gCopLearner.restore(&blob)) {
+      Serial.printf("[copx] restored %lus of HP-heat record\n",
+                    (unsigned long)gCopLearner.totalRuntimeS());
+    }
   }
 
   // ---- Restore user state (boot stays no-demand until the gate validates) ----

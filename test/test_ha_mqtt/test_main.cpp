@@ -702,6 +702,53 @@ static void test_parse_next_target_rejects_junk() {
   TEST_ASSERT_EQUAL_UINT32(0, t.inS);
 }
 
+// ---------- energy prices (#143, docs/13 §1) ----------
+
+static void test_energy_prices_and_cop_proxy_topics() {
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/energy_prices", topic::kCmdEnergyPrices);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/cop_proxy", topic::kStateCopProxy);
+}
+
+static void test_parse_energy_prices_valid_and_tolerant() {
+  EnergyPrices ep;
+  TEST_ASSERT_TRUE(parseEnergyPricesJson("{\"elecKwh\":0.15,\"gasM3\":0.45}", ep));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.15f, ep.elecPerKwh);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.45f, ep.gasPerM3);
+
+  // Key order, whitespace, unknown extra keys (a TOU automation may tag the
+  // window), integer-valued numbers.
+  TEST_ASSERT_TRUE(parseEnergyPricesJson(
+      " {\n \"gasM3\" : 1 , \"window\" : \"offpeak\" , \"elecKwh\" : 0.028\n} ",
+      ep));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.028f, ep.elecPerKwh);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.0f, ep.gasPerM3);
+
+  // Ceiling is inclusive.
+  TEST_ASSERT_TRUE(parseEnergyPricesJson("{\"elecKwh\":10,\"gasM3\":10}", ep));
+}
+
+static void test_parse_energy_prices_rejects_junk() {
+  EnergyPrices ep;
+  TEST_ASSERT_FALSE(parseEnergyPricesJson(nullptr, ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("not json", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{}", ep));
+  // Both keys required.
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":0.15}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"gasM3\":0.45}", ep));
+  // Zero / negative / above the sanity ceiling / wrong-typed / null / cut off.
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":0,\"gasM3\":0.45}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":-0.15,\"gasM3\":0.45}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":0.15,\"gasM3\":10.01}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":\"0.15\",\"gasM3\":0.45}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":null,\"gasM3\":0.45}", ep));
+  TEST_ASSERT_FALSE(parseEnergyPricesJson("{\"elecKwh\":0.15,\"gasM3\":}", ep));
+  // Rejection leaves the output zeroed — a rejected payload must never move
+  // the switchover point.
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.0f, ep.elecPerKwh);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.0f, ep.gasPerM3);
+}
+
 // ---------- outdoor/fusion/changeover discovery (issue #50 cleanup) ----------
 
 static void test_outdoor_fusion_changeover_discovery_builders() {
@@ -1057,6 +1104,9 @@ int main() {
   RUN_TEST(test_next_target_topic);
   RUN_TEST(test_parse_next_target_valid_and_tolerant);
   RUN_TEST(test_parse_next_target_rejects_junk);
+  RUN_TEST(test_energy_prices_and_cop_proxy_topics);
+  RUN_TEST(test_parse_energy_prices_valid_and_tolerant);
+  RUN_TEST(test_parse_energy_prices_rejects_junk);
   RUN_TEST(test_outdoor_fusion_changeover_discovery_builders);
   RUN_TEST(test_lock_clear_command_retained_safe);
   RUN_TEST(test_lock_state_json_and_strings);

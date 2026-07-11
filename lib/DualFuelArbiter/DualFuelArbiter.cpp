@@ -1,10 +1,13 @@
 #include "DualFuelArbiter.h"
 
+#include <cmath>
+
 namespace dettson {
 
 // Compile-time sanity on the canonical defaults themselves.
 static_assert(kCompressorMinOatC <= kAuxMaxOatC,
               "default lockouts leave an OAT band with no heat source");
+static_assert(kCopCurvePoints >= 2, "COP curve needs at least one segment");
 
 DualFuelArbiter::DualFuelArbiter(const DualFuelConfig& cfg) {
   if (configValid(cfg)) {
@@ -24,7 +27,74 @@ bool DualFuelArbiter::configValid(const DualFuelConfig& cfg) {
     return false;
   if (cfg.defrostTemperHeatPct < 0.0f || cfg.defrostTemperHeatPct > 100.0f)
     return false;
+  // #143 economics fields are validated UNCONDITIONALLY (not only when
+  // economicEnabled): a config carrying junk prices/curve is a junk config,
+  // and enabling economics later must never re-discover it at runtime.
+  if (!std::isfinite(cfg.elecPricePerKwh) || cfg.elecPricePerKwh <= 0.0f ||
+      cfg.elecPricePerKwh > kEnergyPriceMax)
+    return false;
+  if (!std::isfinite(cfg.gasPricePerM3) || cfg.gasPricePerM3 <= 0.0f ||
+      cfg.gasPricePerM3 > kEnergyPriceMax)
+    return false;
+  if (!std::isfinite(cfg.afue) || cfg.afue < kAfueMin || cfg.afue > 1.0f)
+    return false;
+  for (size_t i = 0; i < kCopCurvePoints; ++i) {
+    const CopPoint& p = cfg.copCurve[i];
+    if (!std::isfinite(p.oatC) || !std::isfinite(p.cop) || p.cop <= 0.0f)
+      return false;
+    if (i > 0 && (p.oatC <= cfg.copCurve[i - 1].oatC ||   // OAT strictly up
+                  p.cop < cfg.copCurve[i - 1].cop))       // COP non-decreasing
+      return false;
+  }
   return true;
+}
+
+float DualFuelArbiter::breakEvenCop(float elecPerKwh, float gasPerM3,
+                                    float afue) {
+  // gas $/kWh-thermal = gasPerM3 / (kGasKwhPerM3 * afue);
+  // HP  $/kWh-thermal = elecPerKwh / COP  ==>  equal at COP*:
+  return elecPerKwh * kGasKwhPerM3 * afue / gasPerM3;
+}
+
+float DualFuelArbiter::copAtOat(float oatC) const {
+  const CopPoint* c = cfg_.copCurve;
+  if (oatC <= c[0].oatC) return c[0].cop;  // flat extrapolation at the ends
+  if (oatC >= c[kCopCurvePoints - 1].oatC) return c[kCopCurvePoints - 1].cop;
+  for (size_t i = 1; i < kCopCurvePoints; ++i) {
+    if (oatC <= c[i].oatC) {
+      const float t = (oatC - c[i - 1].oatC) / (c[i].oatC - c[i - 1].oatC);
+      return c[i - 1].cop + t * (c[i].cop - c[i - 1].cop);
+    }
+  }
+  return c[kCopCurvePoints - 1].cop;  // unreachable
+}
+
+float DualFuelArbiter::economicBalancePointC() const {
+  const CopPoint* c = cfg_.copCurve;
+  const float copStar = breakEvenCop();
+  float oat;
+  if (copStar <= c[0].cop) {
+    // HP economic across the whole curve: switchover falls to the floor.
+    oat = c[0].oatC - 1.0f;  // below every point; the clamp does the rest
+  } else if (copStar > c[kCopCurvePoints - 1].cop) {
+    // HP never economic: switchover rises to the ceiling (gas lockout).
+    oat = c[kCopCurvePoints - 1].oatC + 100.0f;
+  } else {
+    oat = c[kCopCurvePoints - 1].oatC;
+    for (size_t i = 1; i < kCopCurvePoints; ++i) {
+      if (copStar <= c[i].cop) {
+        // c[i-1].cop < copStar <= c[i].cop, so the segment rises strictly.
+        const float t = (copStar - c[i - 1].cop) / (c[i].cop - c[i - 1].cop);
+        oat = c[i - 1].oatC + t * (c[i].oatC - c[i - 1].oatC);
+        break;
+      }
+    }
+  }
+  // Clamp inside the thermally safe band (docs/13 §1: economics only ever
+  // moves switchover WITHIN it): capacity floor .. gas lockout ceiling.
+  if (oat < cfg_.balancePointC) oat = cfg_.balancePointC;
+  if (oat > cfg_.auxMaxOatC) oat = cfg_.auxMaxOatC;
+  return oat;
 }
 
 bool DualFuelArbiter::setConfig(const DualFuelConfig& cfg) {
@@ -44,10 +114,13 @@ DualFuelOutput DualFuelArbiter::step(const DualFuelInputs& in, uint32_t nowS) {
 
   // Balance-point preference latch with hysteresis: gas below the balance
   // point, HP only once OAT recovers above balance + hyst; hold in between.
+  // #143: the balance point may be the COMPUTED economic one (COP crossing,
+  // clamped inside the safe band) — same latch, same hysteresis either way.
+  const float balC = effectiveBalancePointC();
   if (in.oatValid) {
-    if (in.oatC < cfg_.balancePointC) {
+    if (in.oatC < balC) {
       gasPreferred_ = true;
-    } else if (in.oatC > cfg_.balancePointC + cfg_.balanceHystC) {
+    } else if (in.oatC > balC + cfg_.balanceHystC) {
       gasPreferred_ = false;
     }
   }
@@ -57,7 +130,7 @@ DualFuelOutput DualFuelArbiter::step(const DualFuelInputs& in, uint32_t nowS) {
   // HP is not retried early just because the call cycled.
   if (escalated_ && in.oatValid &&
       (nowS - escalatedAtS_) >= cfg_.deescalationMinS &&
-      in.oatC > cfg_.balancePointC + cfg_.balanceHystC) {
+      in.oatC > balC + cfg_.balanceHystC) {
     escalated_ = false;
   }
 

@@ -101,6 +101,7 @@ Notes:
 | HA → ESP32 | `slytherm/cmd/em_heat` | `ON` / `OFF` — engage/disengage EMERGENCY_HEAT (gap G15) |
 | HA → ESP32 | `slytherm/cmd/lock_clear` | exactly `clear_user_pin` — forgotten-PIN recovery (see "Screen lock"); any other payload, including empty, is ignored |
 | HA → ESP32 | `slytherm/cmd/next_target` | JSON `{"temp": 21.0, "mode": "heat", "in_s": 5400}` — the next scheduled setpoint change, for smart recovery (see "Smart recovery"); tolerant parse, all three keys required (`mode` = `heat`/`cool`, `in_s` ≤ 7 days), invalid payloads ignored |
+| HA → ESP32 | `slytherm/cmd/energy_prices` | **retained** JSON `{"elecKwh": 0.15, "gasM3": 0.45}` — ALL-IN marginal electricity ($/kWh) and gas ($/m³) prices for the #143 economic switchover (publish from HA's energy config or a TOU automation; a $/therm gas price converts ÷2.778). Strict parse: both keys required, each in (0, 10]; invalid payloads ignored — a rejected payload never moves the switchover point. NVS-persisted on the device too, so prices survive broker-less reboots |
 | HA → ESP32 | `slytherm/cmd/outdoor_temp` | float °C — HA-weather bridge feeding the outdoor-temperature ladder's third rung (`ha` source); plausibility-gated −50…55 °C, republish at least every 30 min (the rung staleness window) or the ladder demotes to `none` → fail-cold |
 | HA → ESP32 | `slytherm/sensors/<id>/state` | remote-sensor JSON (see below) |
 | HA → ESP32 | `slytherm/config/sensors` | retained sensor roster/config (see below) |
@@ -125,6 +126,7 @@ Notes:
 | ESP32 → HA | `slytherm/state/changeover_reason` | enum string |
 | ESP32 → HA | `slytherm/state/lock` | JSON `{"state":"user_locked","level":"settings","pin_set":true}` |
 | ESP32 → HA | `slytherm/state/bus` | CT-485 TX-stack JSON: `{"join":"addressed","addr":1,"silent":false,"last_ack":"0x06","alarms":{"pairing":false,"comms_loss":false,"starvation":false}}` (alarms latched until explicitly cleared) |
+| ESP32 → HA | `slytherm/state/cop_proxy` | **retained** record-only #143 telemetry JSON: `{"bucketC":3,"buckets":[{"oat":-12,"runS":8130,"degH":61.2,"ddph":1.13},…]}` — per-3 °C-OAT-bucket HP-heat runtime, indoor−outdoor degree-hours, and the degree-days-per-runtime-hour proxy ([`13-dual-fuel-control-research.md`](13-dual-fuel-control-research.md) §5); feeds nothing back into control this season |
 | ESP32 → HA | `slytherm/state/fault` | code/text |
 | ESP32 → HA | `slytherm/availability` | `online` / `offline` (MQTT **Last Will** = `offline`) |
 

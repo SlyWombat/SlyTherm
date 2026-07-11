@@ -10,6 +10,7 @@
 // Pure C++17, no Arduino dependencies.
 
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace dettson {
@@ -65,6 +66,56 @@ constexpr float    kEscalationDroopC        = 1.0f;   // droop below setpoint...
 constexpr uint32_t kEscalationMinS          = 1800;   // ...for >=30 min at >=95% HP demand -> stage gas
 constexpr float    kEscalationHpDemandPct   = 95.0f;
 constexpr uint32_t kDeescalationMinS        = 3600;   // stage back after 60 min + OAT above balance + hyst
+
+// ---------- Economic switchover (DualFuelArbiter; issue #143, docs/13 §1) ----------
+// Break-even COP* = elec$/kWh × kGasKwhPerM3 × AFUE ÷ gas$/m3: gas heat costs
+// gas$/m3 ÷ (kGasKwhPerM3 × AFUE) per kWh-thermal, the HP costs elec$/kWh ÷
+// COP(OAT) — run the HP whenever COP(OAT) > COP*. Identical to docs/13 §1's
+// per-therm form (COP* = elec$ × 29.3 × AFUE ÷ gas$/therm) because
+// 1 therm = 100,000 BTU = 29.307 kWh = kGasM3PerTherm m³.
+//
+// Canonical gas unit is $/m³ (Ontario bills in m³). Energy content: 1 m³ of
+// pipeline natural gas ≈ 38.0 MJ HHV ≈ 10.55 kWh (Enbridge billing heating
+// value; varies ±2% month to month — the price uncertainty dwarfs it).
+// Converting a $/therm price: $/m³ = $/therm ÷ kGasM3PerTherm (≈ ÷2.778).
+//
+// DEFAULT OFF: heating logic is unvalidatable until winter; when off the
+// arbiter runs today's fixed balancePointC. Prices are placeholders until HA
+// publishes real ones (retained slytherm/cmd/energy_prices, NVS-persisted);
+// use the ALL-IN marginal rates (energy + delivery + carbon), not the bare
+// commodity charge — the marginal cost is what switchover arbitrates.
+constexpr bool   kDualFuelEconomicEnabledDefault = false;
+constexpr float  kAfueDefault           = 0.95f;   // condensing furnace nameplate
+constexpr float  kElecPricePerKwhDefault = 0.15f;  // $/kWh placeholder (ON TOU midband)
+constexpr float  kGasPricePerM3Default  = 0.45f;   // $/m3 placeholder (ON all-in ballpark)
+constexpr float  kEnergyPriceMax        = 10.0f;   // sanity ceiling on either price
+constexpr float  kAfueMin               = 0.50f;   // plausibility band on AFUE
+constexpr float  kGasKwhPerM3           = 10.55f;  // HHV energy content, see above
+constexpr float  kKwhPerTherm           = 29.307f; // 100,000 BTU
+constexpr float  kGasM3PerTherm         = kKwhPerTherm / kGasKwhPerM3;  // ~2.778
+// Seed COP(OAT) curve: piecewise-linear points, oatC strictly increasing, COP
+// non-decreasing; flat extrapolation beyond the ends. PLACEHOLDERS shaped from
+// typical cold-climate ASHP (ccASHP/NEEP-class) published ratings — COP ~3.6
+// at the +8.3 °C (47 °F) rating point, ~2.4 near -8.3 °C (17 °F), tailing to
+// ~1.4 at -30 °C — pending the installed unit's (FLEXX) submittal data and the
+// #143 record-only field learning below (CopLearner). NOT field truth yet.
+struct CopPoint { float oatC; float cop; };
+constexpr size_t kCopCurvePoints = 5;
+constexpr CopPoint kCopCurveSeed[kCopCurvePoints] = {
+    {-30.0f, 1.4f}, {-20.0f, 1.8f}, {-10.0f, 2.3f}, {0.0f, 2.9f}, {8.3f, 3.6f}};
+
+// ---------- COP proxy learning (CopLearner; issue #143, docs/13 §5) ----------
+// RECORD-ONLY: per-OAT-bucket degree-days-per-runtime-hour proxy from HP-heat
+// runtime vs indoor-outdoor delta. Telemetry only ([copx] telnet line +
+// retained slytherm/state/cop_proxy); it does NOT correct the COP table —
+// that closes after a season of data (see CopLearner.h "correction seam").
+constexpr float    kCopBucketWidthC   = 3.0f;
+constexpr float    kCopBucketMinOatC  = -33.0f;  // buckets span -33..+18 C
+constexpr size_t   kCopBucketCount    = 17;
+constexpr uint32_t kCopTickMaxGapS    = 60;      // stalled-loop gap cap per tick
+constexpr uint32_t kCopSaveMinS       = 900;     // NVS write throttle (flash wear)
+constexpr uint32_t kCopPublishMinS    = 300;     // retained MQTT republish cadence
+constexpr uint32_t kCopLogMinS        = 600;     // [copx] telnet line cadence
 
 // ---------- Gas modulation (GasShaper) ----------
 constexpr float    kGasFloorPct             = 40.0f;  // Chinook low fire; valid demand is 0 or 40-100

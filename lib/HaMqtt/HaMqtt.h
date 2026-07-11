@@ -49,6 +49,10 @@ constexpr const char* kCmdHold           = SLYTHERM_TOPIC_PREFIX "cmd/hold";  //
 constexpr const char* kCmdEmHeat         = SLYTHERM_TOPIC_PREFIX "cmd/em_heat";  // switch "ON"/"OFF" (G15)
 constexpr const char* kCmdLockClear      = SLYTHERM_TOPIC_PREFIX "cmd/lock_clear";  // forgotten-PIN recovery (issue #45)
 constexpr const char* kCmdNextTarget     = SLYTHERM_TOPIC_PREFIX "cmd/next_target";  // smart recovery (issue #50)
+// #143: retained energy prices for the economic switchover — HA publishes
+// from its energy config (or a TOU automation) so prices survive our reboots
+// at the broker AND in NVS; see parseEnergyPricesJson().
+constexpr const char* kCmdEnergyPrices   = SLYTHERM_TOPIC_PREFIX "cmd/energy_prices";
 
 // HA -> ESP32 (remote-sensor contract; see sensorStateTopic() for per-id state)
 constexpr const char* kConfigSensors     = SLYTHERM_TOPIC_PREFIX "config/sensors";  // retained roster
@@ -76,6 +80,8 @@ constexpr const char* kStateEmHeat              = SLYTHERM_TOPIC_PREFIX "state/e
 constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/changeover_reason";
 constexpr const char* kStateLock                = SLYTHERM_TOPIC_PREFIX "state/lock";  // JSON, see lockStateJson()
 constexpr const char* kStateFault               = SLYTHERM_TOPIC_PREFIX "state/fault";
+// #143: retained record-only COP-proxy telemetry (CopLearner::proxyJson()).
+constexpr const char* kStateCopProxy            = SLYTHERM_TOPIC_PREFIX "state/cop_proxy";
 constexpr const char* kAvailability             = SLYTHERM_TOPIC_PREFIX "availability";  // LWT = offline
 
 // Diagnostic entities listed in docs/06 "Entities" without an explicit topic-map
@@ -287,6 +293,19 @@ constexpr uint32_t kNextTargetMaxInS = 7 * 86400;
 // (fraction truncated). Unknown extra keys ignored. Rejection leaves out
 // zeroed — never a half-applied target.
 bool parseNextTargetJson(const char* json, NextTarget& out);
+
+// ---------- Energy prices (issue #143; docs/13 §1) ----------
+// slytherm/cmd/energy_prices (RETAINED): {"elecKwh":0.15,"gasM3":0.45} —
+// ALL-IN marginal $/kWh electricity and $/m3 gas (Ontario bills in m3; a
+// $/therm price converts via ÷kGasM3PerTherm, see DettsonConfig.h). Both keys
+// REQUIRED, each a finite number in (0, kEnergyPriceMax]. Same scanner limits
+// as parseSensorJson; unknown extra keys ignored; rejection leaves out zeroed
+// — a rejected payload must never move the switchover point.
+struct EnergyPrices {
+  float elecPerKwh = 0.0f;
+  float gasPerM3 = 0.0f;
+};
+bool parseEnergyPricesJson(const char* json, EnergyPrices& out);
 
 // ---------- Remote UiIntent (issue #104; docs/11 "Override-with-hold flow") ----------
 // Wire mirror of ui::IntentType / ui::UiIntent (lib/UiModel) — HaMqtt must not

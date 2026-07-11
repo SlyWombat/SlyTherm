@@ -2,7 +2,12 @@
 // OAT lockout bands, invalid-config rejection, escalation timing and
 // de-escalation gating, OAT-invalid fail-cold, defrost temper request shape
 // + cap, mutual exclusion / boot state.
+// #143 additions: break-even COP* arithmetic (docs/13 §1 worked example),
+// COP(OAT) interpolation, economic balance point clamped inside the safe
+// band, hard floors never violated with economics ON, price/curve validation,
+// and OFF-by-default equivalence with the fixed balance point.
 #include <unity.h>
+#include <cmath>
 #include "DualFuelArbiter.h"
 #include "DettsonConfig.h"
 
@@ -292,6 +297,149 @@ static void test_mutual_exclusion_single_source_always() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #143 economic switchover (docs/13 §1)
+// ---------------------------------------------------------------------------
+
+static void test_break_even_cop_worked_example() {
+  // docs/13 §1: COP* = elec$ × 29.3 × AFUE ÷ gas$/therm ≈ 2.7-2.8 at
+  // $0.15/kWh, $1.50/therm, 0.95 AFUE. Our canonical unit is $/m3, so the
+  // therm price converts via kGasM3PerTherm (energy content, DettsonConfig.h).
+  const float gasPerM3 = 1.50f / kGasM3PerTherm;      // ≈ $0.540/m3
+  const float copStar = DualFuelArbiter::breakEvenCop(0.15f, gasPerM3, 0.95f);
+  TEST_ASSERT_TRUE(copStar > 2.7f && copStar < 2.85f);
+  TEST_ASSERT_FLOAT_WITHIN(0.02f, 2.784f, copStar);
+  // Identity with the per-therm form: elec$ × kKwhPerTherm × AFUE ÷ gas$/therm.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.15f * kKwhPerTherm * 0.95f / 1.50f, copStar);
+}
+
+static void test_cop_curve_interpolation_and_flat_ends() {
+  DualFuelArbiter arb;  // seed curve: (-30,1.4)..(8.3,3.6)
+  // Flat extrapolation beyond the end points.
+  TEST_ASSERT_EQUAL_FLOAT(kCopCurveSeed[0].cop, arb.copAtOat(-40.0f));
+  TEST_ASSERT_EQUAL_FLOAT(kCopCurveSeed[kCopCurvePoints - 1].cop, arb.copAtOat(15.0f));
+  // Exact points.
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.3f, arb.copAtOat(-10.0f));
+  // Segment midpoints: (-30,1.4)-(-20,1.8) at -25 -> 1.6; (-10,2.3)-(0,2.9)
+  // at -5 -> 2.6.
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.6f, arb.copAtOat(-25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.6f, arb.copAtOat(-5.0f));
+}
+
+static void test_economic_balance_point_from_default_prices() {
+  DualFuelArbiter arb;  // defaults: $0.15/kWh, $0.45/m3, AFUE 0.95
+  // COP* = 0.15 × 10.55 × 0.95 / 0.45 = 3.341, crossing the seed curve in
+  // the (0,2.9)-(8.3,3.6) segment at ~+5.2 C — inside [-8, 10], no clamp.
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 3.341f, arb.breakEvenCop());
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 5.23f, arb.economicBalancePointC());
+}
+
+static void test_economic_balance_clamped_to_safe_band() {
+  // Cheap electricity: COP* below the whole curve -> switchover would fall
+  // to -inf; it must clamp at the CAPACITY floor (balancePointC), because
+  // below it the HP cannot carry the load regardless of price.
+  DualFuelConfig cheap;
+  cheap.economicEnabled = true;
+  cheap.elecPricePerKwh = 0.02f;  // COP* ≈ 0.45 < curve min 1.4
+  DualFuelArbiter arbCheap(cheap);
+  TEST_ASSERT_EQUAL_FLOAT(cheap.balancePointC, arbCheap.economicBalancePointC());
+
+  // Expensive electricity: COP* above the whole curve -> HP never economic;
+  // clamps at the gas-lockout ceiling (auxMaxOatC), never beyond.
+  DualFuelConfig dear;
+  dear.economicEnabled = true;
+  dear.elecPricePerKwh = 1.0f;  // COP* ≈ 22 > curve max 3.6
+  DualFuelArbiter arbDear(dear);
+  TEST_ASSERT_EQUAL_FLOAT(dear.auxMaxOatC, arbDear.economicBalancePointC());
+}
+
+static void test_economic_off_by_default_keeps_fixed_balance() {
+  DualFuelConfig cfg;
+  TEST_ASSERT_FALSE(cfg.economicEnabled);  // winter task: ships OFF
+  DualFuelArbiter arb;
+  // Effective balance is the fixed one...
+  TEST_ASSERT_EQUAL_FLOAT(kBalancePointC, arb.effectiveBalancePointC());
+  // ...so at OAT 0 (below the ~+5.2 economic balance but above -8) the HP
+  // still runs — economics must not leak into the pick while disabled.
+  TEST_ASSERT_TRUE(arb.step(hpCall(0.0f), 10).source == HeatSource::kHeatPump);
+}
+
+static void test_economic_switchover_moves_preference_with_hysteresis() {
+  DualFuelConfig cfg;
+  cfg.economicEnabled = true;  // defaults -> economic balance ≈ +5.2 C
+  DualFuelArbiter arb(cfg);
+  uint32_t t = 0;
+  // Below the economic balance: gas preferred even though OAT is far above
+  // the fixed -8 capacity floor.
+  TEST_ASSERT_TRUE(arb.step(hpCall(0.0f), t += 10).source == HeatSource::kGas);
+  // Inside the hysteresis band (5.2..7.2): still gas — no chatter.
+  TEST_ASSERT_TRUE(arb.step(hpCall(6.5f), t += 10).source == HeatSource::kGas);
+  // Clears balance + hyst: HP.
+  TEST_ASSERT_TRUE(arb.step(hpCall(7.5f), t += 10).source == HeatSource::kHeatPump);
+  // Dips back into the band: still HP.
+  TEST_ASSERT_TRUE(arb.step(hpCall(6.0f), t += 10).source == HeatSource::kHeatPump);
+}
+
+static void test_economic_mode_never_violates_hard_floors() {
+  // Whatever the prices say, the lockouts win: sweep both price extremes
+  // across the full OAT range and assert the floors hold at every step.
+  for (int priceCase = 0; priceCase < 2; ++priceCase) {
+    DualFuelConfig cfg;
+    cfg.economicEnabled = true;
+    cfg.elecPricePerKwh = priceCase == 0 ? 0.02f : 1.0f;  // HP-always / gas-always
+    DualFuelArbiter arb(cfg);
+    uint32_t t = 0;
+    for (float oat = -35.0f; oat <= 20.0f; oat += 0.5f) {
+      const DualFuelOutput out = arb.step(hpCall(oat), t += 600);
+      if (oat < cfg.compressorMinOatC)
+        TEST_ASSERT_TRUE(out.source != HeatSource::kHeatPump);  // lockout floor
+      if (oat > cfg.auxMaxOatC)
+        TEST_ASSERT_TRUE(out.source != HeatSource::kGas);       // gas lockout
+      TEST_ASSERT_FALSE(out.noSourcePermittedAlarm);
+    }
+    // The economic balance itself stayed inside the safe band.
+    TEST_ASSERT_TRUE(arb.economicBalancePointC() >= cfg.balancePointC);
+    TEST_ASSERT_TRUE(arb.economicBalancePointC() <= cfg.auxMaxOatC);
+  }
+}
+
+static void test_economic_config_validation() {
+  DualFuelConfig cfg;  // defaults valid
+  TEST_ASSERT_TRUE(DualFuelArbiter::configValid(cfg));
+
+  DualFuelConfig bad = cfg;
+  bad.elecPricePerKwh = 0.0f;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.elecPricePerKwh = -0.15f;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.gasPricePerM3 = kEnergyPriceMax + 1.0f;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.gasPricePerM3 = NAN;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.afue = 0.3f;   // below the plausibility band
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.afue = 1.2f;   // >100% on HHV-based AFUE is junk
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.copCurve[2].oatC = bad.copCurve[1].oatC;  // not strictly increasing
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.copCurve[3].cop = bad.copCurve[2].cop - 0.5f;  // COP decreasing
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+  bad = cfg; bad.copCurve[0].cop = 0.0f;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+
+  // Economics fields are validated even with the mode OFF: enabling later
+  // must never re-discover junk at runtime.
+  bad = cfg; bad.economicEnabled = false; bad.gasPricePerM3 = -1.0f;
+  TEST_ASSERT_FALSE(DualFuelArbiter::configValid(bad));
+
+  // setConfig keeps the old config + flags the alarm, same as other rejects.
+  DualFuelArbiter arb;
+  bad = cfg; bad.elecPricePerKwh = NAN;
+  TEST_ASSERT_FALSE(arb.setConfig(bad));
+  TEST_ASSERT_EQUAL_FLOAT(kElecPricePerKwhDefault, arb.config().elecPricePerKwh);
+  TEST_ASSERT_TRUE(arb.step(hpCall(-5.0f), 10).configRejectedAlarm);
+}
+
 static void test_defaults_match_canonical_config() {
   DualFuelConfig cfg;
   TEST_ASSERT_EQUAL_FLOAT(kBalancePointC, cfg.balancePointC);
@@ -304,6 +452,15 @@ static void test_defaults_match_canonical_config() {
   TEST_ASSERT_EQUAL_UINT32(kDeescalationMinS, cfg.deescalationMinS);
   TEST_ASSERT_EQUAL_FLOAT(kDefrostTemperHeatPct, cfg.defrostTemperHeatPct);
   TEST_ASSERT_EQUAL_UINT32(kDefrostTemperMaxS, cfg.defrostTemperMaxS);
+  // #143 economics defaults (OFF by default — winter validation task).
+  TEST_ASSERT_FALSE(cfg.economicEnabled);
+  TEST_ASSERT_EQUAL_FLOAT(kElecPricePerKwhDefault, cfg.elecPricePerKwh);
+  TEST_ASSERT_EQUAL_FLOAT(kGasPricePerM3Default, cfg.gasPricePerM3);
+  TEST_ASSERT_EQUAL_FLOAT(kAfueDefault, cfg.afue);
+  for (size_t i = 0; i < kCopCurvePoints; ++i) {
+    TEST_ASSERT_EQUAL_FLOAT(kCopCurveSeed[i].oatC, cfg.copCurve[i].oatC);
+    TEST_ASSERT_EQUAL_FLOAT(kCopCurveSeed[i].cop, cfg.copCurve[i].cop);
+  }
   TEST_ASSERT_TRUE(DualFuelArbiter::configValid(cfg));
 }
 
@@ -325,6 +482,14 @@ int main() {
   RUN_TEST(test_defrost_temper_shape_and_cap);
   RUN_TEST(test_temper_max_capped_at_canonical_constant);
   RUN_TEST(test_mutual_exclusion_single_source_always);
+  RUN_TEST(test_break_even_cop_worked_example);
+  RUN_TEST(test_cop_curve_interpolation_and_flat_ends);
+  RUN_TEST(test_economic_balance_point_from_default_prices);
+  RUN_TEST(test_economic_balance_clamped_to_safe_band);
+  RUN_TEST(test_economic_off_by_default_keeps_fixed_balance);
+  RUN_TEST(test_economic_switchover_moves_preference_with_hysteresis);
+  RUN_TEST(test_economic_mode_never_violates_hard_floors);
+  RUN_TEST(test_economic_config_validation);
   RUN_TEST(test_defaults_match_canonical_config);
   return UNITY_END();
 }

@@ -351,6 +351,28 @@ bool parseNextTargetJson(const char* json, NextTarget& out) {
   return true;
 }
 
+bool parseEnergyPricesJson(const char* json, EnergyPrices& out) {
+  out = EnergyPrices{};
+  if (json == nullptr) return false;
+  if (*skipWs(json) != '{') return false;
+
+  float elec = 0.0f, gas = 0.0f;
+  const char* e = findValue(json, "elecKwh");
+  if (e == nullptr || !numberToken(e, elec) || elec <= 0.0f ||
+      elec > kEnergyPriceMax) {
+    return false;
+  }
+  const char* g = findValue(json, "gasM3");
+  if (g == nullptr || !numberToken(g, gas) || gas <= 0.0f ||
+      gas > kEnergyPriceMax) {
+    return false;
+  }
+
+  out.elecPerKwh = elec;  // assign only after every gate passed
+  out.gasPerM3 = gas;
+  return true;
+}
+
 bool parseRemoteIntentJson(const char* json, RemoteIntent& out) {
   out = RemoteIntent{};
   if (json == nullptr) return false;

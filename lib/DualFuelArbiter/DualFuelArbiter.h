@@ -9,6 +9,13 @@
 //
 // Policy (docs/05 defaults table, docs/04 §4):
 //   - balance point with hysteresis: below -> gas preferred;
+//   - #143 economic switchover (docs/13 §1, default OFF): the balance point
+//     becomes COMPUTED — the OAT where COP(OAT) crosses the break-even
+//     COP* = elec$/kWh × kGasKwhPerM3 × AFUE ÷ gas$/m3 — clamped inside
+//     [balancePointC, auxMaxOatC]. Economics only ever moves switchover
+//     WITHIN the thermally safe band: balancePointC keeps its role as the
+//     capacity floor (below it the HP cannot carry the load regardless of
+//     price) and both hard lockouts stay untouched downstream;
 //   - low-OAT compressor lockout, high-OAT aux/gas lockout;
 //   - config validation (hard rule): reject lockouts leaving any OAT band
 //     with no permitted heat source;
@@ -37,6 +44,22 @@ struct DualFuelConfig {
   uint32_t deescalationMinS    = kDeescalationMinS;
   float    defrostTemperHeatPct = kDefrostTemperHeatPct;
   uint32_t defrostTemperMaxS   = kDefrostTemperMaxS;  // hard-capped at the constant
+
+  // #143 economic switchover (docs/13 §1). OFF by default — winter task;
+  // when off, balancePointC alone decides (today's behavior, bit-for-bit).
+  // When on, balancePointC is reinterpreted as the CAPACITY balance point:
+  // the hard floor economics can never move switchover below.
+  bool     economicEnabled  = kDualFuelEconomicEnabledDefault;
+  float    elecPricePerKwh  = kElecPricePerKwhDefault;  // $/kWh, all-in marginal
+  float    gasPricePerM3    = kGasPricePerM3Default;    // $/m3, all-in marginal
+  float    afue             = kAfueDefault;
+  // COP(OAT) piecewise-linear curve: oatC strictly increasing, cop finite,
+  // positive and non-decreasing (configValid enforces). Seed values are
+  // nameplate-shaped placeholders (see DettsonConfig.h) pending the installed
+  // unit's data + the #143 CopLearner field record.
+  CopPoint copCurve[kCopCurvePoints] = {
+      kCopCurveSeed[0], kCopCurveSeed[1], kCopCurveSeed[2],
+      kCopCurveSeed[3], kCopCurveSeed[4]};
 };
 
 struct DualFuelInputs {
@@ -75,6 +98,27 @@ class DualFuelArbiter {
   // Rejects (returns false, keeps current config, flags alarm) when invalid.
   bool setConfig(const DualFuelConfig& cfg);
   const DualFuelConfig& config() const { return cfg_; }
+
+  // ---- #143 economics (pure arithmetic, unit-tested; docs/13 §1) ----
+  // Break-even COP*: the HP is cheaper than gas exactly when COP(OAT) > COP*.
+  // COP* = elecPerKwh × kGasKwhPerM3 × afue ÷ gasPerM3 (per-m3 form of the
+  // docs/13 per-therm arithmetic; equivalent via 1 therm = kGasM3PerTherm m3).
+  static float breakEvenCop(float elecPerKwh, float gasPerM3, float afue);
+  float breakEvenCop() const {
+    return breakEvenCop(cfg_.elecPricePerKwh, cfg_.gasPricePerM3, cfg_.afue);
+  }
+  // Piecewise-linear COP(OAT) from cfg_.copCurve; flat beyond the end points.
+  float copAtOat(float oatC) const;
+  // OAT where COP(OAT) crosses COP*, CLAMPED to the thermally safe band
+  // [balancePointC, auxMaxOatC] — economics never moves switchover below the
+  // capacity floor or above the gas lockout. COP* below the whole curve
+  // (cheap electricity) clamps low; above it (cheap gas) clamps high.
+  float economicBalancePointC() const;
+  // The balance point step() actually uses: economic when enabled, else the
+  // fixed configured one — the ONE seam the #143 economics enters through.
+  float effectiveBalancePointC() const {
+    return cfg_.economicEnabled ? economicBalancePointC() : cfg_.balancePointC;
+  }
 
   // Call once per control tick with monotonic nowS.
   DualFuelOutput step(const DualFuelInputs& in, uint32_t nowS);
