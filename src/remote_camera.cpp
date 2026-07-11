@@ -45,6 +45,38 @@ constexpr size_t kJpgOutBytes = 1024 * 1024;
 constexpr uint16_t kHttpPort = 8080;
 constexpr uint32_t kStreamMinIntervalMs = 100;  // ~10 fps cap on /stream
 
+// Round-4 memory hardening (#150 OOM fix). The big camera buffers already live
+// in PSRAM and gJpgOut is reused, but SERVING through the WireGuard tunnel is
+// INTERNAL-RAM heavy: lwIP TCP pbufs + mbedtls encryption buffers + the listen
+// backlog (httpTask is single-threaded, so extra concurrent connections queue
+// in lwIP). Under a 3-stream + rapid-snapshot hammer, internal heap cratered
+// from ~74KB idle to 21,636 B and allocations panicked. Defenses:
+//  - refuse to start a serve (or continue a stream) below a heap floor -> 503
+//  - bound concurrency: one serve at a time; extras get a fast 503 and a tiny
+//    lwIP listen backlog so they can't pile up RAM
+//  - smaller snapshots (half-res q60) so peak transfer/buffer pressure is ~4x
+//    lower than the old 606KB full-res q75 outlier
+//  - THROTTLED sends: the tunnel push (lwIP pbufs + WG/mbedtls crypto) is what
+//    actually drains internal RAM, and it happens AFTER the start gate — so
+//    sendAll chunks small, yields to let lwIP drain ACKs/free pbufs between
+//    chunks, and HARD-ABORTS mid-send if internal heap hits a hard floor.
+//    Tiered thresholds: start-serve > continue-stream > send-abort.
+// The real OOM victim under the hammer is the P4<->C6 WiFi-over-SDIO driver:
+// at ~21KB internal it asserted in sdio_rx_get_buffer (couldn't get an RX
+// buffer for the incoming connection flood). So the camera must leave the
+// WiFi/SDIO stack a healthy internal reserve at ALL times, INCLUDING the
+// momentary per-frame send dip. Levers: (1) small stream frames (quarter-res)
+// so the dip is shallow; (2) guard floors high enough that heap never nears
+// the SDIO panic point. httpTask is single-threaded (one serve at a time); the
+// hammer's extra connections are refused via the tiny backlog.
+constexpr uint32_t kServeStartHeap    = 50 * 1024;  // gate to BEGIN a serve
+constexpr uint32_t kStreamContinueHeap = 40 * 1024; // per-frame: stop a stream below this
+constexpr uint32_t kSendAbortHeap     = 34 * 1024;  // hard-abort a send in progress
+constexpr size_t   kSendChunk         = 4096;       // per write() — finer heap-abort granularity
+constexpr uint8_t  kHttpBacklog       = 1;          // lwIP listen backlog (was default 4)
+
+inline uint32_t internalFree() { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL); }
+
 // AE follow-up (host-side loop; the sensor has no working internal AEC):
 // register semantics per Linux drivers/media/i2c/ov02c10.c — exposure is a
 // 16-bit line count at 0x3501/02 (max VTS-8), analog gain is a 16-bit value
@@ -124,10 +156,19 @@ jpeg_down_sampling_type_t gSubSample = JPEG_DOWN_SAMPLING_YUV420;  // demoted to
 // PPA half-scale 536x960 frame (input cropped 1080->1072 rows so the rotated
 // scaled width stays a multiple of 8 for the JPEG encoder) while snapshots
 // keep full 1080x1920.
+// Snapshot = half-res (536x960); stream = quarter-res (264x480) so its
+// per-frame send dip is shallow (round-4 SDIO panic was the deep half-res dip
+// coinciding with the WiFi RX flood). PPA rotates 90 then scales; output width
+// must be a multiple of 8, so the input rows are cropped to keep it aligned:
+// half  -> crop 1080->1072 (=2*536), out 536x960
+// quarter-> crop 1080->1056 (=4*264), out 264x480
 constexpr int kHalfW = 536, kHalfH = 960;
-constexpr size_t kHalfBytes = (size_t)kHalfW * kHalfH * 2;  // 1,029,120 = 128*8040
+constexpr size_t kHalfBytes = (size_t)kHalfW * kHalfH * 2;      // 1,029,120 = 128*8040
+constexpr int kQuartW = 264, kQuartH = 480;
+constexpr size_t kQuartBytes = (size_t)kQuartW * kQuartH * 2;   // 253,440 = 128*1980
 uint8_t* gHalfBuf = nullptr;
-bool gHalfBroken = false;        // runtime fallback to full-res if the half path fails
+uint8_t* gQuartBuf = nullptr;
+bool gScaleBroken = false;       // runtime fallback to full-res if a scaled PPA path fails
 
 // ---- SCCB (all traffic confined to begin()) ----
 bool wr(uint16_t reg, uint8_t val) {
@@ -356,6 +397,8 @@ bool initHw() {
       if (!gRotBuf) { telnet_log::logf("[cam] rot buf alloc FAILED - serving unrotated"); }
       gHalfBuf = (uint8_t*)heap_caps_aligned_calloc(128, 1, kHalfBytes,
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      gQuartBuf = (uint8_t*)heap_caps_aligned_calloc(128, 1, kQuartBytes,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     } else {
       telnet_log::logf("[cam] PPA register FAILED: 0x%x - serving unrotated", ep);
       gPpa = nullptr;
@@ -513,22 +556,25 @@ void captureTask(void*) {
       telnet_log::logf("[cam] capture STALLED at %lu frames", (unsigned long)f);
     }
     lastF = f;
-    // AE observability: mean luma + current AE state, every 30s.
+    // AE observability + round-4 heap telemetry: mean luma, AE state, and the
+    // internal-RAM free + all-time low watermark (the OOM floor is visible here).
     static uint32_t sLumaTick = 0;
     if (++sLumaTick >= 6 && gSeq != 0) {
       sLumaTick = 0;
-      telnet_log::logf("[cam] mean luma %lu/63 exp=%u gain=%u/16x (frame %lu)",
-                       (unsigned long)meanLuma(), gAeExp, gAeGain, (unsigned long)gSeq);
+      telnet_log::logf("[cam] mean luma %lu/63 exp=%u gain=%u/16x heap_int=%lu low=%lu (frame %lu)",
+                       (unsigned long)meanLuma(), gAeExp, gAeGain,
+                       (unsigned long)internalFree(),
+                       (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                       (unsigned long)gSeq);
     }
   }
 }
 
 // ---- JPEG encode the latest published frame; returns size (0 = failure).
-// quality: snapshots use 75 at full 1080x1920; the MJPEG stream uses q60 at
-// PPA half-scale 536x960 (halfRes) — with AE running, well-exposed full-res
-// frames hit ~600KB at q75 / ~320KB at q45, capping the stream at ~2fps
-// through the ~7Mbps WG tunnel. Half-res lands well under 160KB => 5+fps. ----
-uint32_t encodeLatest(uint8_t quality, bool halfRes) {
+// scaleDiv: 1 = full 1080x1920 (rot only), 2 = half 536x960 (snapshot),
+// 4 = quarter 264x480 (stream — small frames keep the per-frame send dip
+// shallow so the WiFi/SDIO stack keeps its internal-RAM reserve, round-4). ----
+uint32_t encodeLatest(uint8_t quality, int scaleDiv) {
   if (gSeq == 0) return 0;
   uint8_t* src = gBuf[gLatest];
   // Invalidate cached lines FIRST: both PPA and the JPEG driver write back
@@ -537,39 +583,47 @@ uint32_t encodeLatest(uint8_t quality, bool halfRes) {
   esp_cache_msync(src, kFrameBytes,
                   ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
 
-  // Rotation follow-up: PPA-rotate the served frame 90 deg CCW into the
-  // portrait buffer (optionally 0.5-scaled for the stream), then encode. On
-  // any PPA failure fall back to the next-simpler proven path so the camera
-  // never goes dark over this.
+  // Pick the scaled output buffer/geometry. Fall back to full-res if a scaled
+  // path is requested but unavailable/broken, so the camera never goes dark.
+  uint8_t* outBuf = gRotBuf; size_t outBytes = kFrameBytes;
+  int outW = kH, outH = kW, inRows = kH; float scale = 1.0f;  // (rotated) full
+  if (scaleDiv == 2 && gHalfBuf && !gScaleBroken) {
+    outBuf = gHalfBuf; outBytes = kHalfBytes; outW = kHalfW; outH = kHalfH;
+    inRows = 2 * kHalfW; scale = 0.5f;
+  } else if (scaleDiv == 4 && gQuartBuf && !gScaleBroken) {
+    outBuf = gQuartBuf; outBytes = kQuartBytes; outW = kQuartW; outH = kQuartH;
+    inRows = 4 * kQuartW; scale = 0.25f;
+  }
+
+  // PPA-rotate the served frame 90 deg CCW into the portrait buffer (scaled for
+  // snapshot/stream). Crop input rows to inRows so the rotated+scaled output
+  // width stays a multiple of 8 for the JPEG encoder. On any PPA failure fall
+  // back to the next-simpler proven path so the camera never goes dark.
   const uint8_t* encSrc = src;
   uint32_t encW = kW, encH = kH;
   if (gPpa && gRotBuf) {
-    const bool half = halfRes && gHalfBuf && !gHalfBroken;
     ppa_srm_oper_config_t o = {};
     o.in.buffer = src;
     o.in.pic_w = kW;  o.in.pic_h = kH;
     o.in.block_w = kW;
-    // Half path: crop 1080 -> 1072 input rows so the rotated+scaled output
-    // width (536) stays a multiple of 8 for the JPEG encoder.
-    o.in.block_h = half ? 2 * kHalfW : kH;
+    o.in.block_h = inRows;
     o.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-    o.out.buffer = half ? gHalfBuf : gRotBuf;
-    o.out.buffer_size = half ? kHalfBytes : kFrameBytes;
-    o.out.pic_w = half ? kHalfW : kH;
-    o.out.pic_h = half ? kHalfH : kW;
+    o.out.buffer = outBuf;
+    o.out.buffer_size = outBytes;
+    o.out.pic_w = outW;
+    o.out.pic_h = outH;
     o.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
     o.rotation_angle = PPA_SRM_ROTATION_ANGLE_90;  // CCW; flips scene upright for this mount
-    o.scale_x = half ? 0.5f : 1.0f;
-    o.scale_y = half ? 0.5f : 1.0f;
+    o.scale_x = scale;
+    o.scale_y = scale;
     o.mode = PPA_TRANS_MODE_BLOCKING;
     esp_err_t ep = ppa_do_scale_rotate_mirror(gPpa, &o);
     if (ep == ESP_OK) {
-      if (half) { encSrc = gHalfBuf; encW = kHalfW; encH = kHalfH; }
-      else      { encSrc = gRotBuf; encW = kH; encH = kW; }
-    } else if (half) {
-      gHalfBroken = true;  // half-scale rejected -> stream full-res from now on
-      telnet_log::logf("[cam] PPA half-scale FAILED: 0x%x - stream falls back to full-res", ep);
-      return encodeLatest(quality, false);
+      encSrc = outBuf; encW = outW; encH = outH;
+    } else if (scaleDiv != 1) {
+      gScaleBroken = true;  // a scaled path failed -> serve full-res from now on
+      telnet_log::logf("[cam] PPA scale/%d FAILED: 0x%x - falling back to full-res", scaleDiv, ep);
+      return encodeLatest(quality, 1);
     } else {
       static bool sWarned = false;
       if (!sWarned) { sWarned = true; telnet_log::logf("[cam] PPA rotate FAILED: 0x%x - serving unrotated", ep); }
@@ -621,20 +675,35 @@ uint32_t encodeLatest(uint8_t quality, bool halfRes) {
 }
 
 // ---- HTTP plumbing ----
-void sendAll(WiFiClient& c, const uint8_t* p, size_t n) {
+// Send with a mid-transmission heap guard. write() blocks on the lwIP send
+// buffer (which bounds per-connection pbufs and paces us to the tunnel rate),
+// so no artificial delay is needed — but between chunks we HARD-ABORT if
+// internal heap hits the send-abort floor (a truncated JPEG is graceful; an
+// OOM panic is not). Returns true only if the whole buffer went out.
+bool sendAll(WiFiClient& c, const uint8_t* p, size_t n) {
   size_t off = 0;
   while (off < n && c.connected()) {
-    size_t chunk = n - off;
-    if (chunk > 8192) chunk = 8192;
+    if (internalFree() < kSendAbortHeap) {
+      telnet_log::logf("[cam] send abort at %u/%u (internal=%lu)",
+                       (unsigned)off, (unsigned)n, (unsigned long)internalFree());
+      return false;
+    }
+    size_t chunk = std::min<size_t>(n - off, kSendChunk);
     size_t w = c.write(p + off, chunk);
     if (w == 0) break;
     off += w;
   }
+  return off == n;
 }
 
 void send403(WiFiClient& c) {
   c.print("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
           "Camera disabled (privacy switch). Publish 1 to slytherm/remote/<id>/cmd/camera to enable.\r\n");
+}
+
+void send503(WiFiClient& c, const char* why) {
+  c.printf("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
+           "Connection: close\r\nRetry-After: 1\r\n\r\n%s\r\n", why);
 }
 
 void sendIndex(WiFiClient& c) {
@@ -652,12 +721,10 @@ void sendIndex(WiFiClient& c) {
 }
 
 void serveSnapshot(WiFiClient& c) {
-  const uint32_t sz = encodeLatest(75, /*halfRes=*/false);
-  if (sz == 0) {
-    c.print("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
-            "Connection: close\r\n\r\nno frame available\r\n");
-    return;
-  }
+  // Round-4: half-res q60 (was full-res q75). ~60KB vs the 606KB peak-pressure
+  // outlier — AE/AWB are already tuned, this just shrinks the served frame.
+  const uint32_t sz = encodeLatest(60, /*scaleDiv=*/2);
+  if (sz == 0) { send503(c, "no frame available"); return; }
   c.printf("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n"
            "Connection: close\r\n\r\n", (unsigned long)sz);
   sendAll(c, gJpgOut, sz);
@@ -671,17 +738,24 @@ void serveStream(WiFiClient& c) {
   uint32_t sent = 0;
   uint32_t lastSeq = 0;
   const uint32_t startMs = millis();
+  bool lowHeap = false;
   while (c.connected() && gEnabled) {
     const uint32_t iterMs = millis();
+    // Round-4: bail cleanly if internal heap has dropped to the continue floor
+    // mid-stream (rather than pushing another encode/send toward OOM). Lower
+    // than the start gate so a lone stream keeps running; a contended one backs
+    // off. sendAll() below also hard-aborts a frame if heap craters further.
+    if (internalFree() < kStreamContinueHeap) { lowHeap = true; break; }
     // wait (bounded) for a frame newer than the last one we sent
     for (int i = 0; i < 50 && gSeq == lastSeq; i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (gSeq == lastSeq) continue;  // still no new frame; re-check the socket
     lastSeq = gSeq;
-    const uint32_t sz = encodeLatest(50, /*halfRes=*/true);  // stream: fps > fidelity (see encodeLatest)
+    const uint32_t sz = encodeLatest(50, /*scaleDiv=*/4);  // quarter-res stream: small frames = shallow heap dip
     if (sz == 0) continue;
     c.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n\r\n",
              (unsigned long)sz);
-    sendAll(c, gJpgOut, sz);
+    // Stop on a failed frame send; still-connected means it was a heap abort.
+    if (!sendAll(c, gJpgOut, sz)) { if (c.connected()) lowHeap = true; break; }
     c.print("\r\n");
     sent++;
     // ~10 fps cap
@@ -690,7 +764,8 @@ void serveStream(WiFiClient& c) {
   }
   const uint32_t secs = (millis() - startMs) / 1000;
   telnet_log::logf("[cam] stream ended: %lu frames in %lus (%s)", (unsigned long)sent,
-                   (unsigned long)secs, gEnabled ? "client closed" : "disabled");
+                   (unsigned long)secs,
+                   lowHeap ? "low-heap floor" : gEnabled ? "client closed" : "disabled");
 }
 
 void handleClient(WiFiClient& c) {
@@ -707,6 +782,18 @@ void handleClient(WiFiClient& c) {
                    wantSnap ? "snapshot" : wantStream ? "stream" : "index");
   if (wantSnap || wantStream) {
     if (!gEnabled) { send403(c); return; }
+    // Round-4 hard concurrency bound: one serve at a time. httpTask is
+    // single-threaded so this normally can't already be set, but if it is
+    // (belt-and-braces), reject fast instead of letting the client hold RAM.
+    if (gClientActive) { send503(c, "camera busy - one client at a time"); return; }
+    // Round-4 heap-floor guard: the panic-stopper. Refuse to begin a serve
+    // when internal RAM is below the start gate; the tunnel serve path would OOM.
+    const uint32_t hf = internalFree();
+    if (hf < kServeStartHeap) {
+      telnet_log::logf("[cam] low-heap 503 (internal=%lu)", (unsigned long)hf);
+      send503(c, "low memory - try again shortly");
+      return;
+    }
     gClientActive = true;
     if (wantSnap) serveSnapshot(c);
     else serveStream(c);
@@ -718,9 +805,13 @@ void handleClient(WiFiClient& c) {
 
 void httpTask(void*) {
   while (!wifi_prov::connected()) vTaskDelay(pdMS_TO_TICKS(500));
-  WiFiServer server(kHttpPort);
+  // Round-4: tiny listen backlog (1) so concurrent connections can't pile up
+  // in lwIP consuming internal RAM while a serve is in progress — extras get
+  // refused at the TCP layer and the client retries.
+  WiFiServer server(kHttpPort, kHttpBacklog);
   server.begin();
-  telnet_log::logf("[cam] http server up on :%u", kHttpPort);
+  server.setNoDelay(true);
+  telnet_log::logf("[cam] http server up on :%u (backlog %u)", kHttpPort, kHttpBacklog);
   for (;;) {
     WiFiClient c = server.accept();
     if (!c) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
