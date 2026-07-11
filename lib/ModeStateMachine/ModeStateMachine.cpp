@@ -186,6 +186,83 @@ void ModeStateMachine::startHold(HoldType t, uint32_t nowS) {
   holdEndS_ = (t == HoldType::kTwoHours)  ? nowS + cfg_.holdShortS
             : (t == HoldType::kFourHours) ? nowS + cfg_.holdLongS
                                           : 0;
+  holdEpochFixPending_ = false;  // a fresh user decision owns the window (#151)
+}
+
+// ----- Hold persistence (issue #151; contract in the header) -----
+
+namespace {
+// Fletcher-16 over every byte after the crc field (the CompressorGuard blob's
+// checksum family — collision-resistant enough for an NVS blob).
+uint16_t holdBlobCrc(const ModeStateMachine::HoldPersistBlob& b) {
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&b);
+  const size_t start =
+      offsetof(ModeStateMachine::HoldPersistBlob, crc) + sizeof(b.crc);
+  uint16_t sum1 = 0, sum2 = 0;
+  for (size_t i = start; i < sizeof(ModeStateMachine::HoldPersistBlob); ++i) {
+    sum1 = static_cast<uint16_t>((sum1 + p[i]) % 255);
+    sum2 = static_cast<uint16_t>((sum2 + sum1) % 255);
+  }
+  return static_cast<uint16_t>((sum2 << 8) | sum1);
+}
+}  // namespace
+
+void ModeStateMachine::saveHold(HoldPersistBlob* out, uint32_t nowS,
+                                uint32_t epochNow) const {
+  if (out == nullptr) return;
+  *out = HoldPersistBlob{};
+  out->magic      = kHoldBlobMagic;
+  out->version    = kHoldBlobVersion;
+  out->type       = static_cast<uint8_t>(hold_);
+  out->remainS    = holdRemainingS(nowS);
+  out->savedMonoS = nowS;
+  out->savedEpoch = epochNow;
+  out->crc        = holdBlobCrc(*out);
+}
+
+bool ModeStateMachine::restoreHold(const HoldPersistBlob& blob, uint32_t nowS) {
+  holdEpochFixPending_ = false;
+  if (blob.magic != kHoldBlobMagic || blob.version != kHoldBlobVersion) return false;
+  if (blob.crc != holdBlobCrc(blob)) return false;
+  if (blob.type > static_cast<uint8_t>(HoldType::kIndefinite)) return false;
+  const HoldType t = static_cast<HoldType>(blob.type);
+  if (t == HoldType::kNone) return false;
+
+  if (t == HoldType::kTwoHours || t == HoldType::kFourHours) {
+    // Monotonic decrement (conservative — see header). A backwards caller
+    // clock counts as zero elapsed, resuming the full saved remainder.
+    const uint32_t elapsed = elapsedS(nowS, blob.savedMonoS);
+    if (blob.remainS <= elapsed) return false;  // served out around the outage
+    hold_ = t;
+    holdEndS_ = nowS + (blob.remainS - elapsed);
+    if (blob.savedEpoch != 0) {
+      holdEpochFixPending_ = true;
+      holdSavedEpochS_     = blob.savedEpoch;
+      holdRemainAtSaveS_   = blob.remainS;
+    }
+  } else {
+    hold_ = t;  // until-next-preset / indefinite restore as-is
+    holdEndS_ = 0;
+  }
+  return true;
+}
+
+bool ModeStateMachine::applyHoldEpochCorrection(uint32_t epochNow, uint32_t nowS) {
+  if (!holdEpochFixPending_) return false;
+  holdEpochFixPending_ = false;  // one-shot
+  if (hold_ != HoldType::kTwoHours && hold_ != HoldType::kFourHours) return false;
+  if (epochNow <= holdSavedEpochS_) return false;  // clock stepped back: keep the
+                                                   // conservative mono resume
+  const uint32_t elapsed = epochNow - holdSavedEpochS_;
+  const uint32_t corrected =
+      holdRemainAtSaveS_ > elapsed ? holdRemainAtSaveS_ - elapsed : 0;
+  if (corrected >= holdRemainingS(nowS)) return false;  // never extend
+  if (corrected == 0) {  // hold served out during the outage
+    hold_ = HoldType::kNone;  // expiry does not revert setpoints (header note)
+    return true;
+  }
+  holdEndS_ = nowS + corrected;
+  return true;
 }
 
 uint32_t ModeStateMachine::holdRemainingS(uint32_t nowS) const {

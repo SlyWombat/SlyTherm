@@ -1671,6 +1671,7 @@ Serving gServing = Serving::kNone;
 // Persist-on-change shadows.
 struct PersistShadow {
   uint8_t mode = 0xFF, priorMode = 0xFF, hold = 0xFF, fan = 0xFF;
+  uint32_t holdEnd = 0;  // #151: timed-hold end anchor (0 for untimed holds)
   float heatSp = NAN, coolSp = NAN;
   bool guardRunning = false;
 } gShadow;
@@ -1918,8 +1919,20 @@ void persistOnChange(uint32_t nowS) {
   const float h = gModeSm->heatSetpoint(), c = gModeSm->coolSetpoint();
   if (h != gShadow.heatSp) { gPrefs.putFloat("hsp", h); gShadow.heatSp = h; }
   if (c != gShadow.coolSp) { gPrefs.putFloat("csp", c); gShadow.coolSp = c; }
+  // #151: hold blob — type + remaining + save-time stamps so a reboot/OTA
+  // restores the hold (setup) and NTP later charges it for the outage. The
+  // end anchor (not remaining) is the change-detect so a ticking countdown
+  // doesn't rewrite NVS every cycle.
   const uint8_t hold = static_cast<uint8_t>(gModeSm->activeHoldType());
-  if (hold != gShadow.hold) { gPrefs.putUChar("hold", hold); gShadow.hold = hold; }
+  const uint32_t holdEnd = gModeSm->holdEndS();
+  if (hold != gShadow.hold || holdEnd != gShadow.holdEnd) {
+    ModeStateMachine::HoldPersistBlob hb;
+    gModeSm->saveHold(&hb, nowS,
+                      clockIsSynced() ? static_cast<uint32_t>(time(nullptr)) : 0);
+    gPrefs.putBytes("holdb", &hb, sizeof(hb));
+    gShadow.hold = hold;
+    gShadow.holdEnd = holdEnd;
+  }
   const uint8_t fan = static_cast<uint8_t>(gFanMode);
   if (fan != gShadow.fan) { gPrefs.putUChar("fan", fan); gShadow.fan = fan; }
 
@@ -2180,6 +2193,15 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   bf.setpointPresent = gSetpointsValidated;
   bf.configCrcOk = gConfigOk;
   gSup->updateBootGate(bf, nowS);
+
+  // ---- #151: one-shot wall-clock outage charge for a restored timed hold ----
+  // Cheap no-op once the pending flag clears (first NTP sync after a restore).
+  if (clockIsSynced() &&
+      gModeSm->applyHoldEpochCorrection(static_cast<uint32_t>(time(nullptr)), nowS)) {
+    Serial.printf("[hold] outage-corrected: type=%u remain=%lus\n",
+                  static_cast<unsigned>(gModeSm->activeHoldType()),
+                  static_cast<unsigned long>(gModeSm->holdRemainingS(nowS)));
+  }
 
   // ---- Vacation hold (#78): eco setpoints override schedule/presence in-window ----
   evaluateVacation(nowS);
@@ -2614,14 +2636,13 @@ void setup() {
         gPrefs.putBytes("fwid", (const void*)d.app_elf_sha256, 8);
         gPrefs.putBool("rui", false);
         ResetLoopBlob z{}; gPrefs.putBytes("rl", &z, sizeof(z));
-        // #87: a fresh firmware flash must NOT resurrect a stale hold pill. Clear
-        // the persisted hold and reset its change-detect shadow so the restore
-        // block below boots with no hold and it re-persists cleanly. A normal
-        // power-cycle (same firmware) keeps the persisted hold and still restores
-        // a legit active hold.
-        gPrefs.putUChar("hold", 0);
-        gShadow.hold = 0xFF;
-        Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch + hold");
+        // #151 SUPERSEDES #87's hold-clear-on-new-firmware: an OTA reboot must
+        // NOT drop the user's active hold (observed 2026-07-11: the 0.5.9 OTA
+        // silently returned an owner-pinned indefinite hold to the schedule).
+        // #87's stale-pill worry is covered structurally now — the hold blob is
+        // magic/version/CRC-guarded, so a firmware whose blob layout changed
+        // bumps kHoldBlobVersion and the restore fails open to no hold.
+        Serial.println("[boot] new firmware -> cleared reset-loop + safe-UI latch");
       } } }
   // Restore the persisted LISTEN capture state (survives power loss so a
   // capture campaign resumes without hands on the glass; set via the LISTEN
@@ -2751,11 +2772,39 @@ void setup() {
       gModeSm->setMode(prior, nowS);
     gModeSm->setMode(mode <= UserMode::kEmergencyHeat ? mode : UserMode::kOff, nowS);
     gModeSm->clearHold();  // the boot setMode() must not fabricate a hold
-    const HoldType hold = static_cast<HoldType>(gPrefs.getUChar("hold", 0));
-    // Timed holds restart their full window — conservative for comfort, and
-    // remaining time is not blob-persisted (decision flagged in the report).
-    if (hold != HoldType::kNone && hold <= HoldType::kIndefinite)
-      gModeSm->startHold(hold, nowS);
+    // #151: restore the hold blob — indefinite/until-next-preset as-is, timed
+    // with remaining decremented by the monotonic elapsed (the outage itself
+    // is charged later by applyHoldEpochCorrection once NTP syncs; see the
+    // control loop). Missing/corrupt blob = no hold (fail open, header note).
+    {
+      ModeStateMachine::HoldPersistBlob hb;
+      bool restored = gPrefs.getBytes("holdb", &hb, sizeof(hb)) == sizeof(hb) &&
+                      gModeSm->restoreHold(hb, nowS);
+      if (!restored) {
+        // One-shot migration from the pre-#151 type-only uchar key (so the
+        // upgrade TO this firmware keeps the hold the old firmware persisted).
+        // Old semantics: timed holds restart their full window — conservative.
+        const HoldType legacy = static_cast<HoldType>(gPrefs.getUChar("hold", 0));
+        if (legacy != HoldType::kNone && legacy <= HoldType::kIndefinite) {
+          gModeSm->startHold(legacy, nowS);
+          // Write the blob NOW: the legacy key is removed below, so without
+          // this a second reboot before any hold change would lose the hold.
+          ModeStateMachine::HoldPersistBlob mig;
+          gModeSm->saveHold(&mig, nowS, 0);
+          gPrefs.putBytes("holdb", &mig, sizeof(mig));
+          restored = true;
+        }
+      }
+      gPrefs.remove("hold");  // legacy key retired (migration above)
+      if (restored)
+        Serial.printf("[hold] restored: type=%u remain=%lus\n",
+                      static_cast<unsigned>(gModeSm->activeHoldType()),
+                      static_cast<unsigned long>(gModeSm->holdRemainingS(nowS)));
+      // Sync the change-detect shadow so a clean boot doesn't rewrite the blob
+      // (an epoch correction later changes holdEndS and re-persists).
+      gShadow.hold = static_cast<uint8_t>(gModeSm->activeHoldType());
+      gShadow.holdEnd = gModeSm->holdEndS();
+    }
     gFanMode = static_cast<hm::FanMode>(gPrefs.getUChar("fan", 0));
     if (gFanMode > hm::FanMode::kCirculate) gFanMode = hm::FanMode::kAuto;
     gSetpointsValidated = true;

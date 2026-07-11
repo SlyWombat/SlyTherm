@@ -519,6 +519,162 @@ static void test_default_hold_type_none_gates_mode_changes_only() {
   TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
 }
 
+// ---------- hold persistence across reboot/OTA (#151) ----------
+
+static void test_hold_blob_none_restores_nothing() {
+  ModeStateMachine a;  // no hold active
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 100, 0);
+  ModeStateMachine sm;
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 5000));
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_hold_blob_roundtrip_indefinite() {
+  ModeStateMachine a = makeRosterSm();
+  a.startHold(HoldType::kIndefinite, 100);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 200, 1700000000u);
+  ModeStateMachine sm = makeRosterSm();
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 999999));  // long outage: indefinite is as-is
+  TEST_ASSERT_EQUAL(HoldType::kIndefinite, sm.activeHoldType());
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 1000000).blockedByHold);
+}
+
+static void test_hold_blob_until_next_preset_restores_and_ends_on_preset() {
+  ModeStateMachine a = makeRosterSm();
+  a.startHold(HoldType::kUntilNextPreset, 100);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 100, 0);
+  ModeStateMachine sm = makeRosterSm();
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 500));
+  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  TEST_ASSERT_TRUE(sm.applyPreset("home", 600).applied);  // preset still ends it
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_hold_blob_timed_decrements_by_monotonic_elapsed() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kFourHours, 1000);        // ends at 15400
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 2000, 0);                        // remain 13400 at save
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 2500));      // clock resumed 500 s past save
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
+  TEST_ASSERT_EQUAL_UINT32(12900, sm.holdRemainingS(2500));
+}
+
+static void test_hold_blob_timed_expired_during_outage() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 0);            // remain 7200
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 0, 0);
+  ModeStateMachine sm;
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 7200));     // served out exactly
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_hold_blob_clock_backwards_resumes_full_remainder() {
+  // The monotonic base persists every 60 s, so a reboot can resume BEHIND
+  // the save stamp: elapsed clamps to zero — full saved remainder, never an
+  // underflowed near-infinite hold.
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 1000);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 1000, 0);                        // remain 7200 saved at 1000
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 950));       // resumed 50 s behind
+  TEST_ASSERT_EQUAL_UINT32(7200, sm.holdRemainingS(950));
+}
+
+static void test_hold_blob_corrupt_rejected() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kIndefinite, 0);
+  ModeStateMachine::HoldPersistBlob good;
+  a.saveHold(&good, 0, 0);
+
+  ModeStateMachine sm;
+  ModeStateMachine::HoldPersistBlob b = good;
+  // Payload flip -> stale crc. (Not 0xFF: Fletcher mod 255 can't see a
+  // 0x00<->0xFF byte swap — the CompressorGuard blob shares this property.)
+  b.remainS ^= 0x5Au;
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 100));
+  b = good;
+  b.type = 200;                                   // out-of-range type -> stale crc
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 100));
+  b = good;
+  b.magic = 0xDEADBEEFu;
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 100));
+  b = good;
+  b.version = static_cast<uint16_t>(ModeStateMachine::kHoldBlobVersion + 1);
+  TEST_ASSERT_FALSE(sm.restoreHold(b, 100));
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());  // fail open = no hold
+  TEST_ASSERT_TRUE(sm.restoreHold(good, 100));    // the pristine blob still works
+  TEST_ASSERT_EQUAL(HoldType::kIndefinite, sm.activeHoldType());
+}
+
+static void test_hold_epoch_correction_charges_outage() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 1000);         // remain 7200
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 1000, 1700000000u);
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 1005));      // mono saw only 5 s of the outage
+  TEST_ASSERT_EQUAL_UINT32(7195, sm.holdRemainingS(1005));
+  // NTP syncs: 3600 s of wall clock actually passed since the save.
+  TEST_ASSERT_TRUE(sm.applyHoldEpochCorrection(1700000000u + 3600u, 1005));
+  TEST_ASSERT_EQUAL_UINT32(3600, sm.holdRemainingS(1005));
+  // One-shot: a later sync changes nothing.
+  TEST_ASSERT_FALSE(sm.applyHoldEpochCorrection(1700000000u + 7000u, 1005));
+  TEST_ASSERT_EQUAL_UINT32(3600, sm.holdRemainingS(1005));
+}
+
+static void test_hold_epoch_correction_expires_hold() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 0);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 0, 1700000000u);
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 10));
+  TEST_ASSERT_TRUE(sm.applyHoldEpochCorrection(1700000000u + 8000u, 10));
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+}
+
+static void test_hold_epoch_correction_never_extends() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 1000);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 1000, 1700000000u);              // remain 7200
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 2000));      // mono charged 1000 s -> 6200
+  // Skewed NTP claims only 500 s passed: 6700 > 6200 would EXTEND — refused.
+  TEST_ASSERT_FALSE(sm.applyHoldEpochCorrection(1700000000u + 500u, 2000));
+  TEST_ASSERT_EQUAL_UINT32(6200, sm.holdRemainingS(2000));
+}
+
+static void test_hold_epoch_correction_cancelled_by_user_change() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 0);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 0, 1700000000u);
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 5));
+  sm.startHold(HoldType::kIndefinite, 10);        // user re-decided post-boot
+  TEST_ASSERT_FALSE(sm.applyHoldEpochCorrection(1700000000u + 9000u, 10));
+  TEST_ASSERT_EQUAL(HoldType::kIndefinite, sm.activeHoldType());
+}
+
+static void test_hold_epoch_correction_needs_saved_epoch() {
+  ModeStateMachine a;
+  a.startHold(HoldType::kTwoHours, 0);
+  ModeStateMachine::HoldPersistBlob b;
+  a.saveHold(&b, 0, 0);                           // clock was unsynced at save
+  ModeStateMachine sm;
+  TEST_ASSERT_TRUE(sm.restoreHold(b, 100));
+  TEST_ASSERT_FALSE(sm.applyHoldEpochCorrection(1700000000u, 100));
+  TEST_ASSERT_EQUAL_UINT32(7100, sm.holdRemainingS(100));  // mono resume kept
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_no_demand);
@@ -558,5 +714,17 @@ int main() {
   RUN_TEST(test_indefinite_hold_ends_only_on_clear);
   RUN_TEST(test_start_hold_none_clears);
   RUN_TEST(test_default_hold_type_none_gates_mode_changes_only);
+  RUN_TEST(test_hold_blob_none_restores_nothing);
+  RUN_TEST(test_hold_blob_roundtrip_indefinite);
+  RUN_TEST(test_hold_blob_until_next_preset_restores_and_ends_on_preset);
+  RUN_TEST(test_hold_blob_timed_decrements_by_monotonic_elapsed);
+  RUN_TEST(test_hold_blob_timed_expired_during_outage);
+  RUN_TEST(test_hold_blob_clock_backwards_resumes_full_remainder);
+  RUN_TEST(test_hold_blob_corrupt_rejected);
+  RUN_TEST(test_hold_epoch_correction_charges_outage);
+  RUN_TEST(test_hold_epoch_correction_expires_hold);
+  RUN_TEST(test_hold_epoch_correction_never_extends);
+  RUN_TEST(test_hold_epoch_correction_cancelled_by_user_change);
+  RUN_TEST(test_hold_epoch_correction_needs_saved_epoch);
   return UNITY_END();
 }

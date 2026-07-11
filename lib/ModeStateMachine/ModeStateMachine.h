@@ -21,7 +21,8 @@
 // until-next-preset hold ends when the next (valid) preset arrives. Timed
 // holds expire by clock (checked in update()/applyPreset()); indefinite
 // holds end only on clearHold(). Timed-hold expiry does NOT revert
-// setpoints — HA owns the schedule and re-publishes the preset.
+// setpoints — HA owns the schedule and re-publishes the preset. Holds
+// survive reboot/OTA via HoldPersistBlob (issue #151; caller owns NVS).
 //
 // AUTO changeover (docs/05 table): swapping to the opposite call requires
 // the trigger sustained >= changeoverSustainS AND >= changeoverDwellS since
@@ -138,11 +139,58 @@ class ModeStateMachine {
 
   // ----- Holds -----
   void startHold(HoldType t, uint32_t nowS);  // kNone behaves as clearHold()
-  void clearHold() { hold_ = HoldType::kNone; }
+  void clearHold() { hold_ = HoldType::kNone; holdEpochFixPending_ = false; }
   // Expiry of timed holds is applied by update()/applyPreset(); this reports
   // the state as of the last of those calls.
   HoldType activeHoldType() const { return hold_; }
   uint32_t holdRemainingS(uint32_t nowS) const;  // timed holds only, else 0
+  // Change-detect anchor for persist-on-change callers: absolute end of a
+  // timed hold in the caller's timebase, 0 for none/until-next-preset/
+  // indefinite (pair with activeHoldType()).
+  uint32_t holdEndS() const {
+    return (hold_ == HoldType::kTwoHours || hold_ == HoldType::kFourHours)
+               ? holdEndS_ : 0;
+  }
+
+  // ----- Hold persistence (issue #151) -----
+  // POD blob, caller owns storage (NVS) — the CompressorGuard::PersistBlob
+  // contract. A timed hold persists its remaining seconds plus two save-time
+  // stamps: savedMonoS (the caller's reboot-surviving monotonic clock) and
+  // savedEpoch (unix seconds; 0 = wall clock unsynced). restoreHold()
+  // decrements remaining by the MONOTONIC elapsed — that timebase undercounts
+  // the outage (docs/04 §2 brownout row), so the hold resumes with at most
+  // its true remainder, never less than truth minus nothing: conservative
+  // toward keeping the user's override. Once the wall clock syncs,
+  // applyHoldEpochCorrection() subtracts the true outage (one-shot; it can
+  // only shorten/expire, never extend). until-next-preset and indefinite
+  // holds restore as-is. A missing/corrupt/unknown-version blob restores NO
+  // hold — fail open to the schedule: the lock fails open to unlocked (#120)
+  // for usability, a hold fails open to "HA's schedule resumes"; both fail
+  // AWAY from privileging stale persisted state over live authority.
+  struct HoldPersistBlob {
+    uint32_t magic   = 0;
+    uint16_t version = 0;
+    uint16_t crc     = 0;  // Fletcher-16 over every byte after this field
+    uint8_t  type    = 0;  // HoldType
+    uint8_t  pad0 = 0, pad1 = 0, pad2 = 0;
+    uint32_t remainS    = 0;  // remaining at save (timed holds only)
+    uint32_t savedMonoS = 0;  // caller monotonic timebase at save
+    uint32_t savedEpoch = 0;  // unix seconds at save; 0 = unsynced
+  };
+  static constexpr uint32_t kHoldBlobMagic   = 0x484C4442u;  // "HLDB"
+  static constexpr uint16_t kHoldBlobVersion = 1;
+
+  void saveHold(HoldPersistBlob* out, uint32_t nowS, uint32_t epochNow) const;
+  // Validates magic/version/crc/type; returns true iff a hold was restored.
+  // A timed hold whose remainder was served out during the outage (per the
+  // monotonic decrement) restores nothing.
+  bool restoreHold(const HoldPersistBlob& blob, uint32_t nowS);
+  // One-shot after restoreHold(): call when the wall clock first syncs to
+  // charge a restored timed hold for the outage the monotonic clock missed.
+  // Returns true iff the hold was shortened or expired. Any startHold()/
+  // clearHold() after the restore cancels the pending correction (the user
+  // re-decided; their new window is authoritative).
+  bool applyHoldEpochCorrection(uint32_t epochNow, uint32_t nowS);
   // Clamped to [kMinSetpointDeltaFloorC, ...]; widening pushes the cool
   // setpoint up if the current pair now violates it. Returns applied delta.
   float setMinSetpointDelta(float deltaC);
@@ -183,6 +231,10 @@ class ModeStateMachine {
   char      activePreset_[kPresetNameMaxLen + 1] = {0};
   HoldType  hold_ = HoldType::kNone;
   uint32_t  holdEndS_ = 0;  // meaningful for timed holds only
+  // #151 restore bookkeeping: pending wall-clock outage correction.
+  bool      holdEpochFixPending_ = false;
+  uint32_t  holdSavedEpochS_     = 0;
+  uint32_t  holdRemainAtSaveS_   = 0;
 
   CallType lastEndedCall_ = CallType::kNone;  // most recently ended call type
   bool     hadHeatEnd_ = false, hadCoolEnd_ = false;
