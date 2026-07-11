@@ -85,6 +85,17 @@ bool SensorFusion::update(uint8_t id, float tempC, Occupancy occ, uint32_t nowS)
   if (!s->hasUpdate || !(tempC == s->lastDistinctTempC)) {
     s->lastDistinctTempC = tempC;
     s->lastChangeS = nowS;
+    // #153: a new flat run begins — snapshot every peer's current RAW value.
+    // Peer movement since this instant is the disagreement evidence for the
+    // stuck test. Raw (not corrected) so a later offset edit on either side
+    // is invisible to the detector, consistent with the raw repeat tracking.
+    s->peerSnapMask = 0;
+    for (size_t j = 0; j < kMaxSensors; ++j) {
+      const Slot& p = slots_[j];
+      if (&p == s || !p.used || !p.hasUpdate) continue;
+      s->peerSnapC[j] = p.tempC;
+      s->peerSnapMask |= static_cast<uint16_t>(1u << j);
+    }
   }
   s->tempC = tempC;
   s->lastUpdateS = nowS;
@@ -166,10 +177,25 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
     } else if (!(s.correctedC() >= kSensorRangeMinC &&
                  s.correctedC() <= kSensorRangeMaxC)) {
       s.faults |= kAlarmRange;  // NaN fails both comparisons -> rejected here
-    } else if (ageOf(nowS, s.lastChangeS) > stuckWindowS_) {
-      // Stuck tracks raw repeats: a constant offset preserves equality, so
-      // this is the corrected-value check too — and an offset edit can
-      // neither trip nor mask the detector (docs/07 G6).
+    } else if (const uint32_t flatAgeS = ageOf(nowS, s.lastChangeS);
+               flatAgeS > stuckCeilingS_ ||
+               (flatAgeS > stuckWindowS_ && peersMovedMajority(s, nowS))) {
+      // Stuck-value policy (#153 redesign). These sensors publish at 0.1 C
+      // steps, so a bit-identical reading for hours is the EXPECTED signature
+      // of a regulated room drifting <0.1 C/h — flatness alone is never a
+      // fault (field: three 07-10 overnight dropouts were exactly this).
+      // Declared stuck only when the flatness is IMPLAUSIBLE:
+      //  (a) flat past the suspect window while a MAJORITY of comparable
+      //      peers moved >= stuckPeerDeltaC_ since this sensor's last change
+      //      — the wedged-driver signature (the house moved, it didn't); or
+      //  (b) flat past the absolute ceiling regardless of peers — the only
+      //      trigger for a single-participant install.
+      // When all participants are flat and mutually consistent (stable house
+      // overnight), nobody's peers moved, so nobody trips (a); and the most-
+      // recently-changed participant can never trip (a), so the peer rule
+      // alone can never drive fusion to kAlarmAllBad. Stuck tracks raw
+      // repeats, so an offset edit can neither trip nor mask the detector
+      // (docs/07 G6).
       s.faults |= kAlarmStuck;
     } else {
       s.live = true;
@@ -314,6 +340,35 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
   return out;
 }
 
+bool SensorFusion::peersMovedMajority(const Slot& s, uint32_t nowS) const {
+  // Comparable peers: fused-relevant remotes (participating, non-local) that
+  // were already reporting when s's flat run began (snapshot exists) and are
+  // currently fresh and in corrected range. The local DS18B20 is deliberately
+  // NOT movement evidence: unit self-heating can swing it while the rooms sit
+  // still, and a false stuck verdict from it would push fusion toward the
+  // degraded rung. A peer's own stuck state is irrelevant here — if it moved,
+  // it isn't flat; if it's flat, it simply counts as not-moved.
+  size_t comparable = 0, moved = 0;
+  for (size_t j = 0; j < kMaxSensors; ++j) {
+    const Slot& p = slots_[j];
+    if (&p == &s || !p.used || p.isLocal || !p.participating || !p.hasUpdate)
+      continue;
+    if (!(s.peerSnapMask & static_cast<uint16_t>(1u << j))) continue;
+    if (ageOf(nowS, p.lastUpdateS) > p.maxAgeS) continue;  // stale: no evidence
+    if (!(p.correctedC() >= kSensorRangeMinC && p.correctedC() <= kSensorRangeMaxC))
+      continue;
+    ++comparable;
+    // 1e-3 headroom: deltas of 0.1 C-quantized floats land within ~1e-5 of
+    // ideal — far below one quantization step, so this can't misclassify.
+    if (std::fabs(p.tempC - s.peerSnapC[j]) + 1e-3f >= stuckPeerDeltaC_) ++moved;
+  }
+  // Strict majority of >=1 comparable peers. Field evidence for majority
+  // (slylog 2026-07-09/10): the basement made lone 0.6 C excursions while the
+  // dining sensor sat legitimately bit-flat for 16 h — one drifting room must
+  // not condemn a flat-but-healthy sensor.
+  return comparable > 0 && moved * 2 > comparable;
+}
+
 bool SensorFusion::coastPlausible(float v) {
   return std::isfinite(v) && v >= kSensorRangeMinC && v <= kSensorRangeMaxC;
 }
@@ -360,6 +415,14 @@ void SensorFusion::setOccupancyWindowS(uint32_t windowS) {
 }
 void SensorFusion::setStuckWindowS(uint32_t windowS) {
   stuckWindowS_ = windowS < kStuckWindowMinS ? kStuckWindowMinS : windowS;
+}
+void SensorFusion::setStuckPeerDeltaC(float c) {
+  if (!(c >= 0.2f)) c = 0.2f;  // two quantization steps; NaN lands here too
+  if (c > 5.0f) c = 5.0f;
+  stuckPeerDeltaC_ = c;
+}
+void SensorFusion::setStuckCeilingS(uint32_t s) {
+  stuckCeilingS_ = s < kStuckWindowMinS ? kStuckWindowMinS : s;
 }
 void SensorFusion::setSlewCPerMin(float cPerMin) {
   slewCPerMin_ = (cPerMin > 0.01f) ? cPerMin : 0.01f;

@@ -39,7 +39,9 @@ enum class SourceTier : uint8_t {
 enum FusionAlarm : uint16_t {
   kAlarmStale         = 1u << 0,
   kAlarmRange         = 1u << 1,  // out of [kSensorRangeMinC, kSensorRangeMaxC] or NaN
-  kAlarmStuck         = 1u << 2,  // zero variance over the stuck window
+  kAlarmStuck         = 1u << 2,  // implausibly flat: bit-identical past the suspect
+                                  // window while peers moved, or past the absolute
+                                  // ceiling (#153 redesign — flat != stuck)
   kAlarmOutlier       = 1u << 3,  // > outlier threshold from live-participant median
   kAlarmLocalDisagree = 1u << 4,  // local vs fused aggregate > kDs18b20DisagreeAlarmC
   kAlarmDegraded      = 1u << 5,  // running on the local fallback alone
@@ -100,7 +102,11 @@ struct SensorStatus {
 // DettsonConfig.h — module-local until promoted to the shared contract.
 constexpr uint32_t kSensorMaxAgeMinS    = 180;
 constexpr uint32_t kSensorMaxAgeMaxS    = 900;
-constexpr uint32_t kStuckWindowDefaultS = 3600;  // zero-variance window (not in docs table)
+// #153: flatness SUSPECT window — past this the sensor is only declared stuck
+// if a majority of comparable peers moved >= kStuckPeerDeltaC since its last
+// change (or, peerless, past kStuckCeilingS). See DettsonConfig.h for the
+// field derivation. Staleness (no messages arriving) is a separate gate.
+constexpr uint32_t kStuckWindowDefaultS = 3600;
 constexpr uint32_t kStuckWindowMinS     = 300;
 
 class SensorFusion {
@@ -167,7 +173,9 @@ class SensorFusion {
   void setWeightRampTauS(uint32_t tauS);    // [kWeightRampTauMinS, kWeightRampTauMaxS]
   void setSmoothingTauS(uint32_t tauS);     // [kFusionSmoothingTauMinS, kFusionSmoothingTauMaxS]
   void setOccupancyWindowS(uint32_t windowS);
-  void setStuckWindowS(uint32_t windowS);   // >= kStuckWindowMinS
+  void setStuckWindowS(uint32_t windowS);   // >= kStuckWindowMinS (flat-suspect window)
+  void setStuckPeerDeltaC(float c);         // [0.2, 5.0] peer disagreement threshold (#153)
+  void setStuckCeilingS(uint32_t s);        // >= kStuckWindowMinS; peerless/absolute limit (#153)
   void setSlewCPerMin(float cPerMin);
   void setOccupiedWeight(float w);          // >= 1.0
   void setOutlierC(float c);
@@ -192,6 +200,11 @@ class SensorFusion {
 
     float lastDistinctTempC = 0.0f;  // stuck-value tracking
     uint32_t lastChangeS = 0;
+    // #153: RAW peer values captured when this sensor's current flat run began
+    // (indexed by slot). Peer movement since then is judged raw-vs-raw so an
+    // offset edit can neither trip nor mask the detector (docs/07 G6).
+    float peerSnapC[kMaxSensors] = {};
+    uint16_t peerSnapMask = 0;       // bit j set = slot j had reported at snapshot time
 
     bool live = false;    // last-evaluation result
     uint16_t faults = 0;
@@ -208,6 +221,7 @@ class SensorFusion {
 
   Slot* find(uint8_t id);
   const Slot* find(uint8_t id) const;
+  bool peersMovedMajority(const Slot& s, uint32_t nowS) const;  // #153 stuck evidence
 
   Slot slots_[kMaxSensors];
 
@@ -220,6 +234,8 @@ class SensorFusion {
   float slewCPerMin_        = kFusionSlewCPerMin;
   float localDisagreeC_     = kDs18b20DisagreeAlarmC;
   uint32_t stuckWindowS_    = kStuckWindowDefaultS;
+  float    stuckPeerDeltaC_ = kStuckPeerDeltaC;  // #153 peer disagreement threshold
+  uint32_t stuckCeilingS_   = kStuckCeilingS;    // #153 absolute / peerless ceiling
   uint32_t coastMaxS_       = kFusionCoastMaxS;  // #153; 0 disables
 
   // Fusion state.

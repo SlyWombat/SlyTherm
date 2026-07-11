@@ -177,6 +177,8 @@ static void test_range_gate_and_nan_rejection() {
 // ---------- Stuck-value detection ----------
 
 static void test_stuck_value_exclusion() {
+  // #153 redesign: the wedged-driver signature — one sensor bit-identical
+  // while its peer genuinely drifts (0.05 C/min, i.e. the house is moving).
   SensorFusion f;  // real stuck logic wanted here
   f.setStuckWindowS(600);
   f.registerSensor(kA);
@@ -185,11 +187,12 @@ static void test_stuck_value_exclusion() {
   f.update(kB, 24.0f, Occupancy::kUnknown, 0);
   float prev = f.fusedTemp(0).value;
 
-  int i = 0;
   FusedTemp r{};
   for (uint32_t t = 60; t <= 1200; t += 60) {
-    f.update(kA, jitter(20.0f, i++), Occupancy::kUnknown, t);  // alive
-    f.update(kB, 24.0f, Occupancy::kUnknown, t);               // frozen value
+    // Alive peer drifting: +0.05 C/min -> 0.5 C past kB's flat start by 600 s.
+    f.update(kA, 20.0f + 0.05f * static_cast<float>(t) / 60.0f,
+             Occupancy::kUnknown, t);
+    f.update(kB, 24.0f, Occupancy::kUnknown, t);  // frozen value
     r = f.fusedTemp(t);
     TEST_ASSERT_TRUE(std::fabs(r.value - prev) <= dettson::kFusionSlewCPerMin + kSlewEps);
     prev = r.value;
@@ -198,6 +201,207 @@ static void test_stuck_value_exclusion() {
   TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kSingleRemote), static_cast<int>(r.tier));
   TEST_ASSERT_FALSE(f.status(kB, 1200).live);
   TEST_ASSERT_TRUE(f.status(kA, 1200).live);
+}
+
+static void test_flat_house_is_not_stuck() {
+  // The #153 field case (slylog 2026-07-10 overnight): EVERY participant sits
+  // bit-identical for hours because a regulated space drifting <0.1 C/h below
+  // the sensors' 0.1 C quantization step is EXPECTED to repeat exactly.
+  // Mutual flatness = stable house — trust must be retained. Under the old
+  // zero-variance rule everything here went stuck at t=3601 -> kAlarmAllBad.
+  SensorFusion f;  // real defaults: window 3600 s, delta 0.5 C, ceiling 36 h
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  f.registerSensor(kC);
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 6u * 3600u; t += 60) {  // 6 h, all frozen
+    f.update(kA, 21.5f, Occupancy::kUnknown, t);
+    f.update(kB, 21.3f, Occupancy::kUnknown, t);
+    f.update(kC, 20.3f, Occupancy::kUnknown, t);
+    r = f.fusedTemp(t);
+    TEST_ASSERT_TRUE(r.valid);
+    TEST_ASSERT_FALSE(r.coasting);
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);
+    TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kFusedRemotes),
+                      static_cast<int>(r.tier));
+  }
+  TEST_ASSERT_TRUE(f.status(kA, 6u * 3600u).live);
+  TEST_ASSERT_TRUE(f.status(kB, 6u * 3600u).live);
+  TEST_ASSERT_TRUE(f.status(kC, 6u * 3600u).live);
+}
+
+static void test_wedged_sensor_caught_within_window_when_peers_move() {
+  // The detector's real purpose, preserved: a frozen driver repeating a stale
+  // value while the actual space moves 0.5 C+ must be declared stuck within
+  // the suspect window.
+  SensorFusion f;
+  f.setStuckWindowS(600);
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  f.registerSensor(kC);
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 600; t += 60) {
+    const float drift = 0.1f * static_cast<float>(t) / 60.0f;  // +1.0 C over 10 min
+    f.update(kA, 21.5f + drift, Occupancy::kUnknown, t);
+    f.update(kB, 21.3f, Occupancy::kUnknown, t);  // wedged at its boot value
+    f.update(kC, 21.4f + drift, Occupancy::kUnknown, t);
+    r = f.fusedTemp(t);
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);  // window not yet expired
+  }
+  f.update(kA, 22.6f, Occupancy::kUnknown, 660);
+  f.update(kB, 21.3f, Occupancy::kUnknown, 660);
+  f.update(kC, 22.5f, Occupancy::kUnknown, 660);
+  r = f.fusedTemp(660);  // first evaluation past the window: peers moved 1.0 C
+  TEST_ASSERT_TRUE(r.valid);  // fusion rides the two live peers
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStuck);
+  TEST_ASSERT_FALSE(f.status(kB, 660).live);
+  TEST_ASSERT_TRUE(f.status(kA, 660).live);
+  TEST_ASSERT_TRUE(f.status(kC, 660).live);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kFusedRemotes),
+                    static_cast<int>(r.tier));
+}
+
+static void test_single_moving_peer_is_not_disagreement() {
+  // Majority rule (field: lone basement 0.6 C excursions while dining sat
+  // legitimately bit-flat for 16 h): ONE drifting room out of several must
+  // not condemn a flat-but-healthy sensor.
+  SensorFusion f;
+  f.setStuckWindowS(600);
+  f.registerSensor(kA);
+  f.registerSensor(kB);
+  f.registerSensor(kC);
+  // Priming round so every sensor's flat-run snapshot sees BOTH peers (a
+  // sensor's first-ever update can only snapshot peers that already reported).
+  f.update(kA, 20.0f, Occupancy::kUnknown, 0);
+  f.update(kB, 21.3f, Occupancy::kUnknown, 0);
+  f.update(kC, 21.1f, Occupancy::kUnknown, 0);
+  FusedTemp r{};
+  for (uint32_t t = 30; t <= 1830; t += 60) {
+    const float drift = t <= 630 ? 0.1f * static_cast<float>(t - 30) / 60.0f : 1.0f;
+    f.update(kA, 20.1f + drift, Occupancy::kUnknown, t);  // the one mover
+    f.update(kB, 21.4f, Occupancy::kUnknown, t);          // flat, healthy
+    f.update(kC, 21.2f, Occupancy::kUnknown, t);          // flat, healthy
+    r = f.fusedTemp(t);
+    TEST_ASSERT_TRUE(r.valid);
+    // kB/kC: 1 of 2 comparable peers moved -> no strict majority -> live.
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);
+  }
+  TEST_ASSERT_TRUE(f.status(kB, 1830).live);
+  TEST_ASSERT_TRUE(f.status(kC, 1830).live);
+  TEST_ASSERT_TRUE(f.status(kA, 1830).live);
+}
+
+static void test_solo_sensor_plain_ceiling_and_clamps() {
+  // Single-participant operation: no peers to consult, so only the absolute
+  // ceiling applies. Field justification (slylog room_temps 07-09..11): the
+  // longest bit-flat run by a healthy sensor was 16 h 15 m (dining), so the
+  // shipped 36 h default is ~2x the observed maximum.
+  TEST_ASSERT_TRUE(dettson::kStuckCeilingS >= 2u * 58470u);  // 2 x 16h14m30s
+  SensorFusion f;
+  f.setCoastMaxS(0);        // observe the hard verdict, not the grace
+  f.setStuckCeilingS(10);   // clamped up to kStuckWindowMinS (300)
+  f.setStuckPeerDeltaC(0.01f);  // clamped up to 0.2 (irrelevant: no peers)
+  f.registerSensor(kA);
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 300; t += 60) {
+    f.update(kA, 21.5f, Occupancy::kUnknown, t);  // frozen, fresh, peerless
+    r = f.fusedTemp(t);
+    TEST_ASSERT_TRUE(r.valid);  // within the (clamped) ceiling: trusted
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);
+  }
+  f.update(kA, 21.5f, Occupancy::kUnknown, 360);
+  r = f.fusedTemp(360);  // past the 300 s ceiling
+  TEST_ASSERT_FALSE(r.valid);
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStuck);
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmAllBad);
+  f.update(kA, 21.3f, Occupancy::kUnknown, 420);  // a real 0.1 C tick
+  r = f.fusedTemp(420);
+  TEST_ASSERT_TRUE(r.valid);  // instant recovery on change
+}
+
+// ---------- #153 field fixture: slylog room_temps, 2026-07-09/10 overnight ----------
+//
+// Every distinct-value transition of the four field sensors from 20:00:00 EDT
+// 2026-07-09 (t=0) to 08:30:00 the next morning, pulled from the SlyLog DB
+// (kdocker2 slylog.room_temps). Sensors publish every 30 s; between the listed
+// transitions the values repeat bit-identically — the expected signature of
+// 0.1 C-quantized sensors in a regulated space.
+//
+// Under the removed zero-variance rule this night produced three real fusion
+// dropouts (shadow_demands fused_temp_c=0), 61 min total:
+//   W1 03:17:31-04:06:31 (t 26251-29191)  bedroom lastChange 02:17:30 + 3600
+//   W2 05:53:31-05:59:31 (t 35611-35971)  bedroom lastChange 04:53:00 + 3600
+//   W3 06:59:31-07:05:31 (t 39571-39931)  bedroom lastChange 05:59:00 + 3600
+// (basement/living/dining had been flat for hours and were already excluded;
+// bedroom was the last live participant each time). During ALL THREE windows
+// every sensor was bit-flat — mutual flatness, i.e. a stable house, not a
+// fault. The redesigned detector must ride through the whole night valid.
+
+namespace fieldnight {
+struct Step { uint32_t t; float c; };
+constexpr Step kBasement[] = {{0, 20.1f},     {1110, 20.3f},  {2190, 20.5f},
+                              {3390, 20.7f},  {8070, 20.5f},  {10020, 20.7f},
+                              {13530, 20.5f}, {17670, 20.3f}};
+constexpr Step kBedroom[]  = {{0, 22.3f},     {3630, 22.1f},  {7140, 21.9f},
+                              {7650, 21.7f},  {9690, 21.9f},  {12450, 21.7f},
+                              {12990, 21.5f}, {14730, 21.7f}, {16770, 21.5f},
+                              {17310, 21.3f}, {18480, 21.5f}, {21510, 21.7f},
+                              {22650, 21.5f}, {29190, 21.3f}, {31980, 21.5f},
+                              {35940, 21.3f}, {39930, 21.5f}, {42990, 21.3f},
+                              {44070, 21.5f}};
+constexpr Step kDining[]   = {{0, 21.4f}};  // bit-flat the entire night (healthy:
+                                            // it ticked again at 12:14 on 07-10)
+constexpr Step kLiving[]   = {{0, 21.2f},     {3510, 21.1f},  {6630, 21.2f},
+                              {15480, 21.3f}, {17760, 21.2f}, {21390, 21.3f},
+                              {30750, 21.2f}};
+
+template <size_t N>
+float valueAt(const Step (&s)[N], uint32_t t) {
+  float v = s[0].c;
+  for (const Step& st : s)
+    if (st.t <= t) v = st.c;
+  return v;
+}
+inline bool inWindow(uint32_t t) {  // the three former dropout windows
+  return (t >= 26251 && t < 29191) || (t >= 35611 && t < 35971) ||
+         (t >= 39571 && t < 39931);
+}
+}  // namespace fieldnight
+
+static void test_field_replay_overnight_no_dropouts() {
+  using namespace fieldnight;
+  constexpr uint8_t kIdBasement = 1, kIdBedroom = 2, kIdDining = 3, kIdLiving = 4;
+  SensorFusion f;  // SHIPPED defaults: window 3600 s, delta 0.5 C, ceiling 36 h
+  f.registerSensor(kIdBasement);
+  f.registerSensor(kIdBedroom);
+  f.registerSensor(kIdDining);
+  f.registerSensor(kIdLiving);
+  uint32_t invalidS = 0, coastS = 0;
+  for (uint32_t t = 0; t <= 45000; t += 30) {  // 12.5 h at the 30 s field cadence
+    f.update(kIdBasement, valueAt(kBasement, t), Occupancy::kUnknown, t);
+    f.update(kIdBedroom, valueAt(kBedroom, t), Occupancy::kUnknown, t);
+    f.update(kIdDining, valueAt(kDining, t), Occupancy::kUnknown, t);
+    f.update(kIdLiving, valueAt(kLiving, t), Occupancy::kUnknown, t);
+    const FusedTemp r = f.fusedTemp(t);
+    if (!r.valid) invalidS += 30;
+    if (r.coasting) coastS += 30;
+    // The night must never even need the coast grace, let alone go invalid.
+    TEST_ASSERT_TRUE_MESSAGE(r.valid, "fusion went invalid on the field night");
+    TEST_ASSERT_FALSE_MESSAGE(r.coasting, "fusion needed the coast grace");
+    TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmAllBad);
+    TEST_ASSERT_TRUE(r.value > 20.0f && r.value < 23.0f);
+    if (inWindow(t)) {
+      // Inside the three previously-dropped windows: everyone was mutually
+      // flat, so nobody may be called stuck — least of all the bedroom, whose
+      // window expiry used to be the trigger.
+      TEST_ASSERT_FALSE(f.status(kIdBedroom, t).faults & dettson::kAlarmStuck);
+      TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmStuck);
+      TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kFusedRemotes),
+                        static_cast<int>(r.tier));
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, invalidS);  // was 3660 s under the old policy
+  TEST_ASSERT_EQUAL_UINT32(0, coastS);
 }
 
 // ---------- Outlier vs median ----------
@@ -456,10 +660,11 @@ static void test_offset_edit_does_not_mask_stuck_detector() {
   f.setStuckWindowS(600);
   f.registerSensor(kA);
   f.registerSensor(kB);
-  int i = 0;
   FusedTemp r{};
   for (uint32_t t = 0; t <= 1200; t += 60) {
-    f.update(kA, jitter(20.0f, i++), Occupancy::kUnknown, t);
+    // Peer genuinely drifting (the wedged signature needs peer movement now).
+    f.update(kA, 20.0f + 0.05f * static_cast<float>(t) / 60.0f,
+             Occupancy::kUnknown, t);
     f.update(kB, 24.0f, Occupancy::kUnknown, t);  // frozen raw value
     if (t == 300) f.setSensorOffsetC(kB, 1.0f);   // mid-window edit
     r = f.fusedTemp(t);
@@ -651,11 +856,12 @@ static void test_coast_plausibility_band() {
 }
 
 static void test_coast_bridges_stuck_trip() {
-  // The #153 field case: a flat room repeats the same 0.1 C-resolution value
-  // until the zero-variance window expires on EVERY participant at once —
-  // the sensor keeps publishing, fusion goes all-bad anyway.
+  // A solo participant that repeats one 0.1 C-resolution value past the
+  // absolute ceiling (the redesigned #153 detector's only peerless trigger):
+  // the sensor keeps publishing, fusion goes all-bad anyway — the coast
+  // grace bridges the head of the gap.
   SensorFusion f;                            // real stuck logic wanted here
-  f.setStuckWindowS(600);
+  f.setStuckCeilingS(600);                   // peerless: ceiling is the trigger
   f.registerSensor(kA);
   FusedTemp r{};
   for (uint32_t t = 0; t <= 600; t += 60) {
@@ -664,7 +870,7 @@ static void test_coast_bridges_stuck_trip() {
     TEST_ASSERT_TRUE(r.valid);
   }
   f.update(kA, 21.5f, Occupancy::kUnknown, 660);
-  r = f.fusedTemp(660);                      // stuck window expired at 600
+  r = f.fusedTemp(660);                      // stuck ceiling expired at 600
   TEST_ASSERT_TRUE(r.valid);                 // grace bridges the trip
   TEST_ASSERT_TRUE(r.coasting);
   TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStuck);
@@ -715,6 +921,11 @@ int main() {
   RUN_TEST(test_stale_dropout_slew_and_no_step_rejoin);
   RUN_TEST(test_range_gate_and_nan_rejection);
   RUN_TEST(test_stuck_value_exclusion);
+  RUN_TEST(test_flat_house_is_not_stuck);
+  RUN_TEST(test_wedged_sensor_caught_within_window_when_peers_move);
+  RUN_TEST(test_single_moving_peer_is_not_disagreement);
+  RUN_TEST(test_solo_sensor_plain_ceiling_and_clamps);
+  RUN_TEST(test_field_replay_overnight_no_dropouts);
   RUN_TEST(test_outlier_excluded_with_alarm);
   RUN_TEST(test_two_sensors_no_false_outlier_kill);
   RUN_TEST(test_ladder_to_local_degraded_and_back);

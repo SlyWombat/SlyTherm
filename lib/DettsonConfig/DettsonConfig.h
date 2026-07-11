@@ -186,6 +186,25 @@ constexpr float    kSensorOffsetMaxC        = 5.0f;   // per-sensor calibration 
 // a safety stop on a brief telemetry gap / stuck-window trip. Range 0-600;
 // 0 disables. A real prolonged failure still hard-invalidates past the grace.
 constexpr uint32_t kFusionCoastMaxS         = 120;
+// Stuck-value redesign (#153): the room sensors publish at 0.1 C resolution,
+// so a bit-identical reading for hours is the EXPECTED signature of a
+// regulated room drifting <0.1 C/h — flatness alone is never a fault. A
+// sensor is declared stuck only when its flatness is IMPLAUSIBLE:
+//  (a) flat past the suspect window (setStuckWindowS, default 3600 s) while a
+//      MAJORITY of comparable peer participants moved >= kStuckPeerDeltaC
+//      since its last change — the wedged-driver signature (the house moved,
+//      the sensor didn't); or
+//  (b) flat past kStuckCeilingS regardless of peers — the only trigger for a
+//      single-participant install (no peers to consult).
+// Field derivation (slylog room_temps, 2026-07-09..11): all four sensors were
+// bit-flat through every one of the three 07-10 overnight dropouts (mutual
+// flatness = stable house, not fault); healthy sensors sat bit-flat up to
+// 16 h 15 m (dining), while single peers drifted up to 1.0 C across such a
+// run (basement showed lone 0.6 C excursions) — hence MAJORITY (not any) of
+// peers, 0.5 C = five quantization steps, and a ceiling ~2x the observed
+// maximum healthy flat run.
+constexpr float    kStuckPeerDeltaC         = 0.5f;    // peer movement to count as disagreement; clamp 0.2-5
+constexpr uint32_t kStuckCeilingS           = 129600;  // 36 h ~= 2x observed 16.25 h max healthy flat; >= 300
 
 // ---------- Outdoor temperature (OutdoorTempSource) ----------
 constexpr uint32_t kOatStaleS               = 1800;   // 30 min -> next rung (bus -> wired -> HA weather)
