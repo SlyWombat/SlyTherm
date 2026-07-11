@@ -163,6 +163,128 @@ Once §1's price inputs exist via HA, time-of-use pre-heating/pre-cooling is
 a natural extension of §2's recovery machinery — same ramps, price-shifted
 targets.
 
+## 8. Fan-during-cooling (issue #144 verdict)
+
+Literature pass (2026-07-11) on the #144 hypothesis — load-proportional
+blower boost during cooling pull-down, taper near setpoint, possibly
+continuous low fan between cycles — evaluated for OUR summer climate.
+Mississauga is humid continental; Toronto's 1% cooling design condition is
+29 °C dry-bulb with a 21 °C coincident wet-bulb
+([ASHRAE design lookup](https://askhvac.ca/load-calculations/design-temperature-lookup.html)),
+i.e. real latent loads in July. The physics that decides everything here
+is the WET COIL.
+
+**The wet-coil re-evaporation effect is large and well quantified.** A
+residential cooling coil holds ~2 lb of condensate (8–9 lb per 1,000 ft²
+of fin area), and NO condensate reaches the drain for the first 12–33
+minutes of a cycle (≈10 min when entering dew point is 21 °C); air moved
+over the coil after compressor-off re-evaporates that moisture
+adiabatically — "free" sensible cooling paid for 1:1 with a latent
+penalty ([Shirey & Henderson, ASHRAE Journal, Apr 2004 / FSEC-GP-151-06](https://publications.energyresearch.ucf.edu/wp-content/uploads/2018/06/FSEC-GP-151-06.pdf);
+full lab+field report [FSEC-CR-1537-05, OSTI 881342](https://www.osti.gov/biblio/881342)).
+In their field data a system with continuous fan rose from steady-state
+SHR 0.76 to effective SHR 1.0 below a 40% compressor runtime fraction —
+**zero net dehumidification at part load**. The Henderson & Rengarajan
+latent-degradation model (t_wet ≈ 12–17 min, γ ≈ 1.1–1.5) is already in
+EnergyPlus; its parameters are exactly the knobs our policy must respect.
+
+**Continuous fan between cycles: rejected for cooling season.** The
+original FSEC measurement ([Khattar, Swami & Ramanan 1987, FSEC-PF-118-87](https://publications.energyresearch.ucf.edu//wp-content/uploads/2018/06/FSEC-PF-118-87.pdf)):
+at ~25% compressor runtime fraction, fan "ON" cut net moisture removal by
+>60% (fan "AUTO" removed 2.5× more water) and raised indoor RH from 55%
+to 65%; still −27–30% at 50% runtime; parity only at ~80% runtime. A
+10-min fan tail after a 10-min compressor cycle put 19% of the
+just-condensed moisture back into the space (effective SHR 0.63 → 0.73).
+Field monitoring of two-stage ECM systems in a mixed-humid climate
+([Proctor & Cohn, ACEEE 2006](https://www.aceee.org/files/proceedings/2006/data/papers/SS06_Panel1_Paper20.pdf))
+measured cycle EER degraded to 83–93% of end-of-cycle EER in the two
+continuous-fan homes and states flatly that continuous fan "should not
+[be] recommended — particularly in humid climates"; it also inflates duct
+distribution losses. A 5-day fan-ON experiment in a real Georgia house
+took indoor RH from ~58% to ~70% — the mold threshold
+([Energy Vanguard](https://www.energyvanguard.com/blog/This-Thermostat-Setting-Can-Cost-You-Money-and-Make-You-Sick)).
+ECM economics soften the watts, not the moisture: the mechanism is water
+on the coil, not fan power.
+
+**Fan-off delay: a dry-climate measure — ≤30 s or nothing when humid.**
+Proctor's lab work found ~3% efficiency gain from a 90 s delay *with a
+totally dry coil*, and dry-climate fan-off-delay retrofits save 8–12% of
+cooling energy ([Proctor Engineering](http://www.proctoreng.com/energy-efficiency/hot-dry-ac.html)).
+But "with a wet coil, the highest reintroduction of moisture occurs
+immediately after the compressor shuts off," leaving only a ~15–30 s
+harvestable window before re-evaporation dominates
+([GBA climate-specific AC, Holladay/Proctor](https://www.greenbuildingadvisor.com/article/climate-specific-air-conditioners)).
+Khattar's 19%-re-evaporated measurement (above) is the humid-climate cost
+of a long tail.
+
+**Airflow during ACTIVE compressor operation: the supported direction is
+DOWN, not up.** FSEC's evaporator-airflow study measured that dropping
+400 → 300 cfm/ton gains ~8% latent capacity while losing ~10% sensible
+([Parker et al., FSEC-PF-321-97](https://publications.energyresearch.ucf.edu//wp-content/uploads/2018/06/FSEC-PF-321-97.pdf));
+humid-climate guidance is ~350 cfm/ton against the 400 nominal (450+ only
+for dry climates), with sharp capacity/freeze risk below ~300 cfm/ton
+([ACCA on the 400 cfm/ton rule](https://hvac-blog.acca.org/400-cfm-per-ton-or-is-it/)).
+The hypothesis's mechanism is real — ACCA's worked 2.5-ton example gives
+~+20% sensible capacity for +29% airflow — but at −17% latent, which in a
+Mississauga July surfaces directly as indoor RH. Manufacturer practice
+actually runs the hypothesis BACKWARDS: Trane's Comfort-R profile holds
+50% airflow for the first minute and 80% until ~7.5 min so the coil gets
+cold and wet sooner, releasing 100% only late in long cycles
+([Comfort-R](https://foxfamilyhvac.com/how-does-comfort-r-work/)). What
+the literature DOES support as "load-proportional fan" is airflow matched
+to COMPRESSOR STAGE: Shirey & Henderson's monitored two-stage Florida
+home, with the variable-speed air handler modulated to compressor
+capacity, showed almost no part-load latent degradation — and FSEC's own
+1987 conclusion already named *lower* fan speed as the dehumidification
+lever ([FSEC fan-speed controller note, FSEC-FS-31-85](https://stars.library.ucf.edu/cgi/viewcontent.cgi?article=2105&context=fsec)).
+
+**Between-cycle circulate-for-evenness: §3's heating logic does not
+transfer.** In cooling season every between-cycle fan-minute drives the
+re-evaporation mechanism: with t_wet ≈ 12–17 min and an initial
+evaporation rate ≈ steady-state latent capacity (γ ≥ 1), a 10 min/h
+circulate duty re-evaporates most of the coil's held moisture every hour.
+Khattar's recommendation for comfort air movement is a ceiling fan, not
+the air handler. Commercial circulate features run 10–100% duty (6–60
+min/h, conditioning runtime counted toward the duty
+([Sensi/Copeland](https://sensi.copeland.com/en-us/support/circulating-fan)))
+— the low end of that band, RH-gated, is the most the literature will
+tolerate in July.
+
+**Verdict on #144.** (i) Blower boost above stage-nominal airflow during
+humid-season pull-down: **rejected** — single-digit-to-~20% sensible gain
+costs double-digit latent capacity; permissible only under verified-dry
+conditions, promoting the issue's RH guardrail to a hard gate. (ii) Taper
+near setpoint: **supported** — lower airflow late in the cycle is exactly
+the humid-climate direction. (iii) Continuous low fan between cycles:
+**rejected** for cooling season. (iv) The real comfort lever is #140's
+long-low philosophy: longer low-stage cycles raise runtime fraction,
+which is precisely what preserves latent capacity. The Dettson equipment
+already embodies this: low-stage cooling airflow is 70–80% of nominal
+(50% selectable, S5-2), cooling trim ±10%, and an on-demand
+dehumidification input exists (HUM STAT, S5-1) — airflow-DOWN humidity
+control is native to this family
+([Chinook installation manual, Tables 12–15](https://thermopompesnrsol.com/public/images/data/Produits/Fournaise%20au%20gaz/Pdf/Chinook-modulante-en.pdf)).
+
+**SlyTherm mapping:** cooling-season fan policy for the shadow pipeline:
+- **AUTO fan**: FAN_DEMAND releases when compressor demand releases.
+  Fan-off delay default **0 s**; an optional 30–90 s harvest delay only
+  when indoor dew point is verifiably low (< ~12 °C; needs #106/#107 —
+  until then forecast dew point), never by default.
+- **Active-cycle airflow at the humid band**: follow the Dettson stage
+  mapping (low stage 70–80% of nominal ≈ the 350 cfm/ton band); never
+  command below the ~300 cfm/ton freeze floor; no boost above
+  stage-nominal unless the dry-conditions gate passes AND #27's
+  equipment experiment confirms concurrent FAN_DEMAND is honored
+  mid-cool (OEM never commands it — 2026-07-09 capture).
+- **Near-setpoint taper**: allowed within the stage band (it lowers SHR
+  when latent matters most) — the cooling analog of §4's shaping bias.
+- **Between-cycle circulate**: OFF by default June–Sept; if SensorFusion
+  room-spread data demands mixing, cap at **5–10 min/h** gated on indoor
+  RH < ~55%, and count §3 pre-runs toward the duty (issue #53).
+- **If humidity control is the actual complaint**, the literature-
+  consistent tool is overcool-to-dehumidify (gap G1/#107 in the Ecobee
+  analysis), not fan work.
+
 ## Suggested implementation order
 
 1. §4 shaping bias + §6 defrost tempering — pure tuning/policy on existing
@@ -172,3 +294,5 @@ targets.
 3. §1 economic balance point — needs HA price config + COP table plumbing.
 4. §5 COP learning, then §7 TOU preheating — telemetry first, optimization
    after a season of data.
+5. §8 cooling fan policy — shadow-mode only; boost path additionally
+   gated on the #27 concurrent-FAN_DEMAND equipment experiment.
