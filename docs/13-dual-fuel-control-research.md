@@ -87,6 +87,17 @@ blower on low briefly after burner-off to harvest exchanger residual heat
 fold into the existing fan-circulate-duty work (issue #53) so pre-runs
 count toward the circulate duty rather than adding runtime on top.
 
+> **Post-burner tail VERIFIED INTERNAL — nothing to implement (2026-07-11,
+> #142).** The furnace control already owns fan-off dissipation: the OEM
+> stat's installer menus expose furnace-side **AC/HP ON Delay 5–120 s** and
+> **AC/HP OFF Delay 5–240 s** ("fan delay after AC/HP start/stop", R02P032
+> System menu), and the heat-side blower profile belongs entirely to the
+> IFC — docs/02 §5a (field-confirmed): FAN_DEMAND is *not* used during
+> heat/cool; the IFC maps airflow to fire rate internally, including the
+> post-burner cool-down. A bus-side tail would stack on the equipment's own
+> delay, so the pre-circulation implementation (#142) issues **no** post-heat
+> blower tail — and no cooling fan-off delay either (§8: default 0 s).
+
 ## 4. Prefer LONG, LOW modulation over short high-fire cycles
 
 Modulating furnaces earn their AFUE at part load: long low-fire burns keep

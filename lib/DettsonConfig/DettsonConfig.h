@@ -193,6 +193,24 @@ constexpr float    kCoolPredictMinReqPct      = 50.0f;  // pre-action floor: bel
                                                         //  duty the on-phase (>=37 min) always bridges
                                                         //  the horizon into the call (replay-tuned)
 
+// ---------- Blower-first pre-circulation (PreCirculator; issue #142, docs/13 §3+§8) ----------
+// When the #141 crossing prediction says a call is imminent (crossing within
+// kBlowerFirstLeadS), run the blower LOW ahead of the stage: destratify +
+// give SensorFusion a truthful whole-space reading BEFORE the commit.
+constexpr bool     kBlowerFirstHeatEnabledDefault = true;   // docs/13 §3: heat-side default ON
+// docs/13 §8 (the #144 literature verdict): OFF for cooling season — a
+// pre-run before a cool call moves air over the wet coil and re-evaporates
+// the PREVIOUS cycle's held condensate (~2 lb; effective SHR -> 1.0 at part
+// load), a latent penalty paid 1:1 for the sensible "gain". Enable only as
+// an explicit owner decision under verified-dry conditions.
+constexpr bool     kBlowerFirstCoolEnabledDefault = false;
+constexpr float    kBlowerFirstFanPct             = 25.0f;  // CT-485 fan Low (0x66 pct*2 = 0x32) —
+                                                            //  the lowest field-confirmed speed
+constexpr uint32_t kBlowerFirstLeadS              = 120;    // pre-run lead, range 60-180 (§3: 1-3 min)
+constexpr uint32_t kBlowerFirstMaxRunS            = 600;    // cap when the prediction hovers without
+                                                            //  the call ever opening (re-arms after
+                                                            //  the prediction drops or a call runs)
+
 // ---------- Fallback / degraded modes ----------
 constexpr float    kFallbackHeatSetpointC   = 18.0f;  // MQTT stale >30 min: dual-bounded, last user mode,
 constexpr float    kFallbackCoolSetpointC   = 27.0f;  //  never escalate OFF (27-28 acceptable)

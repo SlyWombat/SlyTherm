@@ -90,6 +90,7 @@
 #include "ModeStateMachine.h"
 #include "OutdoorTempSource.h"
 #include "PidShaper.h"
+#include "PreCirculator.h"
 #include "RecoveryEstimator.h"
 #include "RelaySequencer.h"
 #include "SafetySupervisor.h"
@@ -312,6 +313,7 @@ PidShaper           gPid;
 GasShaper           gGasShaper;
 RecoveryEstimator   gRecovery;
 TrendEstimator      gTrend;  // fused-temp slope for crossing prediction (#141)
+PreCirculator       gPreCirc;  // blower-first pre-circulation (#142, docs/13 §3+§8)
 ui::UiModel         gUi;
 ui::UiModel::LockPersistBlob gShadowLock{};  // last lock state written to NVS (change-detect)
 safety::SafetySupervisor* gSup = nullptr;
@@ -2251,10 +2253,51 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       }
     }
   }
+  // ---- #142 blower-first pre-circulation (docs/13 §3, §8-gated for cooling) ----
+  // When #141's crossing prediction (horizon = the pre-run lead) says a call
+  // is imminent, request the blower LOW so the space is mixed — and
+  // SensorFusion reads whole-space truth — BEFORE the stage commits. A fan
+  // REQUEST like any other: SafetySupervisor filter + DemandArbiter stay
+  // downstream, a live call/request always overrides, prediction loss
+  // cancels. Heat-only by default; the cool side is §8's latent-penalty
+  // territory (kBlowerFirstCoolEnabledDefault=false) and additionally
+  // respects the cooling lockouts. Same mode restriction as #141: explicit
+  // HEAT/COOL only, no pre-runs around the AUTO changeover dwell.
+  float preFanReq = 0.0f;
+  {
+    PreCirculator::Inputs pci;
+    pci.callActive = call.type != CallType::kNone || gasReq > 0 || hpReq > 0 ||
+                     coolReq > 0 || temperActive;
+    if (fused.valid && !fused.degraded && gTrend.valid()) {
+      const uint32_t leadS = gPreCirc.config().leadS;
+      if (gModeSm->mode() == UserMode::kHeat) {
+        // Heat call opens at heatSp - hysteresis; approach = falling temp.
+        pci.heatPredicted = RecoveryEstimator::crossingBias(
+            fused.value - (gModeSm->heatSetpoint() - kCallHysteresisC),
+            -gTrend.slopeCPerH(), leadS, kCoolPredictBiasMaxC).predicted;
+      } else if (gModeSm->mode() == UserMode::kCool && oat.valid &&
+                 fused.value >= kCoolingIndoorLockoutC) {
+        pci.coolPredicted = RecoveryEstimator::crossingBias(
+            gModeSm->coolSetpoint() + kCallHysteresisC - fused.value,
+            gTrend.slopeCPerH(), leadS, kCoolPredictBiasMaxC).predicted;
+      }
+      // (biasMaxC only gates crossingBias validity; the bias itself is unused
+      // here — the pre-run consumes the predicted flag alone.)
+    }
+    preFanReq = gPreCirc.update(pci, nowS);
+  }
   if (gModeSm->mode() != UserMode::kOff) {
     if (gFanMode == hm::FanMode::kOn) fanReq = 100.0f;
-    else if (gFanMode == hm::FanMode::kCirculate)
-      fanReq = ((nowS % 3600) / 60) < cfg::kFanCirculateMinPerHour ? 100.0f : 0.0f;
+    else if (gFanMode == hm::FanMode::kCirculate) {
+      // #142/#53: pre-run seconds COUNT TOWARD the circulate duty — the
+      // minutes-per-hour window shrinks by what pre-circulation already ran
+      // this hour (docs/13 §3: never runtime on top).
+      const uint32_t winS = cfg::kFanCirculateMinPerHour * 60u;
+      const uint32_t creditS = gPreCirc.dutyCreditS(nowS);
+      fanReq = (nowS % 3600u) < (winS > creditS ? winS - creditS : 0u)
+                   ? 100.0f : 0.0f;
+    }
+    fanReq = fmaxf(fanReq, preFanReq);  // pre-run never lowers an explicit fan-on
   }
 
   // ---- Safety facts + supervisor (before any emission) ----
