@@ -181,6 +181,11 @@ constexpr uint32_t kFusionSmoothingTauMaxS  = 300;
 constexpr float    kFusionSlewCPerMin       = 0.1f;   // slew limit on participant-set changes
 constexpr float    kDs18b20DisagreeAlarmC   = 5.0f;   // fallback sensor vs fusion aggregate sanity
 constexpr float    kSensorOffsetMaxC        = 5.0f;   // per-sensor calibration offset clamp (docs/07 G6)
+// Coast-on-last-good grace (#153): a JUST-lapsed fusion keeps reporting the
+// last good output for up to this long (flagged coasting) instead of forcing
+// a safety stop on a brief telemetry gap / stuck-window trip. Range 0-600;
+// 0 disables. A real prolonged failure still hard-invalidates past the grace.
+constexpr uint32_t kFusionCoastMaxS         = 120;
 
 // ---------- Outdoor temperature (OutdoorTempSource) ----------
 constexpr uint32_t kOatStaleS               = 1800;   // 30 min -> next rung (bus -> wired -> HA weather)

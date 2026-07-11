@@ -328,7 +328,11 @@ static void test_max_age_clamped_to_documented_range() {
     f.registerSensor(kA, false, true, /*maxAgeS=*/60);
     f.update(kA, 21.0f, Occupancy::kUnknown, 0);
     TEST_ASSERT_TRUE(f.fusedTemp(170).valid);    // would be stale if 60 stood
-    TEST_ASSERT_FALSE(f.fusedTemp(200).valid);   // past the clamped 180
+    // Past the clamped 180 the sensor is stale; the #153 grace bridges the
+    // young gap, so staleness surfaces as coasting + the stale alarm here.
+    FusedTemp r = f.fusedTemp(200);
+    TEST_ASSERT_TRUE(r.coasting);
+    TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStale);
   }
   {  // above the 900 s cap -> clamped down to 900
     SensorFusion f = makeFusion();
@@ -567,6 +571,141 @@ static void test_presence_excludes_local_sensor() {
   TEST_ASSERT_FALSE(p.present);
 }
 
+// ---------- Coast-on-last-good grace (#153) ----------
+
+static void test_coast_bridges_short_gap() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  f.update(kA, 21.0f, Occupancy::kUnknown, 0);
+  TEST_ASSERT_TRUE(f.fusedTemp(0).valid);
+  FusedTemp r = f.fusedTemp(250);            // still fresh (age < 300)
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_FALSE(r.coasting);
+
+  r = f.fusedTemp(320);  // all sources stale; 70 s since the last good eval
+  TEST_ASSERT_TRUE(r.valid);                 // bridged, not a safety stop
+  TEST_ASSERT_TRUE(r.coasting);
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmCoasting);
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStale);   // faults stay visible
+  TEST_ASSERT_FALSE(r.alarms & dettson::kAlarmAllBad);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.0f, r.value);    // frozen at last-good
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kSingleRemote),
+                    static_cast<int>(r.tier));         // tier carried
+
+  f.update(kA, 21.2f, Occupancy::kUnknown, 360);       // sensor returns
+  r = f.fusedTemp(360);
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_FALSE(r.coasting);
+  TEST_ASSERT_FLOAT_WITHIN(0.3f, 21.0f, r.value);      // continuous, no step
+}
+
+static void test_coast_hard_fail_beyond_grace() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  f.update(kA, 21.0f, Occupancy::kUnknown, 0);
+  TEST_ASSERT_TRUE(f.fusedTemp(250).valid);  // last good eval at 250
+
+  FusedTemp r = f.fusedTemp(250 + dettson::kFusionCoastMaxS + 10);
+  TEST_ASSERT_FALSE(r.valid);                // a REAL prolonged failure
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmAllBad);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kNone), static_cast<int>(r.tier));
+
+  // Recovery re-seeds from truth (smoothing state was reset at the hard fail).
+  f.update(kA, 25.0f, Occupancy::kUnknown, 500);
+  r = f.fusedTemp(500);
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_FALSE(r.coasting);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 25.0f, r.value);
+}
+
+static void test_coast_no_grace_at_boot() {
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);                      // registered, never updated
+  FusedTemp r = f.fusedTemp(50);
+  TEST_ASSERT_FALSE(r.valid);                // no last-good to coast on
+  TEST_ASSERT_FALSE(r.coasting);
+}
+
+static void test_coast_disabled_by_zero() {
+  SensorFusion f = makeFusion();
+  f.setCoastMaxS(0);
+  f.registerSensor(kA);
+  f.update(kA, 21.0f, Occupancy::kUnknown, 0);
+  TEST_ASSERT_TRUE(f.fusedTemp(250).valid);
+  FusedTemp r = f.fusedTemp(320);            // 70 s gap: bridged by default, not here
+  TEST_ASSERT_FALSE(r.valid);
+  TEST_ASSERT_FALSE(r.coasting);
+}
+
+static void test_coast_plausibility_band() {
+  // The gate every coast candidate must pass — the sensor range band. Every
+  // live sample already passed it, so in fusedTemp() this is defense-in-depth
+  // against state corruption; the pure helper is asserted directly.
+  TEST_ASSERT_TRUE(SensorFusion::coastPlausible(21.0f));
+  TEST_ASSERT_TRUE(SensorFusion::coastPlausible(dettson::kSensorRangeMinC));
+  TEST_ASSERT_TRUE(SensorFusion::coastPlausible(dettson::kSensorRangeMaxC));
+  TEST_ASSERT_FALSE(SensorFusion::coastPlausible(dettson::kSensorRangeMinC - 0.1f));
+  TEST_ASSERT_FALSE(SensorFusion::coastPlausible(dettson::kSensorRangeMaxC + 0.1f));
+  TEST_ASSERT_FALSE(SensorFusion::coastPlausible(std::nanf("")));
+  TEST_ASSERT_FALSE(SensorFusion::coastPlausible(INFINITY));
+}
+
+static void test_coast_bridges_stuck_trip() {
+  // The #153 field case: a flat room repeats the same 0.1 C-resolution value
+  // until the zero-variance window expires on EVERY participant at once —
+  // the sensor keeps publishing, fusion goes all-bad anyway.
+  SensorFusion f;                            // real stuck logic wanted here
+  f.setStuckWindowS(600);
+  f.registerSensor(kA);
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 600; t += 60) {
+    f.update(kA, 21.5f, Occupancy::kUnknown, t);  // frozen value, fresh sensor
+    r = f.fusedTemp(t);
+    TEST_ASSERT_TRUE(r.valid);
+  }
+  f.update(kA, 21.5f, Occupancy::kUnknown, 660);
+  r = f.fusedTemp(660);                      // stuck window expired at 600
+  TEST_ASSERT_TRUE(r.valid);                 // grace bridges the trip
+  TEST_ASSERT_TRUE(r.coasting);
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmStuck);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 21.5f, r.value);
+
+  f.update(kA, 21.5f, Occupancy::kUnknown, 780);
+  r = f.fusedTemp(780);                      // 180 s past the last good eval
+  TEST_ASSERT_FALSE(r.valid);                // grace bounded: hard-invalid
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmAllBad);
+
+  f.update(kA, 21.3f, Occupancy::kUnknown, 840);  // the 0.1 C tick returns
+  r = f.fusedTemp(840);
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_FALSE(r.coasting);
+}
+
+static void test_coast_carries_degraded_lockout() {
+  // A coast off the local-degraded rung must keep degraded=true so the
+  // caller's cooling lockout holds through the bridged gap.
+  SensorFusion f = makeFusion();
+  f.registerSensor(kA);
+  f.registerSensor(kL, /*isLocal=*/true);
+  f.update(kA, 21.0f, Occupancy::kUnknown, 0);   // remote dies after this
+  int i = 0;
+  FusedTemp r{};
+  for (uint32_t t = 0; t <= 900; t += 60) {
+    f.update(kL, jitter(20.0f, i++), Occupancy::kUnknown, t);
+    r = f.fusedTemp(t);
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kLocalDegraded),
+                    static_cast<int>(r.tier));    // riding the local fallback
+  TEST_ASSERT_TRUE(f.fusedTemp(1190).valid);      // local age 290: last good eval
+  r = f.fusedTemp(1210);                          // local stale; 20 s young gap
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_TRUE(r.coasting);
+  TEST_ASSERT_TRUE(r.degraded);                   // lockout preserved
+  TEST_ASSERT_TRUE(r.alarms & dettson::kAlarmDegraded);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceTier::kLocalDegraded),
+                    static_cast<int>(r.tier));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_invalid_no_demand);
@@ -595,5 +734,12 @@ int main() {
   RUN_TEST(test_presence_no_sensor_reporting_vs_nobody_home);
   RUN_TEST(test_presence_out_of_order_last_seen_ignored);
   RUN_TEST(test_presence_excludes_local_sensor);
+  RUN_TEST(test_coast_bridges_short_gap);
+  RUN_TEST(test_coast_hard_fail_beyond_grace);
+  RUN_TEST(test_coast_no_grace_at_boot);
+  RUN_TEST(test_coast_disabled_by_zero);
+  RUN_TEST(test_coast_plausibility_band);
+  RUN_TEST(test_coast_bridges_stuck_trip);
+  RUN_TEST(test_coast_carries_degraded_lockout);
   return UNITY_END();
 }

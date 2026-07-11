@@ -251,6 +251,26 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
     if (s.used) out.alarms |= s.faults;
 
   if (!haveRaw) {
+    // Coast-on-last-good grace (#153): a JUST-lapsed fusion (field case: the
+    // stuck window expiring on flat overnight temps; also heartbeat hiccups
+    // at the staleness edge) keeps reporting the last good output for up to
+    // coastMaxS_ instead of forcing the caller's safety stop. Tier/degraded
+    // carry from the last good evaluation so a coast off the local-degraded
+    // rung keeps its cooling lockout. Smoothing state is retained: recovery
+    // resumes continuously from the coasted value. Hard-invalid beyond the
+    // grace, on an implausible last-good, or at boot (no last-good) — a REAL
+    // prolonged failure still fails to no-demand (docs/04 §3).
+    if (hasOutput_ && coastMaxS_ > 0 && ageOf(nowS, lastGoodS_) <= coastMaxS_ &&
+        coastPlausible(output_)) {
+      out.value = output_;
+      out.valid = true;
+      out.coasting = true;
+      out.tier = lastGoodTier_;
+      out.degraded = (lastGoodTier_ == SourceTier::kLocalDegraded);
+      out.alarms |= kAlarmCoasting;
+      if (out.degraded) out.alarms |= kAlarmDegraded;
+      return out;
+    }
     // All bad -> invalid; caller must go to no-demand (docs/04 §3).
     // Smoothing state resets: nothing meaningful to be continuous with, and
     // recovery re-seeds from truth (compressor timers live in CompressorGuard).
@@ -289,7 +309,13 @@ FusedTemp SensorFusion::fusedTemp(uint32_t nowS) {
 
   out.value = output_;
   out.valid = true;
+  lastGoodS_ = nowS;      // #153 coast anchors
+  lastGoodTier_ = out.tier;
   return out;
+}
+
+bool SensorFusion::coastPlausible(float v) {
+  return std::isfinite(v) && v >= kSensorRangeMinC && v <= kSensorRangeMaxC;
 }
 
 SensorStatus SensorFusion::status(uint8_t id, uint32_t nowS) const {
@@ -320,6 +346,9 @@ uint8_t SensorFusion::dominantParticipant() const {
   return best ? best->id : 0xFF;
 }
 
+void SensorFusion::setCoastMaxS(uint32_t s) {
+  coastMaxS_ = s > 600 ? 600 : s;  // documented range 0-600; 0 disables (#153)
+}
 void SensorFusion::setWeightRampTauS(uint32_t tauS) {
   weightRampTauS_ = clampU32(tauS, kWeightRampTauMinS, kWeightRampTauMaxS);
 }

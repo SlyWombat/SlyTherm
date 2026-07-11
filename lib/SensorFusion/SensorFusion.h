@@ -6,8 +6,11 @@
 //
 // Fallback ladder: fused remotes -> single remaining remote -> local sensor
 // (DEGRADED — caller must bound setpoints and disable cooling per the
-// kDegraded* constants in DettsonConfig.h) -> nothing valid (caller goes to
-// no-demand). Boot state is invalid/no-demand until real updates arrive.
+// kDegraded* constants in DettsonConfig.h) -> coast on the last good output
+// for <= kFusionCoastMaxS (#153: flagged `coasting`; bridges brief telemetry
+// gaps / stuck-window trips without a safety stop) -> nothing valid (caller
+// goes to no-demand). Boot state is invalid/no-demand until real updates
+// arrive — there is no last-good to coast on at boot.
 //
 // Pure C++17, no Arduino. Time is injected as uint32_t nowS.
 
@@ -41,12 +44,18 @@ enum FusionAlarm : uint16_t {
   kAlarmLocalDisagree = 1u << 4,  // local vs fused aggregate > kDs18b20DisagreeAlarmC
   kAlarmDegraded      = 1u << 5,  // running on the local fallback alone
   kAlarmAllBad        = 1u << 6,  // no valid source at all
+  kAlarmCoasting      = 1u << 7,  // bridging an all-bad gap on last-good (#153)
 };
 
 struct FusedTemp {
   float value = 0.0f;     // meaningful only when valid
   bool valid = false;
   bool degraded = false;  // true iff tier == kLocalDegraded
+  // #153: valid==true but every source is momentarily bad — value is the
+  // last good output, held for at most kFusionCoastMaxS (tier/degraded are
+  // carried from the last good evaluation). Callers needing live-only truth
+  // (none today) can check this; safety consumers treat it as valid.
+  bool coasting = false;
   SourceTier tier = SourceTier::kNone;
   uint16_t alarms = 0;    // FusionAlarm bits observed this evaluation
 };
@@ -147,7 +156,14 @@ class SensorFusion {
   // sensor for the ambient screen. 0xFF if none (local-only / all bad).
   uint8_t dominantParticipant() const;
 
+  // #153 coast plausibility: a candidate last-good value must sit inside the
+  // existing sensor range gate to be worth coasting on. Pure; the band is the
+  // same one every live sample already passed, so this is defense-in-depth
+  // against state corruption, exposed for direct unit testing.
+  static bool coastPlausible(float v);
+
   // Runtime tunables, clamped to the documented ranges.
+  void setCoastMaxS(uint32_t s);            // [0 (disable), 600] (#153)
   void setWeightRampTauS(uint32_t tauS);    // [kWeightRampTauMinS, kWeightRampTauMaxS]
   void setSmoothingTauS(uint32_t tauS);     // [kFusionSmoothingTauMinS, kFusionSmoothingTauMaxS]
   void setOccupancyWindowS(uint32_t windowS);
@@ -204,6 +220,7 @@ class SensorFusion {
   float slewCPerMin_        = kFusionSlewCPerMin;
   float localDisagreeC_     = kDs18b20DisagreeAlarmC;
   uint32_t stuckWindowS_    = kStuckWindowDefaultS;
+  uint32_t coastMaxS_       = kFusionCoastMaxS;  // #153; 0 disables
 
   // Fusion state.
   bool hasTime_ = false;
@@ -213,6 +230,9 @@ class SensorFusion {
   float output_ = 0.0f;
   bool slewActive_ = false;  // engaged on participant-set change, released on catch-up
   uint16_t lastMask_ = 0;
+  // #153 coast anchors: time/tier of the last GOOD (non-coasting) evaluation.
+  uint32_t lastGoodS_ = 0;
+  SourceTier lastGoodTier_ = SourceTier::kNone;
 };
 
 }  // namespace dettson

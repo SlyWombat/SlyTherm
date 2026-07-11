@@ -2172,6 +2172,18 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 #endif
   const FusedTemp fused = gFusion.fusedTemp(nowS);
   const OatReading oat = gOat.read(nowS);
+  // #153 coast visibility: start/end edges to the telnet stream so shadow
+  // analysis can tell a bridged gap from live fusion. telnet_log is a
+  // UI-build facility (headless env omits it — v0.5.0 lesson).
+#ifdef SLYTHERM_UI
+  { static bool wasCoasting = false;
+    if (fused.coasting != wasCoasting) {
+      wasCoasting = fused.coasting;
+      telnet_log::logf("[fusion] coast %s T=%.2f tier=%s",
+                       fused.coasting ? "start" : "end",
+                       (double)fused.value, tierName(fused.tier));
+    } }
+#endif
   // #141: fused-temp slope for crossing prediction (dropouts skipped inside).
   gTrend.update(fused.value, fused.valid, nowS);
 
