@@ -726,6 +726,50 @@ static void test_version_announce_and_version_bit_mirroring() {
   TEST_ASSERT_EQUAL_UINT8(kPktNumVersionBit, f.packetNum);
 }
 
+// ---------- passive TX-turnaround dry-run probe (issue #28) ----------
+
+// In shadow mode (boot-silent, never resumed) the dry-run still produces the
+// would-be R2R ACK reply, with ZERO side effects: no TX enqueued, state stays
+// silent + unaddressed. This is the exact configuration the #28 probe runs in.
+static void test_dryrun_shadow_mode_acks_without_tx() {
+  Ct485Thermostat t(baseCfg());
+  TEST_ASSERT_TRUE(t.silent());
+  Frame out;
+  TEST_ASSERT_TRUE(t.dryRunGrantResponse(kAddrCoordinator, /*tokenOffer=*/false, out));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), out.msgType);
+  TEST_ASSERT_EQUAL_UINT8(kAck1, out.payload[0]);
+  TEST_ASSERT_TRUE((out.packetNum & kPktNumDataflowBit) != 0);
+  // No side effects: nothing queued, still silent, still unaddressed.
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+  TEST_ASSERT_TRUE(t.silent());
+  TEST_ASSERT_FALSE(t.addressed());
+  // Token-offer variant yields the token echo, also side-effect free.
+  TEST_ASSERT_TRUE(t.dryRunGrantResponse(kAddrCoordinator, /*tokenOffer=*/true, out));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kTokenOffer) | kResponseFlag,
+                          out.msgType);
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+}
+
+// When a demand is actually pending (resumed + addressed), the dry-run mirrors
+// the live reply (the demand frame) and is idempotent: repeated calls return
+// the same frame and never consume the pending send.
+static void test_dryrun_mirrors_pending_demand_idempotent() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 80.0f, now));
+  Frame a, b;
+  TEST_ASSERT_TRUE(t.dryRunGrantResponse(kAddrCoordinator, false, a));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), a.msgType);
+  TEST_ASSERT_TRUE(t.dryRunGrantResponse(kAddrCoordinator, false, b));
+  TEST_ASSERT_EQUAL_UINT8(a.msgType, b.msgType);
+  TEST_ASSERT_EQUAL_UINT8(a.sendParamHi, b.sendParamHi);
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());  // never enqueued
+  // The real grant still fires the demand — the dry-run did not consume it.
+  Frame f = grant1(t, now + 10);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_silent_no_demands_no_tx);
@@ -759,5 +803,7 @@ int main() {
   RUN_TEST(test_go_silent_flushes_everything);
   RUN_TEST(test_alarms_latched_across_resume_until_cleared);
   RUN_TEST(test_version_announce_and_version_bit_mirroring);
+  RUN_TEST(test_dryrun_shadow_mode_acks_without_tx);
+  RUN_TEST(test_dryrun_mirrors_pending_demand_idempotent);
   return UNITY_END();
 }

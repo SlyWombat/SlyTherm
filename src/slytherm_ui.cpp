@@ -15,6 +15,8 @@
 #include "wifi_prov.h"
 #include "telnet_log.h"
 
+extern "C" bool uiTxTurnStress();  // #28 bench stress flag (main_thermostat)
+
 namespace slytherm_ui {
 
 void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi, bool firstRun){
@@ -29,6 +31,15 @@ void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi, bool firstRun)
 
 void service(){
   static uint32_t last=0; uint32_t now=millis(); lv_tick_inc(now-last); last=now;
+#if defined(SLYTHERM_TXTURN_PROBE)
+  // #28 bench stress: when the turnaround probe is being run under worst-case
+  // load, hammer the heaviest LVGL draw path — invalidate the whole active
+  // screen and force an immediate full 800x480 refresh every service tick
+  // (~5 ms). This maxes core-0 PSRAM/RGB traffic so the CT-485 turnaround probe
+  // on core 1 captures its worst jitter. Default OFF (runtime MQTT toggle only),
+  // so normal/ shadow-window rendering is untouched.
+  if(uiTxTurnStress()){ lv_obj_t* a=lv_scr_act(); if(a){ lv_obj_invalidate(a); lv_refr_now(NULL); } }
+#endif
   // snapshot the model under the mutex, render outside the lock
   static uint32_t lastRender=0;
   if(now-lastRender>=250){ lastRender=now;

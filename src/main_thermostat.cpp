@@ -88,6 +88,7 @@
 #include "DettsonConfig.h"
 #include "DualFuelArbiter.h"
 #include "HaMqtt.h"
+#include "LatencyStats.h"  // #28 TX-turnaround jitter probe
 #include "ModeStateMachine.h"
 #include "OutdoorTempSource.h"
 #include "PidShaper.h"
@@ -325,6 +326,12 @@ ui::UiModel         gUi;
 ui::UiModel::LockPersistBlob gShadowLock{};  // last lock state written to NVS (change-detect)
 safety::SafetySupervisor* gSup = nullptr;
 ct485::Ct485Thermostat*   gCt = nullptr;
+
+// #28 TX-turnaround probe bench-stress flag (defined early: the MQTT command
+// handler sets it, ct485Task reads it, the UI reads it via uiTxTurnStress()).
+// Unconditional so the extern accessor always links; runtime-only, never
+// persisted (defaults OFF every boot so the passive probe rides shadow windows).
+volatile bool gTxTurnStress = false;
 
 // --- CompressorGuard adapters -----------------------------------------------
 // Glue-side stop anchor for the min-off-remaining diagnostic and the idle
@@ -979,6 +986,18 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     else if (strcmp(buf, "off") == 0 || strcmp(buf, "OFF") == 0 || strcmp(buf, "0") == 0)
       uiSniffStop();
     else accepted = false;
+#if defined(SLYTHERM_TXTURN_PROBE)
+  } else if (strcmp(topic, "slytherm/cmd/txturn_stress") == 0) {
+    // #28 bench-only: force worst-case LVGL load (continuous full-screen
+    // redraws, core 0) while the turnaround probe (core 1) captures max jitter.
+    // NOT persisted — a deliberate toggle for the post-shadow-window bench run;
+    // every boot defaults OFF so the passive probe rides shadow windows clean.
+    if (strcmp(buf, "on") == 0 || strcmp(buf, "ON") == 0 || strcmp(buf, "1") == 0)
+      gTxTurnStress = true;
+    else if (strcmp(buf, "off") == 0 || strcmp(buf, "OFF") == 0 || strcmp(buf, "0") == 0)
+      gTxTurnStress = false;
+    else accepted = false;
+#endif
   } else if (strcmp(topic, "slytherm/cmd/sleep") == 0) {
     // #90 HA sleep override (retain-friendly): "on" forces the Sleep state
     // (e.g. a bedroom sensor / HA sleep mode), "off" forces awake, "auto"
@@ -1135,6 +1154,9 @@ void subscribeAll() {
       "slytherm/cmd/sensor/+/offset", "slytherm/cmd/sensor/+/participating",
       "slytherm/cmd/sleep", "slytherm/cmd/sniff", "slytherm/cmd/ota_mirror"};
   for (const char* t : topics) gMqtt.subscribe(t);
+#if defined(SLYTHERM_TXTURN_PROBE)
+  gMqtt.subscribe("slytherm/cmd/txturn_stress");  // #28 bench stress toggle
+#endif
 #ifdef SLYTHERM_REMOTE_LINK
   gMqtt.subscribe(hm::topic::kRemoteIntentSubscribeWildcard);  // #104
 #endif
@@ -1451,6 +1473,14 @@ volatile uint32_t gLastBusRxS = 0;   // 0 = never
 volatile uint32_t gCtTxSuppressed = 0;
 volatile uint32_t gCtRxBytes = 0;    // raw UART RX bytes (stats: dead-pin vs framing)
 
+// #28 passive TX-turnaround jitter probe. gTxTurnStress is defined earlier (the
+// MQTT handler needs it); the UI reads it through this extern accessor. The
+// histogram and probe path exist only when SLYTHERM_TXTURN_PROBE is built.
+extern "C" bool uiTxTurnStress() { return gTxTurnStress; }
+#if defined(SLYTHERM_TXTURN_PROBE)
+slytherm::LatencyStats gTxTurn;       // compute-turnaround samples (us), ct485Task-owned
+#endif
+
 #ifdef SLYTHERM_CT485_UART
 ct485::FrameAccumulator gCtAcc;
 uint32_t gCtLastByteUs = 0;
@@ -1501,6 +1531,30 @@ void sniffRejects() {
       telnet_log::logf("[ct485-rej] %s", line);
     }
   }
+}
+#endif
+
+#if defined(SLYTHERM_TXTURN_PROBE)
+// #28 passive TX-turnaround probe. On every coordinator grant addressed to the
+// slot SlyTherm occupies (OEM thermostat = node 1 = kAddrThermostat) — an R2R
+// poll (dataflow bit) or a Token Offer — time the firmware's COMPUTE turnaround:
+// from the just-decoded grant (t0) to the would-be node-1 reply built + encoded
+// and ready for DE to assert (t1). The reply is the pure/const dry-run
+// (dryRunGrantResponse) so the shadow-mode stack, which never resumes, still
+// times the real TX-path work WITHOUT touching the bus or any state. Called from
+// the RX loop right after decode; adds one histogram sample (~every 3.2 s).
+void txTurnProbe(const ct485::Frame& f) {
+  const bool r2r = f.msgType == static_cast<uint8_t>(ct485::MsgType::kR2R) &&
+                   (f.packetNum & ct485::kPktNumDataflowBit);
+  const bool tok = f.msgType == static_cast<uint8_t>(ct485::MsgType::kTokenOffer);
+  if (!(r2r || tok) || f.dst != ct485::kAddrThermostat) return;
+  static uint8_t raw[ct485::kMaxFrame];  // ct485Task-only scratch (no heap in RX path)
+  ct485::Frame resp;
+  const uint32_t t0 = micros();
+  if (gCt->dryRunGrantResponse(f.src, tok, resp))
+    (void)ct485::encode(resp, raw);     // encode() dominates: the wire bytes DE would drive
+  const uint32_t t1 = micros();
+  gTxTurn.add(t1 - t0);                  // uint32 wrap-safe for a small delta
 }
 #endif
 
@@ -1579,6 +1633,9 @@ void ct485Task(void*) {
         ct485::Frame f;
         if (ct485::decode(gCtAcc.frame(), gCtAcc.frameLen(), f)) {
           gCt->onFrame(f, nowMs);
+#if defined(SLYTHERM_TXTURN_PROBE)
+          txTurnProbe(f);  // #28: time our would-be grant response (no TX)
+#endif
           gLastBusRxS = nowSeconds();
           sniffFrame(f);
         }
@@ -1592,6 +1649,9 @@ void ct485Task(void*) {
         ct485::Frame f;
         if (ct485::decode(gCtAcc.frame(), gCtAcc.frameLen(), f)) {
           gCt->onFrame(f, nowMs);
+#if defined(SLYTHERM_TXTURN_PROBE)
+          txTurnProbe(f);  // #28: time our would-be grant response (no TX)
+#endif
           gLastBusRxS = nowSeconds();
           sniffFrame(f);
         }
@@ -1612,6 +1672,35 @@ void ct485Task(void*) {
                          (unsigned long)c.framesOk,
                          (unsigned long)c.badLength, (unsigned long)c.badChecksum,
                          (unsigned long)c.overruns); } }
+#if defined(SLYTHERM_TXTURN_PROBE)
+    // Per-mode isolation: clear the histogram when the bench stress toggle flips
+    // so the passive baseline and the stress run never co-mingle (a diluted
+    // stress p99 would mask exactly the spike stress mode exists to catch).
+    // Race-free: gTxTurn.add() and this reset both run inside the gCtMux hold.
+    { static bool lastStress = false;
+      if (gTxTurnStress != lastStress) { lastStress = gTxTurnStress; gTxTurn.reset(); } }
+#endif
+#if defined(SLYTHERM_TXTURN_PROBE) && defined(SLYTHERM_UI)
+    // #28 verdict feed. Compute turnaround (grant decoded -> reply built+encoded),
+    // plus the WIRE-TO-WIRE max the coordinator would see: compute max + the
+    // task-tick dwell (grant bytes wait <= one cadence in the UART FIFO) + the DE
+    // pre-drive hold. Compare w2wmax against the OEM node-1 floor (~123000 us).
+    { static uint32_t txtMs = 0;
+      if (gTxTurn.count() > 0 && nowMs - txtMs >= dettson::kTxTurnReportMs) { txtMs = nowMs;
+        const uint32_t w2wMax = gTxTurn.max() +
+                                cfg::kCt485TickMs * 1000u + ct485::kDePrePostUs;
+        telnet_log::logf("[txturn] n=%lu min=%lu p50=%lu p95=%lu p99=%lu p999=%lu max=%lu us "
+                         "w2wmax=%lu us(dwell%lums+de) floor=%lu stress=%d",
+                         (unsigned long)gTxTurn.count(), (unsigned long)gTxTurn.min(),
+                         (unsigned long)gTxTurn.percentile(0.50f),
+                         (unsigned long)gTxTurn.percentile(0.95f),
+                         (unsigned long)gTxTurn.percentile(0.99f),
+                         (unsigned long)gTxTurn.percentile(0.999f),
+                         (unsigned long)gTxTurn.max(), (unsigned long)w2wMax,
+                         (unsigned long)cfg::kCt485TickMs,
+                         (unsigned long)dettson::kTxTurnOemFloorUs,
+                         (int)gTxTurnStress); } }
+#endif
 #endif
     gCt->tick(nowMs);
     ct485::Frame txf;

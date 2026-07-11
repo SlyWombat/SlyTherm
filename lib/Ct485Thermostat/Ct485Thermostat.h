@@ -154,6 +154,21 @@ class Ct485Thermostat {
   uint32_t unexpectedFrames() const { return unexpected_; }
   uint32_t txDropped() const { return txDropped_; }  // TX-queue overflow (never babbles)
 
+  // ---- Passive TX-turnaround probe (issue #28, Phase 3 bench gate) ----
+  // Build the response frame handleGrant() WOULD transmit for a coordinator
+  // grant addressed to our slot, with NO enqueue, NO state change, and
+  // independent of the silent()/addressed() gates — the shadow-mode dry-run
+  // that lets the firmware time its own grant->DE-ready turnaround without ever
+  // driving the bus. Branch order mirrors handleGrant() (retry > demand >
+  // queued command > ACK/token echo) so the build cost is representative; in
+  // shadow mode the demand branches are gated off so it always lands on the
+  // ACK/token-echo frame, and encode() (the Fletcher pass) dominates and is
+  // content-independent at microsecond resolution. tokenOffer=false => R2R
+  // grant, true => Token Offer. Pure/const; MUST be kept in lockstep with
+  // handleGrant(). Always returns true (a grant to us always has a would-be
+  // reply); `out` is filled with the frame.
+  bool dryRunGrantResponse(uint8_t grantSrc, bool tokenOffer, Frame& out) const;
+
  private:
   enum class GrantKind : uint8_t { kR2R, kTokenOffer };
 

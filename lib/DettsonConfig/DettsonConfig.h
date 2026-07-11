@@ -294,4 +294,24 @@ constexpr float    kDegradedHeatFloorC      = 16.0f;  // DS18B20-only degraded m
 constexpr float    kDegradedHeatCeilC       = 18.0f;  //  cooling disabled (or >=29 C ceiling), demand capped
 constexpr float    kCoolingIndoorLockoutC   = 18.0f;  // never cool when indoor below this
 
+// ---------- TX-turnaround jitter probe (issue #28; passive, ship-safe) ----------
+// Phase 3 single-unit bench gate. A passive probe on the S3 controller times,
+// on every coordinator R2R/Token grant addressed to node 1 (the slot SlyTherm
+// occupies, ~every 3.2 s), the firmware's grant->DE-ready COMPUTE turnaround:
+// build the would-be node-1 reply (dry-run, no bus drive) + encode it. It never
+// transmits and changes no control state; safe to ship in normal firmware so it
+// rides each shadow window automatically. Enabled by -DSLYTHERM_TXTURN_PROBE
+// (thermostat_s3 build); reported on the telnet [txturn] line.
+constexpr uint32_t kTxTurnReportMs   = 30000;   // telnet [txturn] stats cadence
+// Reference budgets from the #28 live captures, for the pass/fail read:
+constexpr uint32_t kTxTurnOemFloorUs = 123000;  // OEM node-1 grant->reply floor (min observed)
+constexpr uint32_t kTxTurnTimeoutUs  = 3000000; // coordinator RESPONSE_TIMEOUT (give-up)
+// The probe measures COMPUTE only (grant decoded -> reply built+encoded, one
+// synchronous top-priority task iteration). The coordinator-visible WIRE-TO-WIRE
+// turnaround adds two components the probe cannot see in software, both bounded:
+//   * task-tick dwell: a grant's bytes wait in the UART FIFO up to one CT-485
+//     task cadence (cfg::kCt485TickMs) before the drain reads them; and
+//   * the DE pre-drive hold (ct485::kDePrePostUs) before the first wire bit.
+// Reported wire-to-wire max = compute max + those two (see the [txturn] line).
+
 }  // namespace dettson

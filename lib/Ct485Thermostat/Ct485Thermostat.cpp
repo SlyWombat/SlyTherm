@@ -345,6 +345,9 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
 
 // ---------------- Token grant ----------------
 
+// NOTE: dryRunGrantResponse() below mirrors this function's branch order for
+// the passive #28 turnaround probe. Any change to the grant-reply logic here
+// must be reflected there (and vice versa).
 void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kind) {
   // 1) A retransmit owed (response timeout / NAK1) goes first, verbatim.
   if (out_.active && out_.retryQueued) {
@@ -416,6 +419,46 @@ void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kin
     t.payloadLen = kSetAddressPayloadLen;
     transmit(t, nowMs);
   }
+}
+
+// ---------------- Passive turnaround probe (issue #28) ----------------
+
+// See the header contract. Pure/const dry-run of handleGrant()'s reply, with
+// no enqueue/state change and no silent()/addressed() gating. Kept in lockstep
+// with handleGrant() (branch order: retry > demand > queued command > ACK).
+bool Ct485Thermostat::dryRunGrantResponse(uint8_t grantSrc, bool tokenOffer,
+                                          Frame& out) const {
+  // 1) A retransmit owed would go out first, verbatim.
+  if (out_.active && out_.retryQueued) { out = out_.frame; return true; }
+
+  if (!out_.active) {
+    // 2) Demand channels needing (re)send — built fresh from current state.
+    //    buildDemandFrame() self-gates on silent_/offsetVariant, so in shadow
+    //    mode this yields nothing and we fall through to the ACK reply.
+    for (size_t i = 0; i < kDemandChannelCount; i++) {
+      const ChannelState& cs = chan_[i];
+      if (!cs.sendNeeded && !cs.zeroPending) continue;
+      if (buildDemandFrame(static_cast<DemandChannel>(i), out)) return true;
+    }
+    // 3) Queued persistent-state command.
+    if (cmdCount_ > 0) { out = cmdFifo_[cmdHead_]; return true; }
+  }
+
+  // 4) Nothing to send: acknowledge the poll / echo the token offer.
+  if (!tokenOffer) {
+    out = baseFrame(grantSrc, static_cast<uint8_t>(MsgType::kR2R));
+    out.packetNum  = static_cast<uint8_t>(kPktNumDataflowBit | versionBit_);
+    out.payload[0] = kAck1;
+    out.payloadLen = 1;
+  } else {
+    out = baseFrame(grantSrc, static_cast<uint8_t>(MsgType::kTokenOffer) | kResponseFlag);
+    out.payload[0] = addr_;
+    out.payload[1] = subnet_;
+    std::memcpy(out.payload + 2, cfg_.mac, 8);
+    std::memcpy(out.payload + 10, cfg_.sessionId, 8);
+    out.payloadLen = kSetAddressPayloadLen;
+  }
+  return true;
 }
 
 // ---------------- Timers ----------------
