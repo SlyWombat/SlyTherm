@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .ct485_decode import COMMAND_NAMES, MSG_TYPE_NAMES, Frame
+from .ct485_decode import ACK_NAK_NAMES, COMMAND_NAMES, MSG_TYPE_NAMES, Frame
 from . import config
 
 DEMAND_CMDS = {0x64: "HEAT_DEMAND", 0x65: "COOL_DEMAND"}
@@ -37,9 +37,14 @@ class EventDeriver:
         if frame.base_msg_type != 0x03 or frame.is_response:
             return []
         p = frame.payload
-        if len(p) < 2:
+        if len(p) < 1:
             return []
-        cmd = p[0] | (p[1] << 8)
+        # ClimateTalk command codes are a SINGLE byte. A prior 16-bit LE read
+        # (p[0] | p[1]<<8) invented phantom opcodes like 0xA506 whenever the
+        # second payload byte was nonzero MAC/session data (e.g. an 0x06
+        # R2R-ACK frame), inflating novel_command. Demands are unaffected —
+        # their p[1] is always 0x00.
+        cmd = p[0]
         out: list[tuple[datetime, str, dict]] = []
 
         if cmd in DEMAND_CMDS:
@@ -64,13 +69,14 @@ class EventDeriver:
             elif pct != prev:
                 out.append((ts, "demand_change", base))
             self._demand[cmd] = pct
-        elif (cmd if cmd <= 0xFF else -1) not in COMMAND_NAMES:
-            # Unknown Set-Control command — the interesting stuff (0x0061, 0x0006).
+        elif cmd not in COMMAND_NAMES and cmd not in ACK_NAK_NAMES:
+            # Genuinely unknown Set-Control command (known ACKs like 0x06 and
+            # named statuses like 0x61 are no longer flagged).
             epoch = ts.timestamp()
             if epoch - self._novel_last.get(cmd, 0.0) >= config.NOVEL_CMD_INTERVAL_S:
                 self._novel_last[cmd] = epoch
                 out.append((ts, "novel_command", {
-                    "code": cmd, "code_hex": f"0x{cmd:04X}",
+                    "code": cmd, "code_hex": f"0x{cmd:02X}",
                     "payload": p.hex(), "millis": frame.ts_ms,
                     "src": frame.src, "dst": frame.dst,
                     "msg_type": frame.msg_type,

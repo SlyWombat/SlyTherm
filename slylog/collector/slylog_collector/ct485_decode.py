@@ -113,6 +113,9 @@ COMMAND_NAMES = {
     0x5D: "DEHUM_SET_POINT",
     0x5E: "HUM_SET_POINT",
     0x60: "DAMPER_POSITION",
+    0x61: "SUBSYSTEM_BUSY_STATUS",  # coord->stat readiness handshake after a
+                                    # demand transition (auto OR manual); value
+                                    # 0 = not busy. See docs/02.
     0x62: "DEHUM_DEMAND",
     0x63: "HUM_DEMAND",
     0x64: "HEAT_DEMAND",
@@ -225,13 +228,16 @@ class Frame:
     def base_msg_type(self) -> int: return self.msg_type & ~RESPONSE_FLAG
 
     def command_code(self) -> int | None:
-        """Set-Control command code from the 16-bit LE payload echo at [10..11].
-        Falls back to Send Parameter hi (header offset 4) if payload is short."""
+        """Set-Control command code: the single opcode byte at payload[0].
+        ClimateTalk command codes are one byte; a prior 16-bit LE read
+        (p[0] | p[1]<<8) produced phantom opcodes like 0xA506 whenever
+        payload[1] carried nonzero MAC/session data (e.g. an 0x06 R2R-ACK).
+        Falls back to Send Parameter hi (header offset 4) if payload empty."""
         if self.base_msg_type != 0x03:
             return None
         p = self.payload
-        if len(p) >= 2:
-            return p[0] | (p[1] << 8)
+        if len(p) >= 1:
+            return p[0]
         return self.param_hi
 
 
@@ -597,10 +603,10 @@ def decode_set_control(frame: Frame) -> list[str]:
         out.append(f"  payload too short for command echo; header SendParam(hi)="
                    f"0x{frame.param_hi:02X} {_name(COMMAND_NAMES, frame.param_hi)}")
         return out
-    cmd = p[0] | (p[1] << 8)
-    out.append(f"  command=0x{cmd:04X} {_name(COMMAND_NAMES, cmd if cmd <= 0xFF else -1)}"
+    cmd = p[0]  # single-byte opcode (see command_code() — no 16-bit LE read)
+    out.append(f"  command=0x{cmd:02X} {_name(COMMAND_NAMES, cmd)}"
                f"{' (response/echo)' if frame.is_response else ''}")
-    cmd8 = cmd if cmd <= 0xFF else -1
+    cmd8 = cmd
 
     if cmd8 in PCT_DEMAND_CMDS:
         out += decode_demand_variants(p)
