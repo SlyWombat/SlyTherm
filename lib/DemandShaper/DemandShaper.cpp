@@ -332,6 +332,15 @@ float StagedCoolShaper::shape(float requestPct, uint32_t nowS) {
   return on_ ? cfg_.stagePct : 0.0f;
 }
 
+uint32_t StagedCoolShaper::minOffRemainingS(uint32_t nowS) const {
+  // On, or the very first (idle) start — no demand-level rest is owed here.
+  if (on_ || !everCycled_) return 0;
+  // A live manual bypass (#151) waives this rest entirely, so surface no wait.
+  if (manualArmed_ && elapsedS(nowS, manualArmS_) <= cfg_.manualArmWindowS) return 0;
+  const uint32_t off = elapsedS(nowS, phaseStartS_);
+  return off >= cfg_.minOffS ? 0 : cfg_.minOffS - off;
+}
+
 void StagedCoolShaper::reset() {
   // Start history survives reset on purpose: a soft restart must not refill
   // the starts-per-hour budget (docs/04 §2 reset-loop row).

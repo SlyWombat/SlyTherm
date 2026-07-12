@@ -378,6 +378,8 @@ void renderMain(const DisplayState& s){ char b[128];
   { const bool heat=s.action==HvacAction::kHeating||s.action==HvacAction::kDefrosting, cool=s.action==HvacAction::kCooling;
     if(heat){ snprintf(b,sizeof(b),"Heating to %.1f\xC2\xB0",(double)s.heatSetpointC); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_EMBER),0); }
     else if(cool){ snprintf(b,sizeof(b),"Cooling to %.1f\xC2\xB0",(double)s.coolSetpointC); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_CRYO),0); }
+    else if(s.compressorHeldOff){ const bool cs=s.compressorHeldSide==SetpointSide::kCool;   // min-OFF ack: wants to run, waiting out compressor protection
+      snprintf(b,sizeof(b),"%s soon \xE2\x80\xA2 %lu min",cs?"Cooling":"Heating",(unsigned long)((s.compressorHeldRemainS+59u)/60u)); lv_obj_set_style_text_color(wAction,lv_color_hex(cs?COL_CRYO:COL_EMBER),0); }
     else if(s.mode==UserMode::kOff){ strcpy(b,"System off"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     else if(s.mode==UserMode::kAuto){ snprintf(b,sizeof(b),"Idle - holding %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     else { strcpy(b,"Idle"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
