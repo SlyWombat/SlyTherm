@@ -1543,6 +1543,32 @@ void sniffFrame(const ct485::Frame& f) {
   }
 }
 
+#if defined(SLYTHERM_CT485_TX_ENABLE)
+// Go-live: mirror the frames WE transmit into the same capture stream, so
+// slylog logs what SlyTherm sends and not only what it hears — the RX echo of
+// our own TX is transceiver-dependent (auto-direction chips may mute RX while
+// driving), so we cannot rely on it. Tagged [ct485-tx] / [ct485+tx] to stay
+// distinguishable from received traffic; identical hex layout to sniffFrame so
+// the PC-side decoder ingests it the same way. Gated on gSniffActive like RX.
+void mirrorTxFrame(const ct485::Frame& f) {
+  if (!gSniffActive) return;
+  const unsigned long ms = millis();
+  char line[96];
+  int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u",
+                   ms, f.src, f.dst, f.msgType, f.payloadLen);
+  int nb = f.payloadLen; if (nb > 16) nb = 16;
+  for (int i = 0; i < nb && n < (int)sizeof(line) - 3; ++i)
+    n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
+  telnet_log::logf("[ct485-tx] %s", line);
+  for (int off = 16, idx = 0; off < (int)f.payloadLen; off += 24, ++idx) {
+    n = snprintf(line, sizeof(line), "%lu %d", ms, idx);
+    for (int i = off; i < (int)f.payloadLen && i < off + 24; ++i)
+      n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
+    telnet_log::logf("[ct485+tx] %s", line);
+  }
+}
+#endif
+
 // Mirror salvaged torn/merged bursts (FrameAccumulator::takeRejected) as
 // chunked hex — the PC decoder's resync slider recovers the frames inside.
 // Drained even while sniffing is off so a stale stash never leaks into a
@@ -1739,12 +1765,15 @@ void ct485Task(void*) {
       uint8_t raw[ct485::kMaxFrame];
       const size_t n = ct485::encode(txf, raw);
       if (n > 0) {
-        digitalWrite(cfg::kCt485DePin, HIGH);
-        delayMicroseconds(ct485::kDePrePostUs);
+        // DE only exists on a manual-direction transceiver; the Waveshare S3
+        // board is auto-direction (kCt485DePin = -1) so the guard skips the
+        // no-op pin writes and their settle delays entirely.
+        const bool haveDe = cfg::kCt485DePin >= 0;
+        if (haveDe) { digitalWrite(cfg::kCt485DePin, HIGH); delayMicroseconds(ct485::kDePrePostUs); }
         uart_write_bytes(UART_NUM_1, raw, n);
         uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(250));
-        delayMicroseconds(ct485::kDePrePostUs);
-        digitalWrite(cfg::kCt485DePin, LOW);
+        if (haveDe) { delayMicroseconds(ct485::kDePrePostUs); digitalWrite(cfg::kCt485DePin, LOW); }
+        mirrorTxFrame(txf);  // log our own TX to the capture stream (slylog)
       }
 #else
       // Stub: authorized frames are counted and dropped — nothing reaches a
@@ -3025,6 +3054,12 @@ void setup() {
     esp_efuse_mac_get_default(cc.mac);
     for (uint8_t& b : cc.sessionId) b = static_cast<uint8_t>(esp_random());
     cc.randomMs = ctRandomMs;
+#if defined(SLYTHERM_CT485_TX_ENABLE)
+    // Go-live (docs/02 §5a): open the demand-offset gate to the field-confirmed
+    // variant A (payload[12]=refresh timer, [13]=demand). Only in the TX build —
+    // shadow/probe builds leave kUnset so buildDemandFrame() refuses every demand.
+    cc.offsetVariant = ct485::OffsetVariant::kVarA;
+#endif
     gCt = new ct485::Ct485Thermostat(cc);
   }
 
