@@ -70,7 +70,10 @@ TARGETS = [
         "ota": None, "optional": False,
     },
     {
-        "env": "thermostat_s3",
+        # v1.0 go-live: the released wall-s3 controller is the CT-485 TX build
+        # (thermostat_s3_tx), not the shadow thermostat_s3. The running shadow
+        # controller resolves 'wall-s3' and pulls this — starting live TX on boot.
+        "env": "thermostat_s3_tx",
         "name": "SlyTherm Controller (Waveshare ESP32-S3-4.3B)",
         "chip": "esp32s3", "chipFamily": "ESP32-S3",
         "offsets": ["0x0", "0x8000", "0xe000", "0x10000"],
