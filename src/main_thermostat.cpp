@@ -1393,6 +1393,17 @@ void mqttTask(void*) {
   gMqtt.setServer(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT);
 #endif
   gMqtt.setBufferSize(cfg::kMqttBufBytes);
+  // #WDT: bound PubSubClient's socket-wait loops well under the 5 s task WDT.
+  // Both PubSubClient::connect() (CONNACK wait) and ::readByte() busy-spin on
+  // `!_client->available()` for up to `socketTimeout` seconds — connect() with
+  // NO yield at all, readByte() with yield()==vPortYield() which re-selects this
+  // prio-2 task and never lets prio-0 IDLE0 run. The default 15 s therefore
+  // starves IDLE0 on core 0 and trips the watchdog (reason:"wdt") on a slow/
+  // partial broker exchange during the connect->discovery burst. 2 s caps the
+  // spin at < 5 s (3 s margin); a healthy LAN broker answers in << 1 s, so this
+  // never causes a spurious reconnect. Diagnostic bound only — control/protocol
+  // behaviour is unchanged.
+  gMqtt.setSocketTimeout(2);
   gMqtt.setCallback(onMqttMessage);
 
   uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0, lastDiscoverMs = 0;
