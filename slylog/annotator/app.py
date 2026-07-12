@@ -88,7 +88,7 @@ def log_entry(text: str) -> None:
         c.execute(
             "INSERT INTO events (ts, kind, detail) VALUES "
             "(now(), 'annotation', jsonb_build_object("
-            "'note', %s, 'source', 'capture-logger'))",
+            "'note', %s::text, 'source', 'capture-logger'))",
             (text,),
         )
 
@@ -96,7 +96,7 @@ def log_entry(text: str) -> None:
 def recent(n: int = 30):
     with _db() as c:
         rows = c.execute(
-            "SELECT to_char(ts AT TIME ZONE %s, 'HH24:MI:SS'), detail->>'note' "
+            "SELECT to_char(ts AT TIME ZONE %s::text, 'HH24:MI:SS'), detail->>'note' "
             "FROM events WHERE kind='annotation' "
             "AND detail->>'source'='capture-logger' "
             "ORDER BY ts DESC LIMIT %s",
