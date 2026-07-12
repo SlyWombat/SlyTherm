@@ -509,12 +509,12 @@ void renderMain(const DisplayState& s){ char b[128];
     setTxt(wCatNet,b); }
   if(wCatFan){ const uint8_t fm=uiFanMode();
     if(fm==2){ const uint8_t pc=uiFanCircPct(); const char*sp=pc>=63?"High":(pc>=38?"Med":"Low");
-      snprintf(b,sizeof(b),"Circulate \xC2\xB7 %lumin %s",(unsigned long)uiFanCircMin(),sp); }
+      snprintf(b,sizeof(b),"Circulate    %lumin %s",(unsigned long)uiFanCircMin(),sp); }
     else strcpy(b, fm==1?"On":"Auto");
     setTxt(wCatFan,b); }
   if(wCatDisp) setTxt(wCatDisp, uiClock24()?"24-hour clock":"12-hour clock");
   if(wCatSec){ bool unlocked=false,pin=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; pin=gM->userPinSet(); U();
-    snprintf(b,sizeof(b),"%s \xC2\xB7 PIN %s",unlocked?"Unlocked":"Locked",pin?"set":"none");
+    snprintf(b,sizeof(b),"%s    PIN %s",unlocked?"Unlocked":"Locked",pin?"set":"none");
     setTxt(wCatSec,b); lv_obj_set_style_text_color(wCatSec,lv_color_hex(unlocked?COL_MUTED:COL_WARN),0); }
   if(wCatSys) setTxt(wCatSys,"Firmware " SLYTHERM_FW_BUILD);
   }
