@@ -505,7 +505,7 @@ void renderMain(const DisplayState& s){ char b[128];
   // Settings category-card live summaries (IA reorg): one condensed line per
   // card, refreshed every renderMain like the old WiFi/Home status words were.
   if(wCatNet){ char ss[33],ip[20]; int8_t rs=0; bool wc=false; wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rs,&wc);
-    snprintf(b,sizeof(b),"WiFi %s \xC2\xB7 %s \xC2\xB7 Home %s", wc?ss:"not set", wc?ip:"offline", s.mqttOk?"connected":"offline");
+    snprintf(b,sizeof(b),"WiFi %s    %s    Home %s", wc?ss:"not set", wc?ip:"offline", s.mqttOk?"connected":"offline");
     setTxt(wCatNet,b); }
   if(wCatFan){ const uint8_t fm=uiFanMode();
     if(fm==2){ const uint8_t pc=uiFanCircPct(); const char*sp=pc>=63?"High":(pc>=38?"Med":"Low");

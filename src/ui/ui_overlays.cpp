@@ -580,12 +580,21 @@ static int tabIndex(const char* n){
   if(!strcmp(n,"sensors"))return 2;  if(!strcmp(n,"system"))return 3;
   if(!strcmp(n,"settings"))return 4; if(!strcmp(n,"diag"))return 5; return -1; }
 static void navToTab(int i){ if(gTabview && i>=0 && i<6) lv_tabview_set_act(gTabview,(uint32_t)i,LV_ANIM_OFF); }
+// Sheets/overlays are modal and mutually exclusive, but each open-fn only shows
+// its own — nothing hides a sheet left open by a prior nav. During a scripted
+// capture that stacks them (Fan drawn over Networking). Hide them all before
+// opening the requested one so every capture is clean and single-modal.
+static void hideAllSheets(){
+  lv_obj_t* ov[]={gHoldSheet,gVacSheet,gFanSheet,gNetSheet,gDispSheet,gSecSheet,gSysSheet,wifiOv,srvOv};
+  for(lv_obj_t* o:ov) if(o) lv_obj_add_flag(o,LV_OBJ_FLAG_HIDDEN);
+  gWifiOpen=false;
+}
 static void navScreen(const char* cmd){
   if(!cmd || !cmd[0]) return;
   bool digits=true; for(const char*p=cmd;*p;++p) if(*p<'0'||*p>'9'){ digits=false; break; }
-  if(digits){ navToTab(atoi(cmd)); return; }
-  if(!strncmp(cmd,"tab:",4)){ navToTab(tabIndex(cmd+4)); return; }
-  if(!strncmp(cmd,"sheet:",6)){ const char* n=cmd+6;
+  if(digits){ hideAllSheets(); navToTab(atoi(cmd)); return; }
+  if(!strncmp(cmd,"tab:",4)){ hideAllSheets(); navToTab(tabIndex(cmd+4)); return; }
+  if(!strncmp(cmd,"sheet:",6)){ const char* n=cmd+6; hideAllSheets();
     // Settings-group sheets: show the Settings tab behind them first.
     if(!strcmp(n,"fan")){        navToTab(4); showFan(); }
     else if(!strcmp(n,"networking")){ navToTab(4); openNet(nullptr); }
