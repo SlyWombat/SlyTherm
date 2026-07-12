@@ -2460,7 +2460,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       const uint32_t winS = cfg::kFanCirculateMinPerHour * 60u;
       const uint32_t creditS = gPreCirc.dutyCreditS(nowS);
       fanReq = (nowS % 3600u) < (winS > creditS ? winS - creditS : 0u)
-                   ? 100.0f : 0.0f;
+                   ? cfg::kFanCirculatePct : 0.0f;  // #53: circulate on LOW
     }
     fanReq = fmaxf(fanReq, preFanReq);  // pre-run never lowers an explicit fan-on
   }
