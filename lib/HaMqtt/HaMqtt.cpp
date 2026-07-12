@@ -1024,5 +1024,39 @@ std::string sensorParticipatingDiscoveryJson(const std::string& sensorId) {
   return entityDiscoveryJson(e);
 }
 
+// #128: HA-editable number entities so HA surfaces the circulate tunables (the
+// panel Fan sheet writes the same retained cmd/state pair). Minutes 0-60 (the
+// panel offers 5/10/15/20/30); speed % snaps to Low/Med/High (25/50/75)
+// on the Controller, but HA gets a 25-step slider over the same range.
+std::string fanCirculateMinDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Fan Circulate Minutes";
+  e.uniqueId = "slytherm_fan_circulate_min";
+  e.stateTopic = topic::kStateFanCirculateMin;
+  e.commandTopic = topic::kCmdFanCirculateMin;
+  e.unit = "min";
+  e.config = true;
+  e.hasRange = true;
+  e.minV = 0.0f;
+  e.maxV = 60.0f;
+  e.stepV = 5.0f;
+  return entityDiscoveryJson(e);
+}
+
+std::string fanCirculatePctDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Fan Circulate Speed";
+  e.uniqueId = "slytherm_fan_circulate_pct";
+  e.stateTopic = topic::kStateFanCirculatePct;
+  e.commandTopic = topic::kCmdFanCirculatePct;
+  e.unit = "%";
+  e.config = true;
+  e.hasRange = true;
+  e.minV = 25.0f;
+  e.maxV = 75.0f;
+  e.stepV = 25.0f;
+  return entityDiscoveryJson(e);
+}
+
 }  // namespace hamqtt
 }  // namespace dettson

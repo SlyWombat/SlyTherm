@@ -89,6 +89,14 @@ uint32_t gLastIntentMs = 0;
 bool gControllerOnline = false;
 char gControllerCid[16] = {};
 
+// #128: fan state cached from the Controller's retained state/fan_* topics.
+// Defaults mirror the Controller's compile-time defaults until the retained
+// truth arrives (seconds after connect). The Fan sheet's getters read these;
+// its edits are published straight back to the fan cmd topics.
+uint8_t gFanMode = 0;         // 0=auto,1=on,2=circulate
+uint32_t gFanCircMin = 15;    // circulate minutes-per-hour
+uint8_t gFanCircPct = 25;     // circulate speed % (Low)
+
 // ---- #117: live sensor rows, assembled from the Controller's retained
 // topics (roster gives order+names; per-sensor topics fill the cells). ----
 constexpr const char* kFusionTopic = "slytherm/state/fusion";
@@ -343,6 +351,18 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       gModel->setOutdoor(v, true, OutdoorSource::kHaWeather);
       U();
     }
+  } else if (strcmp(topic, hm::topic::kStateFanMode) == 0) {
+    // #128: cache the Controller's retained fan state for the panel Fan sheet.
+    auto p = hm::parseFanMode(buf);
+    if (p.ok) gFanMode = static_cast<uint8_t>(p.value);
+  } else if (strcmp(topic, hm::topic::kStateFanCirculateMin) == 0) {
+    char* end = nullptr;
+    const unsigned long v = strtoul(buf, &end, 10);
+    if (end != buf) gFanCircMin = static_cast<uint32_t>(v);
+  } else if (strcmp(topic, hm::topic::kStateFanCirculatePct) == 0) {
+    char* end = nullptr;
+    const unsigned long v = strtoul(buf, &end, 10);
+    if (end != buf) gFanCircPct = static_cast<uint8_t>(v);
   }
 }
 
@@ -415,6 +435,9 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(kAvailability);      // Controller liveness (LWT-backed)
     gMqtt.subscribe(kPresetRoster);      // live preset roster
     gMqtt.subscribe(kOutdoorTemp);       // top-bar Outside readout
+    gMqtt.subscribe(hm::topic::kStateFanMode);          // #128 fan state (retained)
+    gMqtt.subscribe(hm::topic::kStateFanCirculateMin);
+    gMqtt.subscribe(hm::topic::kStateFanCirculatePct);
     gMqtt.subscribe("slytherm/config/sensors");          // #117 roster
     gMqtt.subscribe(kFusionTopic);                        // #117 occupancy/dominant
     gMqtt.subscribe("slytherm/state/sensor/+/age");       // #117 staleness
@@ -592,5 +615,29 @@ void toggleSensorParticipation(const char* displayName) {
   }
 }
 uint32_t attempts() { return gAttempts; }
+
+// #128: fan getters read the cached retained state; setters FORWARD to the
+// Controller over the fan cmd topics (the Remote has no local authority). A
+// lost publish self-corrects — the sheet re-seeds from the retained state on
+// the next open.
+uint8_t fanMode() { return gFanMode; }
+uint32_t fanCircMin() { return gFanCircMin; }
+uint8_t fanCircPct() { return gFanCircPct; }
+void setFanMode(uint8_t mode) {
+  if (!gMqtt.connected() || mode > 2) return;
+  const hm::FanMode m = static_cast<hm::FanMode>(mode);
+  gMqtt.publish(hm::topic::kCmdFanMode, hm::toString(m));
+  Serial.printf("[link] fan mode -> %s\n", hm::toString(m));
+}
+void setFanCirculate(uint32_t minPerHour, uint8_t pct) {
+  if (!gMqtt.connected()) return;
+  char b[12];
+  snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(minPerHour));
+  gMqtt.publish(hm::topic::kCmdFanCirculateMin, b);
+  snprintf(b, sizeof(b), "%u", static_cast<unsigned>(pct));
+  gMqtt.publish(hm::topic::kCmdFanCirculatePct, b);
+  Serial.printf("[link] fan circulate -> %lumin %u%%\n",
+                static_cast<unsigned long>(minPerHour), static_cast<unsigned>(pct));
+}
 
 }  // namespace remote_mqtt

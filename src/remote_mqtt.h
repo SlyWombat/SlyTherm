@@ -40,4 +40,15 @@ uint32_t attempts();       // cumulative broker connect attempts (#109 guard)
 // Takes the DISPLAY name the shared UI's Sensors tab hands to uiToggleSensor.
 void toggleSensorParticipation(const char* displayName);
 
+// #128: fan settings. The Remote has NO local authority (#102/#118) — the panel
+// Fan sheet's changes are FORWARDED to the Controller over the fan cmd topics;
+// the getters return the Controller's retained state (cached from state/fan_*),
+// so the sheet opens showing the truth. mode: 0=auto,1=on,2=circulate; pct: one
+// of 25/50/75.
+uint8_t fanMode();
+uint32_t fanCircMin();
+uint8_t fanCircPct();
+void setFanMode(uint8_t mode);
+void setFanCirculate(uint32_t minPerHour, uint8_t pct);
+
 }  // namespace remote_mqtt

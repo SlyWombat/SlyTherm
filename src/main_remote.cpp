@@ -109,6 +109,14 @@ void uiTask(void*) {
 extern "C" void uiToggleClock24() { gClock24 = !gClock24; gPrefs.putBool("clk24", gClock24); }
 extern "C" bool uiClock24() { return gClock24; }
 extern "C" void uiToggleSensor(const char* name) { remote_mqtt::toggleSensorParticipation(name); }  // #119
+// #128 Fan settings — the Remote is a display replica with NO local authority:
+// getters read the Controller's retained fan state (cached in remote_mqtt),
+// setters forward the change to the Controller over the fan cmd topics.
+extern "C" uint8_t uiFanMode() { return remote_mqtt::fanMode(); }
+extern "C" void uiSetFanMode(uint8_t m) { remote_mqtt::setFanMode(m); }
+extern "C" uint32_t uiFanCircMin() { return remote_mqtt::fanCircMin(); }
+extern "C" uint8_t uiFanCircPct() { return remote_mqtt::fanCircPct(); }
+extern "C" void uiSetFanCirculate(uint32_t minPerHour, uint8_t pct) { remote_mqtt::setFanCirculate(minPerHour, pct); }
 extern "C" void uiSniffStart() {}
 extern "C" void uiSniffStop() {}
 extern "C" bool uiSniffActive() { return false; }

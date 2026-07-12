@@ -91,6 +91,92 @@ void buildVacationSheet(lv_obj_t*scr){ gVacSheet=lv_obj_create(scr); lv_obj_set_
   { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
   vacRefresh(); lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
 
+// ---- Fan settings sheet (issue #128) ---------------------------------------
+// Mode = Auto / On / Circulate; when Circulate, minutes-per-hour + speed
+// Low/Med/High. Each control APPLIES IMMEDIATELY through the shared
+// uiSetFanMode/uiSetFanCirculate hooks (like the clock toggle): the Controller
+// applies locally (globals + NVS + retained MQTT state); a Remote forwards the
+// change to the Controller over the fan cmd topics. On open we seed the local
+// selection from the current values (uiFanMode/uiFanCircMin/uiFanCircPct).
+lv_obj_t *gFanSheet=nullptr,*gFanModeBtn[3]={},*gFanMinLbl=nullptr,*gFanSpdBtn[3]={},*gFanCircHdr=nullptr;
+uint8_t gFanSelMode=0, gFanSpdSel=0;    // mode 0/1/2 (auto/on/circulate); speed idx 0/1/2 -> 25/50/75
+uint32_t gFanMinSel=15;
+static const uint32_t kFanMinSet[5]={5,10,15,20,30};  // the panel's minutes-per-hour choices
+static const uint8_t  kFanSpdPct[3]={25,50,75};       // Low/Med/High (docs/02 §5a)
+static int fanMinIdx(uint32_t m){ int best=2; uint32_t bd=~0u;   // nearest slot in the set (default 15)
+  for(int i=0;i<5;i++){ uint32_t d=m>kFanMinSet[i]?m-kFanMinSet[i]:kFanMinSet[i]-m; if(d<bd){bd=d;best=i;} } return best; }
+static int fanSpdIdx(uint8_t p){ int best=0; int bd=999;
+  for(int i=0;i<3;i++){ int d=(int)p-(int)kFanSpdPct[i]; if(d<0)d=-d; if(d<bd){bd=d;best=i;} } return best; }
+// Segmented fill: the active segment gets a solid accent, the rest stay a muted
+// raised track (matches the Home mode row's SOLID fill — no gradient).
+static void fanSeg(lv_obj_t*b,bool on,uint32_t accent){ if(!b) return; lv_obj_t*l=lv_obj_get_child(b,0);
+  if(on){ lv_obj_set_style_bg_opa(b,LV_OPA_COVER,0); lv_obj_set_style_bg_color(b,lv_color_hex(accent),0);
+    if(l) lv_obj_set_style_text_color(l,lv_color_hex(0x06202B),0); }
+  else { lv_obj_set_style_bg_opa(b,LV_OPA_COVER,0); lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),0);
+    if(l) lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); } }
+void fanRefresh(){ if(!gFanSheet) return;
+  for(int i=0;i<3;i++) fanSeg(gFanModeBtn[i], gFanSelMode==(uint8_t)i, COL_CRYO);
+  const bool circ=gFanSelMode==2;   // circulate controls shown always, greyed unless active (#128)
+  char b[16]; snprintf(b,sizeof(b),"%lu min",(unsigned long)gFanMinSel); setTxt(gFanMinLbl,b);
+  for(int i=0;i<3;i++) fanSeg(gFanSpdBtn[i], circ&&gFanSpdSel==(uint8_t)i, COL_CRYO);
+  if(gFanCircHdr) lv_obj_set_style_text_color(gFanCircHdr,lv_color_hex(circ?COL_MUTED:COL_TEXT3),0);
+  if(gFanMinLbl)  lv_obj_set_style_text_color(gFanMinLbl,lv_color_hex(circ?COL_INK:COL_TEXT3),0); }
+void fanModeEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; }
+  gFanSelMode=(uint8_t)(intptr_t)lv_event_get_user_data(e); uiSetFanMode(gFanSelMode); fanRefresh(); }
+void fanMinStep(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } if(gFanSelMode!=2) return;  // greyed unless circulate
+  int d=(int)(intptr_t)lv_event_get_user_data(e); int i=fanMinIdx(gFanMinSel)+d; if(i<0)i=0; if(i>4)i=4;
+  gFanMinSel=kFanMinSet[i]; uiSetFanCirculate(gFanMinSel,kFanSpdPct[gFanSpdSel]); fanRefresh(); }
+void fanSpdEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } if(gFanSelMode!=2) return;
+  gFanSpdSel=(uint8_t)(intptr_t)lv_event_get_user_data(e); uiSetFanCirculate(gFanMinSel,kFanSpdPct[gFanSpdSel]); fanRefresh(); }
+void fanClose(lv_event_t*){ if(gFanSheet) lv_obj_add_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); }
+void openFan(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } if(!gFanSheet) return;
+  gFanSelMode=uiFanMode(); if(gFanSelMode>2) gFanSelMode=0;
+  gFanMinSel=kFanMinSet[fanMinIdx(uiFanCircMin())]; gFanSpdSel=(uint8_t)fanSpdIdx(uiFanCircPct());
+  fanRefresh(); lv_obj_clear_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gFanSheet); }
+void buildFanSheet(lv_obj_t*scr){ gFanSheet=lv_obj_create(scr); lv_obj_set_size(gFanSheet,470,400); lv_obj_center(gFanSheet);
+  lv_obj_set_style_bg_color(gFanSheet,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(gFanSheet,lv_color_hex(COL_CRYO),0);
+  lv_obj_set_style_border_width(gFanSheet,2,0); lv_obj_set_style_radius(gFanSheet,14,0); lv_obj_set_style_pad_all(gFanSheet,0,0); lv_obj_clear_flag(gFanSheet,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*t=lv_label_create(gFanSheet); lv_label_set_text(t,"Fan"); lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0);
+  lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,18,14);
+  lv_obj_t*sub=lv_label_create(gFanSheet); lv_label_set_text(sub,"How the blower runs between heat/cool calls"); lv_obj_set_style_text_font(sub,&lv_font_montserrat_16,0);
+  lv_obj_set_style_text_color(sub,lv_color_hex(COL_TEXT3),0); lv_obj_align(sub,LV_ALIGN_TOP_LEFT,18,50);
+  // Mode segmented row: Auto / On / Circulate
+  { const char*mn[3]={"Auto","On","Circulate"};
+    for(int i=0;i<3;i++){ lv_obj_t*bn=lv_btn_create(gFanSheet); lv_obj_set_size(bn,144,52); lv_obj_align(bn,LV_ALIGN_TOP_LEFT,18+i*148,84);
+      lv_obj_set_style_bg_color(bn,lv_color_hex(COL_RAISED),0); lv_obj_set_style_shadow_width(bn,0,0); lv_obj_set_style_radius(bn,9,0);
+      lv_obj_add_event_cb(bn,fanModeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
+      lv_obj_t*l=lv_label_create(bn); lv_label_set_text(l,mn[i]); lv_obj_center(l); gFanModeBtn[i]=bn; } }
+  // Circulate section: header + minutes-per-hour stepper + Low/Med/High speed
+  gFanCircHdr=lv_label_create(gFanSheet); lv_label_set_text(gFanCircHdr,"Circulate: run the blower each hour");
+  lv_obj_set_style_text_font(gFanCircHdr,&lv_font_montserrat_16,0); lv_obj_align(gFanCircHdr,LV_ALIGN_TOP_LEFT,18,152);
+  { lv_obj_t*nl=lv_label_create(gFanSheet); lv_label_set_text(nl,"Minutes / hour"); lv_obj_set_style_text_color(nl,lv_color_hex(COL_MUTED),0);
+    lv_obj_set_style_text_font(nl,&lv_font_montserrat_20,0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,18,192);
+    lv_obj_t*minus=lv_btn_create(gFanSheet); lv_obj_set_size(minus,46,44); lv_obj_align(minus,LV_ALIGN_TOP_RIGHT,-150,180);
+    lv_obj_set_style_bg_color(minus,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(minus,fanMinStep,LV_EVENT_CLICKED,(void*)(intptr_t)-1);
+    { lv_obj_t*l=lv_label_create(minus); lv_label_set_text(l,"-"); lv_obj_center(l); }
+    gFanMinLbl=lv_label_create(gFanSheet); lv_obj_set_style_text_font(gFanMinLbl,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(gFanMinLbl,lv_color_hex(COL_INK),0);
+    lv_obj_set_width(gFanMinLbl,92); lv_obj_set_style_text_align(gFanMinLbl,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(gFanMinLbl,LV_ALIGN_TOP_RIGHT,-52,192);
+    lv_obj_t*plus=lv_btn_create(gFanSheet); lv_obj_set_size(plus,46,44); lv_obj_align(plus,LV_ALIGN_TOP_RIGHT,-4,180);
+    lv_obj_set_style_bg_color(plus,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(plus,fanMinStep,LV_EVENT_CLICKED,(void*)(intptr_t)1);
+    { lv_obj_t*l=lv_label_create(plus); lv_label_set_text(l,"+"); lv_obj_center(l); } }
+  { lv_obj_t*sp=lv_label_create(gFanSheet); lv_label_set_text(sp,"Speed"); lv_obj_set_style_text_color(sp,lv_color_hex(COL_MUTED),0);
+    lv_obj_set_style_text_font(sp,&lv_font_montserrat_20,0); lv_obj_align(sp,LV_ALIGN_TOP_LEFT,18,252);
+    const char*sn[3]={"Low","Med","High"};
+    for(int i=0;i<3;i++){ lv_obj_t*bn=lv_btn_create(gFanSheet); lv_obj_set_size(bn,116,46); lv_obj_align(bn,LV_ALIGN_TOP_LEFT,110+i*118,246);
+      lv_obj_set_style_bg_color(bn,lv_color_hex(COL_RAISED),0); lv_obj_set_style_shadow_width(bn,0,0); lv_obj_set_style_radius(bn,9,0);
+      lv_obj_add_event_cb(bn,fanSpdEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
+      lv_obj_t*l=lv_label_create(bn); lv_label_set_text(l,sn[i]); lv_obj_center(l); gFanSpdBtn[i]=bn; } }
+  { lv_obj_t*note=lv_label_create(gFanSheet); lv_label_set_text(note,"Quiet low-speed circulation evens out the rooms.");
+    lv_obj_set_style_text_font(note,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(note,lv_color_hex(COL_TEXT3),0);
+    lv_obj_align(note,LV_ALIGN_TOP_LEFT,18,306); }
+  lv_obj_t*done=lv_btn_create(gFanSheet); lv_obj_set_size(done,190,46); lv_obj_align(done,LV_ALIGN_BOTTOM_MID,0,-16);
+  lv_obj_set_style_bg_color(done,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(done,fanClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(done); lv_label_set_text(l,"Done"); lv_obj_set_style_text_color(l,lv_color_hex(0x06202B),0); lv_obj_center(l); }
+  lv_obj_t*x=lv_btn_create(gFanSheet); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-6,8);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,fanClose,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  fanRefresh(); lv_obj_add_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); }
+
 // PIN keypad
 void kpadRefresh(){ char d[16]=""; for(int i=0;i<4;i++) strcat(d,i<kpN?"* ":"_ "); lv_label_set_text(kpadDots,d); }
 void kpadOpen(KpMode m,const char*t){ kpMode=m; kpN=0; lv_label_set_text(kpadTitle,t); kpadRefresh();

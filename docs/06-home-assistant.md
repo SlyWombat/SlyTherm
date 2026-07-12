@@ -96,6 +96,8 @@ Notes:
 | HA → ESP32 | `slytherm/cmd/target_temp_high` | float °C (cool side, heat_cool mode) |
 | HA → ESP32 | `slytherm/cmd/mode` | `off` / `heat` / `cool` / `heat_cool` |
 | HA → ESP32 | `slytherm/cmd/fan_mode` | `auto` / `on` / `circulate` |
+| HA → ESP32 | `slytherm/cmd/fan_circulate_min` | int minutes-per-hour the blower runs in `circulate` mode, clamped 0–60 (default 15). Set by the on-panel Fan sheet or the `number.slytherm_fan_circulate_min` entity (#128) |
+| HA → ESP32 | `slytherm/cmd/fan_circulate_pct` | int circulate blower speed %, snapped to Low 25 / Med 50 / High 75 (default 25). Set by the on-panel Fan sheet or the `number.slytherm_fan_circulate_pct` entity (#128) |
 | HA → ESP32 | `slytherm/cmd/preset` | preset name from the roster (default `home` / `away` / `sleep`) |
 | HA → ESP32 | `slytherm/cmd/hold` | `until_next_preset` / `two_hours` / `four_hours` / `indefinite` / `clear` |
 | HA → ESP32 | `slytherm/cmd/em_heat` | `ON` / `OFF` — engage/disengage EMERGENCY_HEAT (gap G15) |
@@ -110,7 +112,8 @@ Notes:
 | ESP32 → HA | `slytherm/state/current_temp` | float °C (the fused control input) |
 | ESP32 → HA | `slytherm/state/setpoint` / `target_temp_low` / `target_temp_high` | echo (post-clamp) |
 | ESP32 → HA | `slytherm/state/mode` | `off` / `heat` / `cool` / `heat_cool` |
-| ESP32 → HA | `slytherm/state/fan_mode` / `preset` | echo |
+| ESP32 → HA | `slytherm/state/fan_mode` / `preset` | echo (`fan_mode` is **retained** so a reconnecting Remote/HA reads the truth — #128) |
+| ESP32 → HA | `slytherm/state/fan_circulate_min` / `fan_circulate_pct` | **retained** int echo of the runtime circulate minutes-per-hour and speed % (#128) |
 | ESP32 → HA | `slytherm/state/hold` | JSON `{"type": hold type or "none", "remaining": s}` |
 | ESP32 → HA | `slytherm/state/em_heat` | `ON` / `OFF` (reflects EMERGENCY_HEAT engagement from any source, incl. the wall UI) |
 | ESP32 → HA | `slytherm/state/action` | `off` / `idle` / `heating` / `cooling` / `fan` / `defrosting` |

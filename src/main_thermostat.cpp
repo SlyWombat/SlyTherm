@@ -87,6 +87,7 @@
 #include "DemandShaper.h"
 #include "DettsonConfig.h"
 #include "DualFuelArbiter.h"
+#include "FanCirculate.h"  // #128: runtime fan-circulate duty + clamp helpers
 #include "HaMqtt.h"
 #include "LatencyStats.h"  // #28 TX-turnaround jitter probe
 #include "ModeStateMachine.h"
@@ -209,6 +210,8 @@ struct Pending {
   bool hasLow = false;         float lowC = 0;
   bool hasHigh = false;        float highC = 0;
   bool hasFan = false;         hm::FanMode fan = hm::FanMode::kAuto;
+  bool hasFanCircMin = false;  uint32_t fanCircMin = 0;   // #128 circulate minutes-per-hour
+  bool hasFanCircPct = false;  float fanCircPct = 0;      // #128 circulate speed %
   bool hasPreset = false;      char preset[kPresetNameMaxLen + 1] = {};
   bool hasHold = false;        hm::HoldCommand hold;
   bool hasEmHeat = false;      bool emHeat = false;
@@ -249,6 +252,8 @@ struct Snapshot {
   hm::Mode mode = hm::Mode::kOff;
   bool emHeat = false;
   hm::FanMode fan = hm::FanMode::kAuto;
+  uint32_t fanCircMin = 0;   // #128 circulate minutes-per-hour (retained state)
+  float fanCircPct = 0;      // #128 circulate speed %
   char preset[kPresetNameMaxLen + 1] = {};
   HoldType holdType = HoldType::kNone; uint32_t holdRemainS = 0;
   char action[16] = "off";
@@ -944,6 +949,17 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, hm::topic::kCmdFanMode) == 0) {
     auto p = hm::parseFanMode(buf);
     if (p.ok) { gPending.hasFan = true; gPending.fan = p.value; } else accepted = false;
+  } else if (strcmp(topic, hm::topic::kCmdFanCirculateMin) == 0) {
+    // #128: circulate minutes-per-hour (HA number / Remote panel). Strict int,
+    // clamped 0-60; junk rejected (never a half-applied config).
+    char* end = nullptr; const long v = strtol(buf, &end, 10);
+    if (end != buf && *end == '\0') { gPending.hasFanCircMin = true; gPending.fanCircMin = fan::clampCirculateMinPerHour(v); }
+    else accepted = false;
+  } else if (strcmp(topic, hm::topic::kCmdFanCirculatePct) == 0) {
+    // #128: circulate speed %, snapped to the nearest field-confirmed Low/Med/High.
+    char* end = nullptr; const long v = strtol(buf, &end, 10);
+    if (end != buf && *end == '\0') { gPending.hasFanCircPct = true; gPending.fanCircPct = fan::snapCirculatePct(static_cast<float>(v)); }
+    else accepted = false;
   } else if (strcmp(topic, hm::topic::kCmdPreset) == 0) {
     if (len > 0 && len <= kPresetNameMaxLen) {
       gPending.hasPreset = true;
@@ -1122,6 +1138,8 @@ void publishDiscovery() {
               compressorLockedOutDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "hold"), holdDiscoveryJson());
   pubRetained(discoveryTopic("select", "hold_duration"), holdSelectDiscoveryJson());  // #81
+  pubRetained(discoveryTopic("number", "fan_circulate_min"), fanCirculateMinDiscoveryJson());  // #128
+  pubRetained(discoveryTopic("number", "fan_circulate_pct"), fanCirculatePctDiscoveryJson());  // #128
   pubRetained(discoveryTopic("switch", "em_heat"), emHeatDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "lock"), lockDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "outdoor_temp"), outdoorTempDiscoveryJson());
@@ -1146,7 +1164,9 @@ void publishDiscovery() {
 void subscribeAll() {
   const char* topics[] = {
       hm::topic::kCmdSetpoint, hm::topic::kCmdTargetTempLow, hm::topic::kCmdTargetTempHigh,
-      hm::topic::kCmdMode, hm::topic::kCmdFanMode, hm::topic::kCmdPreset,
+      hm::topic::kCmdMode, hm::topic::kCmdFanMode,
+      hm::topic::kCmdFanCirculateMin, hm::topic::kCmdFanCirculatePct,  // #128
+      hm::topic::kCmdPreset,
       hm::topic::kCmdHold, hm::topic::kCmdEmHeat, hm::topic::kCmdLockClear,
       hm::topic::kCmdNextTarget, hm::topic::kCmdEnergyPrices,
       hm::topic::kConfigSensors, hm::topic::kConfigPresets,
@@ -1168,7 +1188,9 @@ void subscribeAll() {
 
 // State publish cache: one slot per fixed topic (diff suppression).
 enum PubIdx : uint8_t {
-  PUB_TEMP, PUB_SP, PUB_LOW, PUB_HIGH, PUB_MODE, PUB_FAN, PUB_PRESET, PUB_HOLD,
+  PUB_TEMP, PUB_SP, PUB_LOW, PUB_HIGH, PUB_MODE, PUB_FAN,
+  PUB_FANMIN, PUB_FANPCT,  // #128 retained circulate config
+  PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
   PUB_LASTERR, PUB_SLEEP,
@@ -1182,10 +1204,12 @@ enum PubIdx : uint8_t {
 };
 char gPubCache[PUB_COUNT][192];
 
-void pubState(PubIdx i, const char* topic, const char* val, bool force) {
+// retain=true for topics a reconnecting Remote/HA must read instantly (#128 fan
+// state); still diff-suppressed so a steady state doesn't rewrite every tick.
+void pubState(PubIdx i, const char* topic, const char* val, bool force, bool retain = false) {
   if (!force && strncmp(gPubCache[i], val, sizeof(gPubCache[i]) - 1) == 0) return;
   strlcpy(gPubCache[i], val, sizeof(gPubCache[i]));
-  gMqtt.publish(topic, val);
+  gMqtt.publish(topic, val, retain);
 }
 
 #ifdef SLYTHERM_REMOTE_LINK
@@ -1251,7 +1275,13 @@ void publishSnapshot(bool force) {
   pubState(PUB_HIGH, topic::kStateTargetTempHigh, b, force);
   // EMERGENCY_HEAT reports "heat"; the em_heat switch carries the truth (docs/06).
   pubState(PUB_MODE, topic::kStateMode, s.emHeat ? "heat" : toString(s.mode), force);
-  pubState(PUB_FAN, topic::kStateFanMode, toString(s.fan), force);
+  // #128: fan mode + circulate config RETAINED — a reconnecting Remote/HA reads
+  // the truth immediately (the panel Fan sheet is the standalone control path).
+  pubState(PUB_FAN, topic::kStateFanMode, toString(s.fan), force, /*retain=*/true);
+  snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(s.fanCircMin));
+  pubState(PUB_FANMIN, topic::kStateFanCirculateMin, b, force, /*retain=*/true);
+  snprintf(b, sizeof(b), "%.0f", static_cast<double>(s.fanCircPct));
+  pubState(PUB_FANPCT, topic::kStateFanCirculatePct, b, force, /*retain=*/true);
   pubState(PUB_PRESET, topic::kStatePreset, s.preset[0] ? s.preset : "none", force);
   pubState(PUB_HOLD, topic::kStateHold, holdStateJson(s.holdType, s.holdRemainS).c_str(), force);
   pubState(PUB_ACTION, topic::kStateAction, s.action, force);
@@ -1731,6 +1761,32 @@ void ct485Task(void*) {
 // Control task (core 1) — the docs/05 Phase 4 pipeline at a fixed cadence.
 // ============================================================================
 hm::FanMode gFanMode = hm::FanMode::kAuto;
+// #128: fan "circulate" tunables, promoted from the cfg:: compile constants to
+// runtime config. The constants remain the DEFAULTS (restored from NVS in
+// setup, overridden by the on-panel Fan sheet or the MQTT cmd topics). Read by
+// the circulate driver each control cycle; benign scalar races with the UI-task
+// getters, same discipline as gClock24.
+uint32_t gFanCircMin = cfg::kFanCirculateMinPerHour;
+float    gFanCircPct = cfg::kFanCirculatePct;
+
+// Fan settings (#128). Controller role: apply LOCALLY like clock/lock — set the
+// control-task globals directly (a benign scalar write; the control task reads
+// them next cycle). Persistence rides persistOnChange's shadow compare and the
+// retained state topics ride the snapshot publish — NOT the gPending MQTT-inbound
+// mailbox (which would spuriously reset the loss-of-MQTT staleness clock). The
+// getters seed the on-panel Fan sheet.
+extern "C" uint8_t uiFanMode() { return static_cast<uint8_t>(gFanMode); }
+extern "C" void uiSetFanMode(uint8_t m) {
+  if (m > static_cast<uint8_t>(hm::FanMode::kCirculate)) return;
+  gFanMode = static_cast<hm::FanMode>(m);
+}
+extern "C" uint32_t uiFanCircMin() { return gFanCircMin; }
+extern "C" uint8_t uiFanCircPct() { return static_cast<uint8_t>(gFanCircPct + 0.5f); }
+extern "C" void uiSetFanCirculate(uint32_t minPerHour, uint8_t pct) {
+  gFanCircMin = fan::clampCirculateMinPerHour(static_cast<long>(minPerHour));
+  gFanCircPct = fan::snapCirculatePct(static_cast<float>(pct));
+}
+
 bool gSetpointsValidated = false;
 bool gConfigOk = true;
 uint32_t gLastInboundS = 0;       // last accepted MQTT traffic (stale clock)
@@ -1763,6 +1819,8 @@ struct PersistShadow {
   uint32_t holdEnd = 0;  // #151: timed-hold end anchor (0 for untimed holds)
   float heatSp = NAN, coolSp = NAN;
   bool guardRunning = false;
+  uint32_t fanCircMin = 0xFFFFFFFFu;  // #128 circulate minutes (sentinel forces first write)
+  float fanCircPct = NAN;             // #128 circulate speed %
 } gShadow;
 uint32_t gLastClockSaveS = 0, gLastGuardSaveS = 0;
 
@@ -1905,6 +1963,8 @@ void consumeCommands(uint32_t nowS) {
   }
   if (p.hasAckAlarms) gSup->alarms().ackAll();  // #118
   if (p.hasFan) gFanMode = p.fan;
+  if (p.hasFanCircMin) gFanCircMin = p.fanCircMin;  // #128 (already clamped on ingest)
+  if (p.hasFanCircPct) gFanCircPct = p.fanCircPct;  // #128 (already snapped on ingest)
   if (p.lockClear) {
     uiLock(); gUi.clearUserPin(); uiUnlock();  // saveLockBlob() self-locks below
     saveLockBlob();
@@ -2024,6 +2084,10 @@ void persistOnChange(uint32_t nowS) {
   }
   const uint8_t fan = static_cast<uint8_t>(gFanMode);
   if (fan != gShadow.fan) { gPrefs.putUChar("fan", fan); gShadow.fan = fan; }
+  // #128: circulate minutes + speed — same change-detect discipline (whether the
+  // change came from the panel Fan sheet or the MQTT cmd topics).
+  if (gFanCircMin != gShadow.fanCircMin) { gPrefs.putUInt("fcmin", gFanCircMin); gShadow.fanCircMin = gFanCircMin; }
+  if (gFanCircPct != gShadow.fanCircPct) { gPrefs.putFloat("fcpct", gFanCircPct); gShadow.fanCircPct = gFanCircPct; }
 
   if (gGuard.running() != gShadow.guardRunning ||
       nowS - gLastGuardSaveS >= cfg::kGuardSaveS) {
@@ -2121,6 +2185,8 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   s.mode = toWireMode(gModeSm->mode());
   s.emHeat = gModeSm->emergencyHeat();
   s.fan = gFanMode;
+  s.fanCircMin = gFanCircMin;  // #128
+  s.fanCircPct = gFanCircPct;
   strlcpy(s.preset, gModeSm->activePreset(), sizeof(s.preset));
   s.holdType = gModeSm->activeHoldType();
   s.holdRemainS = gModeSm->holdRemainingS(nowS);
@@ -2456,11 +2522,10 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     else if (gFanMode == hm::FanMode::kCirculate) {
       // #142/#53: pre-run seconds COUNT TOWARD the circulate duty — the
       // minutes-per-hour window shrinks by what pre-circulation already ran
-      // this hour (docs/13 §3: never runtime on top).
-      const uint32_t winS = cfg::kFanCirculateMinPerHour * 60u;
-      const uint32_t creditS = gPreCirc.dutyCreditS(nowS);
-      fanReq = (nowS % 3600u) < (winS > creditS ? winS - creditS : 0u)
-                   ? cfg::kFanCirculatePct : 0.0f;  // #53: circulate on LOW
+      // this hour (docs/13 §3: never runtime on top). #128: minutes + speed are
+      // now runtime config (gFanCircMin/gFanCircPct), not compile constants.
+      fanReq = fan::circulateRequestPct(nowS, gFanCircMin, gFanCircPct,
+                                        gPreCirc.dutyCreditS(nowS));
     }
     fanReq = fmaxf(fanReq, preFanReq);  // pre-run never lowers an explicit fan-on
   }
@@ -2908,6 +2973,13 @@ void setup() {
     }
     gFanMode = static_cast<hm::FanMode>(gPrefs.getUChar("fan", 0));
     if (gFanMode > hm::FanMode::kCirculate) gFanMode = hm::FanMode::kAuto;
+    // #128: restore the runtime circulate config (cfg:: constants are the
+    // DEFAULTS); re-clamp/snap defensively in case an older/corrupt value lands.
+    gFanCircMin = fan::clampCirculateMinPerHour(
+        static_cast<long>(gPrefs.getUInt("fcmin", cfg::kFanCirculateMinPerHour)));
+    gFanCircPct = fan::snapCirculatePct(gPrefs.getFloat("fcpct", cfg::kFanCirculatePct));
+    gShadow.fanCircMin = gFanCircMin;  // sync change-detect so a clean boot doesn't rewrite NVS
+    gShadow.fanCircPct = gFanCircPct;
     gSetpointsValidated = true;
   }
 

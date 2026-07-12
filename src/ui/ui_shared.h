@@ -52,6 +52,15 @@ extern "C" const lv_img_dsc_t slymark_img;  // assets/slytherm-mark.svg -> slyma
 extern "C" void uiToggleClock24();           // flip+persist 12/24h (#69)
 extern "C" bool uiClock24();
 extern "C" void uiToggleSensor(const char* name);  // flip room participation (#68)
+// #128 Fan settings — mode + circulate minutes/speed. Controller applies
+// locally (globals + NVS + MQTT state); Remote forwards to the Controller via
+// the fan cmd MQTT topics. FanMode is a uint8 (0=auto,1=on,2=circulate) so the
+// shared UI needn't depend on lib/HaMqtt. Speed pct is one of 25/50/75.
+extern "C" uint8_t  uiFanMode();
+extern "C" void     uiSetFanMode(uint8_t mode);
+extern "C" uint32_t uiFanCircMin();                // circulate minutes-per-hour
+extern "C" uint8_t  uiFanCircPct();                // circulate speed pct (25/50/75)
+extern "C" void     uiSetFanCirculate(uint32_t minPerHour, uint8_t pct);
 extern "C" void uiSniffStart();              // RS-485 LISTEN capture (#71)
 extern "C" void uiSniffStop();
 extern "C" bool uiSniffActive();
@@ -109,6 +118,7 @@ void buildWifi(lv_obj_t* scr);
 void buildServer(lv_obj_t* scr);
 void buildHoldSheet(lv_obj_t* scr);
 void buildVacationSheet(lv_obj_t* scr);
+void buildFanSheet(lv_obj_t* scr);   // #128 Fan settings sheet (ui_overlays.cpp)
 void buildSniff();
 void buildAmbient();               // ui_modes.cpp
 void buildWelcome();
@@ -132,6 +142,7 @@ void kpadOpen(KpMode m, const char* t);
 void promptUnlock();               // ui_overlays.cpp (PIN keypad)
 void holdEvt(lv_event_t*);         // ui_overlays.cpp — open hold chooser (#81)
 void vacOpen(lv_event_t*);         // ui_overlays.cpp — open vacation sheet (#78)
+void openFan(lv_event_t*);         // ui_overlays.cpp — open Fan settings sheet (#128)
 void openSniff(lv_event_t*);       // ui_overlays.cpp — RS-485 LISTEN screen (#71)
 void openWifi(lv_event_t*);        // ui_overlays.cpp
 void openServer(lv_event_t*);      // ui_overlays.cpp

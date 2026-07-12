@@ -237,6 +237,11 @@ void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t*cb=lv_btn_create(tab); lv_obj_set_size(cb,180,54); lv_obj_align(cb,LV_ALIGN_TOP_LEFT,110,152);
     lv_obj_set_style_bg_color(cb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(cb,clkEvt,LV_EVENT_CLICKED,nullptr);
     gClkLbl=lv_label_create(cb); lv_label_set_text(gClkLbl,"12-hour"); lv_obj_center(gClkLbl); }
+  // Fan settings (#128): opens the shared Fan sheet — mode + circulate minutes/speed.
+  { lv_obj_t*fl=lv_label_create(tab); lv_label_set_text(fl,"Fan:"); lv_obj_set_style_text_color(fl,lv_color_hex(COL_MUTED),0); lv_obj_align(fl,LV_ALIGN_TOP_LEFT,320,168);
+    lv_obj_t*fb=lv_btn_create(tab); lv_obj_set_size(fb,180,54); lv_obj_align(fb,LV_ALIGN_TOP_LEFT,392,152);
+    lv_obj_set_style_bg_color(fb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(fb,openFan,LV_EVENT_CLICKED,nullptr);
+    lv_obj_t*fbl=lv_label_create(fb); lv_label_set_text(fbl,LV_SYMBOL_LOOP "  Fan"); lv_obj_center(fbl); }
   // WiFi + Home system: consistent green-when-working status word to the right (#77)
   lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,56); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,228);
   lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
@@ -327,7 +332,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
     lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_ELASTIC); }
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildFanSheet(scrMain); buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,

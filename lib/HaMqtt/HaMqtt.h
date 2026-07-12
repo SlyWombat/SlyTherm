@@ -44,6 +44,12 @@ constexpr const char* kCmdTargetTempLow  = SLYTHERM_TOPIC_PREFIX "cmd/target_tem
 constexpr const char* kCmdTargetTempHigh = SLYTHERM_TOPIC_PREFIX "cmd/target_temp_high";
 constexpr const char* kCmdMode           = SLYTHERM_TOPIC_PREFIX "cmd/mode";
 constexpr const char* kCmdFanMode        = SLYTHERM_TOPIC_PREFIX "cmd/fan_mode";
+// #128: runtime fan-circulate tunables (minutes-per-hour + speed %). Scalar
+// cmd/state pair, same shape as cmd/setpoint+state/setpoint (NOT a JSON config
+// roster like config/presets). Retained on the state side so a reconnecting
+// Remote/HA reads the truth; the panel Fan sheet and HA both publish the cmd.
+constexpr const char* kCmdFanCirculateMin = SLYTHERM_TOPIC_PREFIX "cmd/fan_circulate_min";
+constexpr const char* kCmdFanCirculatePct = SLYTHERM_TOPIC_PREFIX "cmd/fan_circulate_pct";
 constexpr const char* kCmdPreset         = SLYTHERM_TOPIC_PREFIX "cmd/preset";
 constexpr const char* kCmdHold           = SLYTHERM_TOPIC_PREFIX "cmd/hold";  // hold type or "clear"
 constexpr const char* kCmdEmHeat         = SLYTHERM_TOPIC_PREFIX "cmd/em_heat";  // switch "ON"/"OFF" (G15)
@@ -65,6 +71,8 @@ constexpr const char* kStateTargetTempLow   = SLYTHERM_TOPIC_PREFIX "state/targe
 constexpr const char* kStateTargetTempHigh  = SLYTHERM_TOPIC_PREFIX "state/target_temp_high";
 constexpr const char* kStateMode            = SLYTHERM_TOPIC_PREFIX "state/mode";
 constexpr const char* kStateFanMode         = SLYTHERM_TOPIC_PREFIX "state/fan_mode";
+constexpr const char* kStateFanCirculateMin = SLYTHERM_TOPIC_PREFIX "state/fan_circulate_min";  // #128 (retained)
+constexpr const char* kStateFanCirculatePct = SLYTHERM_TOPIC_PREFIX "state/fan_circulate_pct";  // #128 (retained)
 constexpr const char* kStatePreset          = SLYTHERM_TOPIC_PREFIX "state/preset";
 constexpr const char* kStateHold            = SLYTHERM_TOPIC_PREFIX "state/hold";  // {type, remaining}
 constexpr const char* kStateAction          = SLYTHERM_TOPIC_PREFIX "state/action";
@@ -485,6 +493,10 @@ std::string sensorParticipatingDiscoveryJson(const std::string& sensorId);  // d
 // number entity, entity_category config, ±kSensorOffsetMaxC, 0.1 step (G6);
 // also used for the local fallback sensor via kLocalSensorId.
 std::string sensorOffsetDiscoveryJson(const std::string& sensorId);
+// #128: number entities (entity_category config) for the runtime fan-circulate
+// tunables — minutes-per-hour (0-60, 5-step) and speed % (25-75, 25-step).
+std::string fanCirculateMinDiscoveryJson();
+std::string fanCirculatePctDiscoveryJson();
 
 }  // namespace hamqtt
 }  // namespace dettson

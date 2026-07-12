@@ -459,6 +459,30 @@ static void test_sensor_offset_topics_and_discovery() {
   TEST_ASSERT_TRUE(has(l, "\"command_topic\":\"slytherm/cmd/sensor/local/offset\""));
 }
 
+// #128: fan-circulate runtime tunables — scalar cmd/state topics + the two
+// HA-editable number discovery entities.
+static void test_fan_circulate_topics_and_discovery() {
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/fan_circulate_min", topic::kCmdFanCirculateMin);
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/fan_circulate_pct", topic::kCmdFanCirculatePct);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/fan_circulate_min", topic::kStateFanCirculateMin);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/fan_circulate_pct", topic::kStateFanCirculatePct);
+
+  std::string m = fanCirculateMinDiscoveryJson();
+  assertCoherentJson(m);
+  TEST_ASSERT_TRUE(has(m, "\"unique_id\":\"slytherm_fan_circulate_min\""));
+  TEST_ASSERT_TRUE(has(m, "\"state_topic\":\"slytherm/state/fan_circulate_min\""));
+  TEST_ASSERT_TRUE(has(m, "\"command_topic\":\"slytherm/cmd/fan_circulate_min\""));
+  TEST_ASSERT_TRUE(has(m, "\"min\":0"));
+  TEST_ASSERT_TRUE(has(m, "\"max\":60"));
+  TEST_ASSERT_TRUE(has(m, "\"entity_category\":\"config\""));
+
+  std::string p = fanCirculatePctDiscoveryJson();
+  assertCoherentJson(p);
+  TEST_ASSERT_TRUE(has(p, "\"unique_id\":\"slytherm_fan_circulate_pct\""));
+  TEST_ASSERT_TRUE(has(p, "\"command_topic\":\"slytherm/cmd/fan_circulate_pct\""));
+  TEST_ASSERT_TRUE(has(p, "\"step\":25"));
+}
+
 static void test_parse_sensor_offset_bounds() {
   TEST_ASSERT_TRUE(parseSensorOffset("1.5").ok);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.5f, parseSensorOffset("1.5").value);
@@ -1093,6 +1117,7 @@ int main() {
   RUN_TEST(test_preset_roster_json_rejects_structural_junk);
   RUN_TEST(test_preset_roster_json_skips_invalid_entries_and_caps);
   RUN_TEST(test_sensor_offset_topics_and_discovery);
+  RUN_TEST(test_fan_circulate_topics_and_discovery);
   RUN_TEST(test_parse_sensor_offset_bounds);
   RUN_TEST(test_sensor_roster_json_with_and_without_offset);
   RUN_TEST(test_sensor_roster_offset_tolerance_and_clamp);
