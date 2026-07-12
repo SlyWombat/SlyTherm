@@ -5,13 +5,32 @@ The firmware serves the current LVGL screen on TCP :8081 as a
 "SLYSHOT <w> <h>\\n" header followed by raw little-endian RGB565.
 
 Usage: slyshot.py [ip] [out.png] [screen]
-  screen: optional index to switch to first -
-          0 Home  1 Presets  2 Sensors  3 System  4 Settings  5 Diag
+  screen: optional screen to drive to before the snapshot (view-only; never
+          changes control state). Accepts:
+            bare index   0 Home  1 Presets  2 Sensors  3 System  4 Settings  5 Diag
+            tab:NAME     tab:home|presets|sensors|system|settings|diag
+            sheet:NAME   sheet:fan|networking|display|security|system   (Settings group)
+                         sheet:wifi|home|hold|vacation
+          Unknown/empty -> snapshots whatever screen is currently up.
 Defaults: 192.168.10.13, slyshot.png. Requires Pillow.
 """
+
+# Accepted `screen` argument vocabulary (mirrors navScreen() in
+# src/ui/ui_overlays.cpp). Kept for --list / validation; the firmware is the
+# source of truth and silently ignores anything it doesn't recognize.
+SCREENS = [
+    "0", "1", "2", "3", "4", "5",
+    "tab:home", "tab:presets", "tab:sensors", "tab:system", "tab:settings", "tab:diag",
+    "sheet:fan", "sheet:networking", "sheet:display", "sheet:security", "sheet:system",
+    "sheet:wifi", "sheet:home", "sheet:hold", "sheet:vacation",
+]
 import socket
 import sys
 from PIL import Image
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--list", "-l"):
+    print("screens:", " ".join(SCREENS))
+    sys.exit(0)
 
 ip = sys.argv[1] if len(sys.argv) > 1 else "192.168.10.13"
 out = sys.argv[2] if len(sys.argv) > 2 else "slyshot.png"
@@ -19,6 +38,9 @@ out = sys.argv[2] if len(sys.argv) > 2 else "slyshot.png"
 s = socket.create_connection((ip, 8081), timeout=10)
 s.settimeout(10)
 if len(sys.argv) > 3:
+    if sys.argv[3] not in SCREENS:
+        print(f"note: '{sys.argv[3]}' not a known screen; firmware will keep the current one",
+              file=sys.stderr)
     s.sendall((sys.argv[3] + "\n").encode())
 
 hdr = b""

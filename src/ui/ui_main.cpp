@@ -9,9 +9,7 @@
 
 #include "ui_shared.h"
 #include "mqtt_cfg.h"
-#ifdef SLYTHERM_WG
-#include "remote_vpn.h"  // #148: Settings-page VPN status word + retry
-#endif
+#include "wifi_prov.h"   // Settings reorg: Networking card summary (ssid/ip/rssi)
 #ifdef SLYTHERM_CAM
 #include "remote_camera.h"  // #150: top-bar dot while a camera client is served
 #endif
@@ -24,7 +22,7 @@
 namespace slytherm_ui {
 
 // main-screen widgets
-lv_obj_t *wTemp,*wDeg=nullptr,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wClock,*wSysBody,*wDiagBody,*wLockState;
+lv_obj_t *wTemp,*wDeg=nullptr,*wAction,*wHeatSp,*wCoolSp,*wWifi,*wMqtt,*wBus,*wOat,*wClock,*wSysBody,*wDiagBody;
 lv_obj_t *gHomeTab=nullptr;  // Home tab page — parent of the hero, for the mode-tinted bg gradient (#fix5)
 // Sensors screen: interactive per-room rows (#68)
 struct SensorRowUi{ lv_obj_t*row,*name,*temp,*pres,*btn,*btnlbl; }; SensorRowUi gSensorRows[7]={};
@@ -42,8 +40,9 @@ lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
 lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): "Vacation until <date>"
 lv_obj_t *gPresetHold=nullptr;                   // Presets page: centered hold status ("On hold - Xh Ym left")
-lv_obj_t *gClkLbl=nullptr,*wSetWifi=nullptr,*wSetHome=nullptr;   // #77: Settings clock toggle + WiFi/Home-system status words
-lv_obj_t *wSetVpn=nullptr;   // #148: Settings VPN status word (remote_p4_vpn builds only)
+// Settings information-architecture reorg: one live one-line summary per
+// category card (updated each renderMain, like the old WiFi/Home status words).
+lv_obj_t *wCatNet=nullptr,*wCatFan=nullptr,*wCatDisp=nullptr,*wCatSec=nullptr,*wCatSys=nullptr;
 #ifdef SLYTHERM_CAM
 lv_obj_t *wCamDot=nullptr;   // #150: red top-bar dot while a camera client is being served
 #endif
@@ -219,49 +218,33 @@ void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   // busless Remote persona never shows a dead LISTEN button.
   gBtnListen=mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300); }
 
-void clkEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } uiToggleClock24(); }
-void setPinEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }
-void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
-void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
-#ifdef SLYTHERM_WG
-void vpnRetryEvt(lv_event_t*){ remote_vpn::requestRetry(); }  // #148: posts; the radio task executes
-#endif
+// Settings information-architecture reorg (#128/settings): the flat button list
+// became a short list of CATEGORY CARDS. Each card shows a live one-line summary
+// (filled in renderMain) and drills into a grouping sub-sheet (ui_overlays.cpp).
+// The event handlers for the controls those sheets contain (clock toggle, PIN/
+// lock, VPN retry) moved into ui_overlays.cpp alongside the sheets they live on.
+// Card tap -> open the matching sub-sheet. Index dispatch (the codebase idiom)
+// avoids a function-pointer-through-void* cast; keep in sync with cats[] below.
+void catCardEvt(lv_event_t*e){ switch((int)(intptr_t)lv_event_get_user_data(e)){
+  case 0: openNet(e); break;      case 1: openFan(e); break;   case 2: openDisplay(e); break;
+  case 3: openSecurity(e); break; case 4: openSystem(e); break; } }
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
-  wLockState=lv_label_create(tab); lv_obj_set_style_text_color(wLockState,lv_color_hex(COL_MUTED),0); lv_obj_align(wLockState,LV_ALIGN_TOP_LEFT,4,50);
-  // Lock actions (12/24h moved to its own labelled row below, #77)
-  struct B{const char*t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
-  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(tab); lv_obj_set_size(b,150,54); lv_obj_align(b,LV_ALIGN_TOP_LEFT,4+i*158,86);
-    lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr); lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
-  // Clock: 12-hour / 24-hour on its own labelled row (#77)
-  { lv_obj_t*cl=lv_label_create(tab); lv_label_set_text(cl,"Clock:"); lv_obj_set_style_text_color(cl,lv_color_hex(COL_MUTED),0); lv_obj_align(cl,LV_ALIGN_TOP_LEFT,8,168);
-    lv_obj_t*cb=lv_btn_create(tab); lv_obj_set_size(cb,180,54); lv_obj_align(cb,LV_ALIGN_TOP_LEFT,110,152);
-    lv_obj_set_style_bg_color(cb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(cb,clkEvt,LV_EVENT_CLICKED,nullptr);
-    gClkLbl=lv_label_create(cb); lv_label_set_text(gClkLbl,"12-hour"); lv_obj_center(gClkLbl); }
-  // Fan settings (#128): opens the shared Fan sheet — mode + circulate minutes/speed.
-  { lv_obj_t*fl=lv_label_create(tab); lv_label_set_text(fl,"Fan:"); lv_obj_set_style_text_color(fl,lv_color_hex(COL_MUTED),0); lv_obj_align(fl,LV_ALIGN_TOP_LEFT,320,168);
-    lv_obj_t*fb=lv_btn_create(tab); lv_obj_set_size(fb,180,54); lv_obj_align(fb,LV_ALIGN_TOP_LEFT,392,152);
-    lv_obj_set_style_bg_color(fb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(fb,openFan,LV_EVENT_CLICKED,nullptr);
-    lv_obj_t*fbl=lv_label_create(fb); lv_label_set_text(fbl,LV_SYMBOL_LOOP "  Fan"); lv_obj_center(fbl); }
-  // WiFi + Home system: consistent green-when-working status word to the right (#77)
-  lv_obj_t*wb=lv_btn_create(tab); lv_obj_set_size(wb,220,56); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,4,228);
-  lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
-  lv_obj_t*wl=lv_label_create(wb); lv_label_set_text(wl,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(wl,lv_color_hex(0x06202B),0); lv_obj_center(wl);
-  wSetWifi=lv_label_create(tab); lv_obj_set_style_text_font(wSetWifi,&lv_font_montserrat_20,0); lv_obj_align(wSetWifi,LV_ALIGN_TOP_LEFT,240,244); lv_label_set_text(wSetWifi,"");
-  lv_obj_t*sb=lv_btn_create(tab); lv_obj_set_size(sb,220,56); lv_obj_align(sb,LV_ALIGN_TOP_LEFT,4,300);
-  lv_obj_set_style_bg_color(sb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(sb,openServer,LV_EVENT_CLICKED,nullptr);
-  lv_obj_t*sl=lv_label_create(sb); lv_label_set_text(sl,LV_SYMBOL_HOME "  Home system"); lv_obj_center(sl);
-  wSetHome=lv_label_create(tab); lv_obj_set_style_text_font(wSetHome,&lv_font_montserrat_20,0); lv_obj_align(wSetHome,LV_ALIGN_TOP_LEFT,240,316); lv_label_set_text(wSetHome,"");
-#ifdef SLYTHERM_WG
-  // #148: VPN status + tap-to-retry, right column beside the WiFi row.
-  { lv_obj_t*vb=lv_btn_create(tab); lv_obj_set_size(vb,180,56); lv_obj_align(vb,LV_ALIGN_TOP_LEFT,460,228);
-    lv_obj_set_style_bg_color(vb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(vb,vpnRetryEvt,LV_EVENT_CLICKED,nullptr);
-    lv_obj_t*vl=lv_label_create(vb); lv_label_set_text(vl,LV_SYMBOL_REFRESH "  VPN"); lv_obj_center(vl);
-    wSetVpn=lv_label_create(tab); lv_obj_set_style_text_font(wSetVpn,&lv_font_montserrat_20,0);
-    lv_obj_align(wSetVpn,LV_ALIGN_TOP_LEFT,656,244); lv_label_set_text(wSetVpn,""); }
-#endif
-  // #113: firmware identity line (VERSION file + git sha, injected at build)
-  { lv_obj_t*fw=lv_label_create(tab); lv_label_set_text(fw,"Firmware " SLYTHERM_FW_BUILD);
-    lv_obj_set_style_text_color(fw,lv_color_hex(COL_MUTED),0); lv_obj_align(fw,LV_ALIGN_BOTTOM_LEFT,4,-4); } }
+  // One tap-through card per category: title + live summary + chevron. Sensors
+  // deliberately stays its own top tab; Fan reuses the #128 sheet. The whole
+  // card is the tap target; index (user-data) selects the sub-sheet.
+  struct Cat{const char*title; lv_obj_t**sum;};
+  Cat cats[5]={{"Networking",&wCatNet},{"Fan",&wCatFan},
+               {"Display",&wCatDisp},{"Security",&wCatSec},{"System",&wCatSys}};
+  for(int i=0;i<5;i++){ lv_obj_t*c=lv_btn_create(tab); lv_obj_set_size(c,748,62); lv_obj_align(c,LV_ALIGN_TOP_LEFT,6,46+i*70);
+    lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0); lv_obj_set_style_bg_color(c,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(c,0,0); lv_obj_set_style_radius(c,10,0); lv_obj_set_style_pad_all(c,0,0);
+    lv_obj_add_event_cb(c,catCardEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
+    lv_obj_t*t=lv_label_create(c); lv_label_set_text(t,cats[i].title); lv_obj_set_style_text_font(t,&lv_font_montserrat_20,0);
+    lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,16,9);
+    lv_obj_t*sm=lv_label_create(c); lv_obj_set_style_text_font(sm,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(sm,lv_color_hex(COL_MUTED),0);
+    lv_obj_set_width(sm,600); lv_label_set_long_mode(sm,LV_LABEL_LONG_DOT); lv_obj_align(sm,LV_ALIGN_TOP_LEFT,16,34); lv_label_set_text(sm,"");
+    *cats[i].sum=sm;
+    lv_obj_t*ch=lv_label_create(c); lv_label_set_text(ch,LV_SYMBOL_RIGHT); lv_obj_set_style_text_color(ch,lv_color_hex(COL_TEXT3),0); lv_obj_align(ch,LV_ALIGN_RIGHT_MID,-16,0); } }
 
 // ---- pull-down navigation (logo -> drop-down menu; swipe still works) ----
 void onNavToggle(lv_event_t*){ if(!gNavMenu) return; bool hidden=lv_obj_has_flag(gNavMenu,LV_OBJ_FLAG_HIDDEN);
@@ -332,7 +315,9 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
     lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_ELASTIC); }
   buildNavMenu(scrMain);
-  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildFanSheet(scrMain); buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
+  buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildFanSheet(scrMain);
+  buildNetSheet(scrMain); buildDisplaySheet(scrMain); buildSecuritySheet(scrMain); buildSystemSheet(scrMain);   // Settings reorg drill-in sheets
+  buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -517,26 +502,21 @@ void renderMain(const DisplayState& s){ char b[128];
     else         snprintf(lk,sizeof(lk),"\nLINKS\n  WiFi %s   MQTT %s",s.wifiOk?"up":"down",s.mqttOk?"up":"down");
     strncat(d,lk,sizeof(d)-strlen(d)-1); setTxt(wDiagBody,d); }
   if(gBtnListen){ if(s.hasBus) lv_obj_clear_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); }   // #101
-  if(wLockState){ bool unlocked=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; bool pin=gM->userPinSet(); U();
-    snprintf(b,sizeof(b),"Lock: %s    PIN: %s",unlocked?"unlocked":"LOCKED",pin?"set":"none");
-    setTxt(wLockState,b); lv_obj_set_style_text_color(wLockState,lv_color_hex(unlocked?COL_OK:COL_WARN),0); }
-  // #77: Settings clock toggle label + green-when-working WiFi/Home-system status words
-  if(gClkLbl) setTxt(gClkLbl, uiClock24()?"24-hour":"12-hour");
-  if(wSetWifi){ setTxt(wSetWifi, s.wifiOk?"Connected":"Offline");
-    lv_obj_set_style_text_color(wSetWifi,lv_color_hex(s.wifiOk?COL_OK:COL_CRIT),0); }
-  if(wSetHome){ const bool setup=mqtt_cfg::hostSet();
-    setTxt(wSetHome, s.mqttOk?"Connected":(setup?"Offline":"Not set up"));
-    lv_obj_set_style_text_color(wSetHome,lv_color_hex(s.mqttOk?COL_OK:(s.wifiOk?COL_WARN:COL_CRIT)),0); }
-#ifdef SLYTHERM_WG
-  if(wSetVpn){ const auto vs=remote_vpn::state();   // #148/#149 status word
-    setTxt(wSetVpn, vs==remote_vpn::State::kUp?"Connected":
-                    vs==remote_vpn::State::kHandshaking?"Connecting":
-                    vs==remote_vpn::State::kStandby?"Standby":"Off");
-    lv_obj_set_style_text_color(wSetVpn,lv_color_hex(
-      vs==remote_vpn::State::kUp?COL_OK:
-      vs==remote_vpn::State::kHandshaking?COL_WARN:
-      vs==remote_vpn::State::kStandby?COL_MUTED:COL_CRIT),0); }
-#endif
+  // Settings category-card live summaries (IA reorg): one condensed line per
+  // card, refreshed every renderMain like the old WiFi/Home status words were.
+  if(wCatNet){ char ss[33],ip[20]; int8_t rs=0; bool wc=false; wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rs,&wc);
+    snprintf(b,sizeof(b),"WiFi %s \xC2\xB7 %s \xC2\xB7 Home %s", wc?ss:"not set", wc?ip:"offline", s.mqttOk?"connected":"offline");
+    setTxt(wCatNet,b); }
+  if(wCatFan){ const uint8_t fm=uiFanMode();
+    if(fm==2){ const uint8_t pc=uiFanCircPct(); const char*sp=pc>=63?"High":(pc>=38?"Med":"Low");
+      snprintf(b,sizeof(b),"Circulate \xC2\xB7 %lumin %s",(unsigned long)uiFanCircMin(),sp); }
+    else strcpy(b, fm==1?"On":"Auto");
+    setTxt(wCatFan,b); }
+  if(wCatDisp) setTxt(wCatDisp, uiClock24()?"24-hour clock":"12-hour clock");
+  if(wCatSec){ bool unlocked=false,pin=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; pin=gM->userPinSet(); U();
+    snprintf(b,sizeof(b),"%s \xC2\xB7 PIN %s",unlocked?"Unlocked":"Locked",pin?"set":"none");
+    setTxt(wCatSec,b); lv_obj_set_style_text_color(wCatSec,lv_color_hex(unlocked?COL_MUTED:COL_WARN),0); }
+  if(wCatSys) setTxt(wCatSys,"Firmware " SLYTHERM_FW_BUILD);
   }
 
 // #76: push one 12 h-graph sample (~5 min cadence). Rings shift left so the

@@ -119,6 +119,14 @@ void buildServer(lv_obj_t* scr);
 void buildHoldSheet(lv_obj_t* scr);
 void buildVacationSheet(lv_obj_t* scr);
 void buildFanSheet(lv_obj_t* scr);   // #128 Fan settings sheet (ui_overlays.cpp)
+// Settings information-architecture reorg (#128/settings): the flat Settings
+// button list becomes category cards that drill into these grouping sub-sheets.
+// Each is a centered card overlay (same grammar as the Fan/Vacation sheets),
+// built once here and opened from the Settings tab's category cards.
+void buildNetSheet(lv_obj_t* scr);       // Networking: WiFi setup + Home system + read-only facts
+void buildDisplaySheet(lv_obj_t* scr);   // Display: 12/24h clock (room for brightness/theme)
+void buildSecuritySheet(lv_obj_t* scr);  // Security: Set PIN / Lock / Unlock
+void buildSystemSheet(lv_obj_t* scr);    // System: firmware id + OTA stub + restore-full-screen
 void buildSniff();
 void buildAmbient();               // ui_modes.cpp
 void buildWelcome();
@@ -143,6 +151,10 @@ void promptUnlock();               // ui_overlays.cpp (PIN keypad)
 void holdEvt(lv_event_t*);         // ui_overlays.cpp — open hold chooser (#81)
 void vacOpen(lv_event_t*);         // ui_overlays.cpp — open vacation sheet (#78)
 void openFan(lv_event_t*);         // ui_overlays.cpp — open Fan settings sheet (#128)
+void openNet(lv_event_t*);         // ui_overlays.cpp — Networking sub-sheet (Settings reorg)
+void openDisplay(lv_event_t*);     // ui_overlays.cpp — Display sub-sheet
+void openSecurity(lv_event_t*);    // ui_overlays.cpp — Security sub-sheet
+void openSystem(lv_event_t*);      // ui_overlays.cpp — System sub-sheet
 void openSniff(lv_event_t*);       // ui_overlays.cpp — RS-485 LISTEN screen (#71)
 void openWifi(lv_event_t*);        // ui_overlays.cpp
 void openServer(lv_event_t*);      // ui_overlays.cpp

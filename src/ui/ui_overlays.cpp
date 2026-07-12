@@ -11,6 +11,14 @@
 #include "wifi_prov.h"
 #include "mqtt_cfg.h"
 #include "telnet_log.h"
+#ifdef SLYTHERM_WG
+#include "remote_vpn.h"   // Networking sheet: VPN status word + tap-to-retry
+#endif
+
+// #113: injected by tools/version_flag.py; fallback keeps ad-hoc builds compiling.
+#ifndef SLYTHERM_FW_BUILD
+#define SLYTHERM_FW_BUILD "0.0.0-dev"
+#endif
 
 namespace slytherm_ui {
 
@@ -54,8 +62,8 @@ void vacStart(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
 void vacCancelHold(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
   L(); gM->cancelVacation(); U(); if(gVacSheet) lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
 void vacClose(lv_event_t*){ if(gVacSheet) lv_obj_add_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); }
-void vacOpen(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
-  if(!gVacSheet) return; vacRefresh(); lv_obj_clear_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gVacSheet); }
+static void showVac(){ if(!gVacSheet) return; vacRefresh(); lv_obj_clear_flag(gVacSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gVacSheet); }
+void vacOpen(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } showVac(); }
 static lv_obj_t* vacRow(lv_obj_t*par,const char*name,int y,int field){
   lv_obj_t*nl=lv_label_create(par); lv_label_set_text(nl,name); lv_obj_set_style_text_color(nl,lv_color_hex(COL_MUTED),0);
   lv_obj_set_style_text_font(nl,&lv_font_montserrat_20,0); lv_obj_align(nl,LV_ALIGN_TOP_LEFT,18,y+12);
@@ -129,10 +137,14 @@ void fanMinStep(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } if(gFan
 void fanSpdEvt(lv_event_t*e){ if(uiLocked()){ promptUnlock(); return; } if(gFanSelMode!=2) return;
   gFanSpdSel=(uint8_t)(intptr_t)lv_event_get_user_data(e); uiSetFanCirculate(gFanMinSel,kFanSpdPct[gFanSpdSel]); fanRefresh(); }
 void fanClose(lv_event_t*){ if(gFanSheet) lv_obj_add_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); }
-void openFan(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } if(!gFanSheet) return;
+// Seed the selection from the live values and show the sheet. Split out from
+// openFan so the screenshot-capture nav (screenshotPoll) can present the sheet
+// WITHOUT the lock gate — opening a sheet is view-only, it actuates nothing.
+static void showFan(){ if(!gFanSheet) return;
   gFanSelMode=uiFanMode(); if(gFanSelMode>2) gFanSelMode=0;
   gFanMinSel=kFanMinSet[fanMinIdx(uiFanCircMin())]; gFanSpdSel=(uint8_t)fanSpdIdx(uiFanCircPct());
   fanRefresh(); lv_obj_clear_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gFanSheet); }
+void openFan(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } showFan(); }
 void buildFanSheet(lv_obj_t*scr){ gFanSheet=lv_obj_create(scr); lv_obj_set_size(gFanSheet,470,400); lv_obj_center(gFanSheet);
   lv_obj_set_style_bg_color(gFanSheet,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(gFanSheet,lv_color_hex(COL_CRYO),0);
   lv_obj_set_style_border_width(gFanSheet,2,0); lv_obj_set_style_radius(gFanSheet,14,0); lv_obj_set_style_pad_all(gFanSheet,0,0); lv_obj_clear_flag(gFanSheet,LV_OBJ_FLAG_SCROLLABLE);
@@ -177,6 +189,132 @@ void buildFanSheet(lv_obj_t*scr){ gFanSheet=lv_obj_create(scr); lv_obj_set_size(
   { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
   fanRefresh(); lv_obj_add_flag(gFanSheet,LV_OBJ_FLAG_HIDDEN); }
 
+// ---- Settings category sub-sheets (Settings IA reorg) ----------------------
+// The Settings tab is now a list of category cards; each drills into one of
+// these centered card sheets (same grammar as the Fan/Vacation sheets: COL_CARD
+// body, COL_CRYO hairline, a top-right X that hide-reveals the Settings tab as
+// the one-level back-nav). The card controls' handlers live here with the sheets
+// they belong to. Openers are view-only (no lock gate) so a locked panel still
+// DISPLAYS them; the ACTIONS inside stay lock-aware exactly as they were before.
+lv_obj_t *gNetSheet=nullptr,*wNetFacts=nullptr;
+lv_obj_t *gDispSheet=nullptr,*gClkLbl=nullptr;   // gClkLbl: Display sheet 12/24h label
+lv_obj_t *gSecSheet=nullptr,*wSecState=nullptr;
+lv_obj_t *gSysSheet=nullptr;
+#ifdef SLYTHERM_WG
+lv_obj_t *wSetVpn=nullptr;   // #148 VPN status word — now inside the Networking sheet
+#endif
+
+static void sheetClose(lv_event_t*e){ lv_obj_t* sheet=(lv_obj_t*)lv_event_get_user_data(e); if(sheet) lv_obj_add_flag(sheet,LV_OBJ_FLAG_HIDDEN); }
+// Build a hidden centered card sheet with a title, optional subtitle, and the
+// top-right X close — the shared shell every category sub-sheet is built on.
+static lv_obj_t* sheetShell(lv_obj_t*scr,int w,int h,const char*title,const char*sub){
+  lv_obj_t*sh=lv_obj_create(scr); lv_obj_set_size(sh,w,h); lv_obj_center(sh);
+  lv_obj_set_style_bg_color(sh,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(sh,lv_color_hex(COL_CRYO),0);
+  lv_obj_set_style_border_width(sh,2,0); lv_obj_set_style_radius(sh,14,0); lv_obj_set_style_pad_all(sh,0,0); lv_obj_clear_flag(sh,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*t=lv_label_create(sh); lv_label_set_text(t,title); lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0);
+  lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,18,14);
+  if(sub){ lv_obj_t*s=lv_label_create(sh); lv_label_set_text(s,sub); lv_obj_set_style_text_font(s,&lv_font_montserrat_16,0);
+    lv_obj_set_style_text_color(s,lv_color_hex(COL_TEXT3),0); lv_obj_align(s,LV_ALIGN_TOP_LEFT,18,50); }
+  lv_obj_t*x=lv_btn_create(sh); lv_obj_set_size(x,46,42); lv_obj_align(x,LV_ALIGN_TOP_RIGHT,-6,8);
+  lv_obj_set_style_bg_color(x,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(x,sheetClose,LV_EVENT_CLICKED,sh);
+  { lv_obj_t*l=lv_label_create(x); lv_label_set_text(l,LV_SYMBOL_CLOSE); lv_obj_center(l); }
+  lv_obj_add_flag(sh,LV_OBJ_FLAG_HIDDEN); return sh; }
+
+// -- category-control handlers (moved here from the old flat Settings tab) --
+void clkEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } uiToggleClock24();   // Display: 12/24h (#77)
+  if(gClkLbl) setTxt(gClkLbl, uiClock24()?"24-hour":"12-hour"); }
+void setPinEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }   // Security
+void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
+void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
+void sysOtaStub(lv_event_t*){ telnet_log::logf("[ui] OTA/firmware screen not built yet (#65)"); }   // honest labeled stub
+void sysRestore(lv_event_t*){ uiClearReducedMode(); }   // #80: clear safe-UI latch + reboot into full UI
+#ifdef SLYTHERM_WG
+void vpnRetryEvt(lv_event_t*){ remote_vpn::requestRetry(); }   // #148: posts; the radio task executes
+#endif
+
+// -- Networking sheet: WiFi setup + Home system + read-only local facts --
+void netRefresh(){ if(!wNetFacts) return; char ss[33],ip[20]; int8_t r=0; bool c=false;
+  wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&r,&c);
+  String gw=WiFi.gatewayIP().toString(), sn=WiFi.subnetMask().toString(), mac=WiFi.macAddress();
+  char b[220]; snprintf(b,sizeof(b),
+    "Network     %s\nIP          %s\nGateway     %s\nSubnet      %s\nSignal      %d dBm\nMAC         %s",
+    c?ss:"not connected", c?ip:"--", gw.c_str(), sn.c_str(), (int)r, mac.c_str());
+  setTxt(wNetFacts,b);
+#ifdef SLYTHERM_WG
+  if(wSetVpn){ const auto vs=remote_vpn::state();
+    setTxt(wSetVpn, vs==remote_vpn::State::kUp?"VPN connected":
+                    vs==remote_vpn::State::kHandshaking?"VPN connecting":
+                    vs==remote_vpn::State::kStandby?"VPN standby":"VPN off");
+    lv_obj_set_style_text_color(wSetVpn,lv_color_hex(
+      vs==remote_vpn::State::kUp?COL_OK:
+      vs==remote_vpn::State::kHandshaking?COL_WARN:
+      vs==remote_vpn::State::kStandby?COL_MUTED:COL_CRIT),0); }
+#endif
+}
+void openNet(lv_event_t*){ if(!gNetSheet) return; netRefresh(); lv_obj_clear_flag(gNetSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gNetSheet); }
+void buildNetSheet(lv_obj_t*scr){ gNetSheet=sheetShell(scr,540,420,"Networking","This panel's connection");
+  lv_obj_t*wb=lv_btn_create(gNetSheet); lv_obj_set_size(wb,238,52); lv_obj_align(wb,LV_ALIGN_TOP_LEFT,18,88);
+  lv_obj_set_style_bg_color(wb,lv_color_hex(COL_CRYO),0); lv_obj_add_event_cb(wb,openWifi,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(wb); lv_label_set_text(l,LV_SYMBOL_WIFI "  WiFi setup"); lv_obj_set_style_text_color(l,lv_color_hex(0x06202B),0); lv_obj_center(l); }
+  lv_obj_t*hb=lv_btn_create(gNetSheet); lv_obj_set_size(hb,238,52); lv_obj_align(hb,LV_ALIGN_TOP_RIGHT,-18,88);
+  lv_obj_set_style_bg_color(hb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(hb,openServer,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(hb); lv_label_set_text(l,LV_SYMBOL_HOME "  Home system"); lv_obj_center(l); }
+  wNetFacts=lv_label_create(gNetSheet); lv_obj_set_style_text_font(wNetFacts,&lv_font_montserrat_16,0);
+  lv_obj_set_style_text_color(wNetFacts,lv_color_hex(COL_MUTED),0); lv_obj_align(wNetFacts,LV_ALIGN_TOP_LEFT,18,156); lv_label_set_text(wNetFacts,"");
+#ifdef SLYTHERM_WG
+  lv_obj_t*vb=lv_btn_create(gNetSheet); lv_obj_set_size(vb,190,46); lv_obj_align(vb,LV_ALIGN_BOTTOM_LEFT,18,-14);
+  lv_obj_set_style_bg_color(vb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(vb,vpnRetryEvt,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(vb); lv_label_set_text(l,LV_SYMBOL_REFRESH "  Retry VPN"); lv_obj_center(l); }
+  wSetVpn=lv_label_create(gNetSheet); lv_obj_set_style_text_font(wSetVpn,&lv_font_montserrat_16,0);
+  lv_obj_align(wSetVpn,LV_ALIGN_BOTTOM_LEFT,222,-28); lv_label_set_text(wSetVpn,"");
+#endif
+}
+
+// -- Display sheet: clock 12/24h (brightness/theme reserved for later) --
+void openDisplay(lv_event_t*){ if(!gDispSheet) return; if(gClkLbl) setTxt(gClkLbl,uiClock24()?"24-hour":"12-hour");
+  lv_obj_clear_flag(gDispSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gDispSheet); }
+void buildDisplaySheet(lv_obj_t*scr){ gDispSheet=sheetShell(scr,470,300,"Display","Clock and appearance");
+  lv_obj_t*cl=lv_label_create(gDispSheet); lv_label_set_text(cl,"Clock"); lv_obj_set_style_text_color(cl,lv_color_hex(COL_MUTED),0);
+  lv_obj_set_style_text_font(cl,&lv_font_montserrat_20,0); lv_obj_align(cl,LV_ALIGN_TOP_LEFT,18,104);
+  lv_obj_t*cb=lv_btn_create(gDispSheet); lv_obj_set_size(cb,180,54); lv_obj_align(cb,LV_ALIGN_TOP_RIGHT,-18,96);
+  lv_obj_set_style_bg_color(cb,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(cb,clkEvt,LV_EVENT_CLICKED,nullptr);
+  gClkLbl=lv_label_create(cb); lv_label_set_text(gClkLbl,"12-hour"); lv_obj_center(gClkLbl);
+  lv_obj_t*note=lv_label_create(gDispSheet); lv_label_set_text(note,"Brightness and theme coming soon.");
+  lv_obj_set_style_text_font(note,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(note,lv_color_hex(COL_TEXT3),0);
+  lv_obj_align(note,LV_ALIGN_TOP_LEFT,18,170); }
+
+// -- Security sheet: Set PIN / Lock / Unlock --
+void secRefresh(){ if(!wSecState) return; bool unlocked=false,pin=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; pin=gM->userPinSet(); U();
+  char b[64]; snprintf(b,sizeof(b),"Lock: %s    PIN: %s",unlocked?"unlocked":"LOCKED",pin?"set":"none");
+  setTxt(wSecState,b); lv_obj_set_style_text_color(wSecState,lv_color_hex(unlocked?COL_OK:COL_WARN),0); }
+void openSecurity(lv_event_t*){ if(!gSecSheet) return; secRefresh(); lv_obj_clear_flag(gSecSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gSecSheet); }
+void buildSecuritySheet(lv_obj_t*scr){ gSecSheet=sheetShell(scr,480,340,"Security","Screen lock and PIN");
+  wSecState=lv_label_create(gSecSheet); lv_obj_set_style_text_font(wSecState,&lv_font_montserrat_20,0);
+  lv_obj_align(wSecState,LV_ALIGN_TOP_LEFT,18,96); lv_label_set_text(wSecState,"");
+  struct B{const char*t; lv_event_cb_t cb;} bs[3]={{"Set PIN",setPinEvt},{"Lock",lockEvt},{"Unlock",unlockEvt}};
+  for(int i=0;i<3;i++){ lv_obj_t*b=lv_btn_create(gSecSheet); lv_obj_set_size(b,140,56); lv_obj_align(b,LV_ALIGN_TOP_LEFT,18+i*148,150);
+    lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(b,bs[i].cb,LV_EVENT_CLICKED,nullptr);
+    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,bs[i].t); lv_obj_center(l); }
+  lv_obj_t*note=lv_label_create(gSecSheet); lv_label_set_text(note,"Lock makes the panel read-only until the PIN is entered.");
+  lv_obj_set_style_text_font(note,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(note,lv_color_hex(COL_TEXT3),0);
+  lv_obj_set_width(note,444); lv_label_set_long_mode(note,LV_LABEL_LONG_WRAP); lv_obj_align(note,LV_ALIGN_TOP_LEFT,18,224); }
+
+// -- System sheet: firmware id + OTA stub (#65) + restore-full-screen --
+void openSystem(lv_event_t*){ if(!gSysSheet) return; lv_obj_clear_flag(gSysSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gSysSheet); }
+void buildSystemSheet(lv_obj_t*scr){ gSysSheet=sheetShell(scr,480,340,"System","Firmware and recovery");
+  lv_obj_t*fw=lv_label_create(gSysSheet); lv_label_set_text(fw,"Firmware " SLYTHERM_FW_BUILD);
+  lv_obj_set_style_text_font(fw,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(fw,lv_color_hex(COL_INK),0); lv_obj_align(fw,LV_ALIGN_TOP_LEFT,18,96);
+  lv_obj_t*ob=lv_btn_create(gSysSheet); lv_obj_set_size(ob,300,50); lv_obj_align(ob,LV_ALIGN_TOP_LEFT,18,140);
+  lv_obj_set_style_bg_color(ob,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(ob,sysOtaStub,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(ob); lv_label_set_text(l,LV_SYMBOL_DOWNLOAD "  Firmware update  (soon)"); lv_obj_set_style_text_color(l,lv_color_hex(COL_TEXT3),0); lv_obj_center(l); }
+  lv_obj_t*rb=lv_btn_create(gSysSheet); lv_obj_set_size(rb,300,50); lv_obj_align(rb,LV_ALIGN_TOP_LEFT,18,204);
+  lv_obj_set_style_bg_color(rb,lv_color_hex(COL_RAISED),0); lv_obj_set_style_border_color(rb,lv_color_hex(COL_WARN),0); lv_obj_set_style_border_width(rb,1,0);
+  lv_obj_add_event_cb(rb,sysRestore,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t*l=lv_label_create(rb); lv_label_set_text(l,LV_SYMBOL_REFRESH "  Restore full screen"); lv_obj_center(l); }
+  lv_obj_t*note=lv_label_create(gSysSheet); lv_label_set_text(note,"Restore reboots into the full UI (clears the safe-mode latch).");
+  lv_obj_set_style_text_font(note,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(note,lv_color_hex(COL_TEXT3),0);
+  lv_obj_set_width(note,444); lv_label_set_long_mode(note,LV_LABEL_LONG_WRAP); lv_obj_align(note,LV_ALIGN_TOP_LEFT,18,266); }
+
 // PIN keypad
 void kpadRefresh(){ char d[16]=""; for(int i=0;i<4;i++) strcat(d,i<kpN?"* ":"_ "); lv_label_set_text(kpadDots,d); }
 void kpadOpen(KpMode m,const char*t){ kpMode=m; kpN=0; lv_label_set_text(kpadTitle,t); kpadRefresh();
@@ -209,8 +347,8 @@ void holdPick(lv_event_t*e){ int v=(int)(intptr_t)lv_event_get_user_data(e);
   L(); if(v<0) gM->resumeSchedule(); else gM->requestHold((HoldType)v); U();   // v<0: Resume schedule; else HoldType enum value
   if(gHoldSheet) lv_obj_add_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); }
 void holdClose(lv_event_t*){ if(gHoldSheet) lv_obj_add_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); }
-void holdEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
-  if(!gHoldSheet) return; lv_obj_clear_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gHoldSheet); }
+static void showHold(){ if(!gHoldSheet) return; lv_obj_clear_flag(gHoldSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gHoldSheet); }
+void holdEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } showHold(); }
 void buildHoldSheet(lv_obj_t*scr){ gHoldSheet=lv_obj_create(scr); lv_obj_set_size(gHoldSheet,420,382); lv_obj_center(gHoldSheet);
   lv_obj_set_style_bg_color(gHoldSheet,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(gHoldSheet,lv_color_hex(COL_CRYO),0);
   lv_obj_set_style_border_width(gHoldSheet,2,0); lv_obj_set_style_radius(gHoldSheet,14,0); lv_obj_set_style_pad_all(gHoldSheet,0,0); lv_obj_clear_flag(gHoldSheet,LV_OBJ_FLAG_SCROLLABLE);
@@ -427,6 +565,41 @@ void renderSniff(){ if(!wSniffCount) return;
   for(int i=0;i<n;i++){ strncat(body,lines[i],sizeof(body)-strlen(body)-1); if(i<n-1) strncat(body,"\n",sizeof(body)-strlen(body)-1); }
   setTxt(wSniffList,body); }
 
+// Drive the display to a named screen for automated documentation capture.
+// VIEW-ONLY: switches tabs and opens sheets, never actuates a control (no
+// mode/setpoint change — those go over MQTT during capture), and BYPASSES the
+// screen lock (opening a sheet shows nothing a locked panel shouldn't reveal),
+// so a scripted capture works on a locked bench panel. Vocabulary:
+//   bare "0".."5"            — tab by index (back-compat)
+//   "tab:home|presets|sensors|system|settings|diag"
+//   "sheet:fan|networking|display|security|system"  (Settings-group sheets)
+//   "sheet:wifi|home|hold|vacation"
+// Unknown/empty -> leave the current screen (just snapshot what's up).
+static int tabIndex(const char* n){
+  if(!strcmp(n,"home"))return 0;     if(!strcmp(n,"presets"))return 1;
+  if(!strcmp(n,"sensors"))return 2;  if(!strcmp(n,"system"))return 3;
+  if(!strcmp(n,"settings"))return 4; if(!strcmp(n,"diag"))return 5; return -1; }
+static void navToTab(int i){ if(gTabview && i>=0 && i<6) lv_tabview_set_act(gTabview,(uint32_t)i,LV_ANIM_OFF); }
+static void navScreen(const char* cmd){
+  if(!cmd || !cmd[0]) return;
+  bool digits=true; for(const char*p=cmd;*p;++p) if(*p<'0'||*p>'9'){ digits=false; break; }
+  if(digits){ navToTab(atoi(cmd)); return; }
+  if(!strncmp(cmd,"tab:",4)){ navToTab(tabIndex(cmd+4)); return; }
+  if(!strncmp(cmd,"sheet:",6)){ const char* n=cmd+6;
+    // Settings-group sheets: show the Settings tab behind them first.
+    if(!strcmp(n,"fan")){        navToTab(4); showFan(); }
+    else if(!strcmp(n,"networking")){ navToTab(4); openNet(nullptr); }
+    else if(!strcmp(n,"display")){    navToTab(4); openDisplay(nullptr); }
+    else if(!strcmp(n,"security")){   navToTab(4); openSecurity(nullptr); }
+    else if(!strcmp(n,"system")){     navToTab(4); openSystem(nullptr); }
+    else if(!strcmp(n,"wifi")){       openWifi(nullptr); }
+    else if(!strcmp(n,"home")){       openServer(nullptr); }
+    else if(!strcmp(n,"hold")){       navToTab(0); showHold(); }
+    else if(!strcmp(n,"vacation")){   navToTab(1); showVac(); }
+    return; }
+  // unrecognized token -> no navigation
+}
+
 // Screenshot server: on connect to :8081, snapshot the active screen (into
 // PSRAM) and stream it as raw RGB565 with a "SLYSHOT <w> <h>\n" header. Runs on
 // the UI task so lv_snapshot is safe. Decode with tools/slyshot.py.
@@ -439,8 +612,8 @@ void screenshotPoll(){
   WiFiClient c=srv->available(); if(!c) return;
   // optional: client may send a screen index (one line) to switch to first
   String cmd=""; uint32_t t0=millis();
-  while(millis()-t0<250){ if(c.available()){ char ch=c.read(); if(ch=='\n'||ch=='\r') break; cmd+=ch; if(cmd.length()>3) break; } }
-  if(cmd.length()>0 && gTabview){ int idx=cmd.toInt(); if(idx>=0&&idx<6){ lv_tabview_set_act(gTabview,(uint32_t)idx,LV_ANIM_OFF); lv_refr_now(NULL); } }
+  while(millis()-t0<250){ if(c.available()){ char ch=c.read(); if(ch=='\n'||ch=='\r') break; cmd+=ch; if(cmd.length()>=24) break; } }  // cap fits "sheet:networking"
+  if(cmd.length()>0){ navScreen(cmd.c_str()); lv_refr_now(NULL); }   // drive to the requested tab/sheet, then snapshot below
   lv_img_dsc_t dsc; memset(&dsc,0,sizeof(dsc));
   if(lv_snapshot_take_to_buf(lv_scr_act(),LV_IMG_CF_TRUE_COLOR,&dsc,sbuf,(uint32_t)800*480*2+64)==LV_RES_OK){
     char hdr[48]; int hn=snprintf(hdr,sizeof(hdr),"SLYSHOT %u %u\n",(unsigned)dsc.header.w,(unsigned)dsc.header.h);
