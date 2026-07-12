@@ -98,6 +98,7 @@
 #include "RelaySequencer.h"
 #include "SafetySupervisor.h"
 #include "SensorFusion.h"
+#include "SensorRoster.h"  // #155: resolve slots by wire id OR friendly name
 #include "SleepState.h"
 #include "TrendEstimator.h"
 #include "UiModel.h"
@@ -663,10 +664,9 @@ uint8_t findSensor(const char* name) {  // gCmdMux held
 #ifdef SLYTHERM_LOCAL_SENSOR
   if (strcmp(name, hm::kLocalSensorId) == 0) return 0;
 #endif
-  for (size_t i = 1; i < kFusionSlots; ++i)
-    if (gSensorTable[i].used && strncmp(gSensorTable[i].name, name, kSensorNameLen) == 0)
-      return static_cast<uint8_t>(i);
-  return 0xFF;
+  // #155: match wire id OR #85 friendly label so the panel path (passes disp)
+  // and the cmd/sensor/<id>/... path (passes id) both resolve.
+  return slyroster::findSlot(gSensorTable, 1, kFusionSlots, name, kSensorNameLen);
 }
 
 #ifdef SLYTHERM_REMOTE_LINK
