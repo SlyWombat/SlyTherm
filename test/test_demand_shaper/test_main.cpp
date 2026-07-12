@@ -545,6 +545,86 @@ static void test_cool_config_clamps_period_to_starts_cap() {
   TEST_ASSERT_EQUAL_UINT32(1200, s.config().cyclePeriodS);
 }
 
+// ---- #151 manual-start bypass of the demand-level min-OFF -----------------
+// The AUTO baseline is test_cool_restart_after_stop_waits_min_off above: after
+// a comfort stop at 600, a restart at full duty is blocked until minOffS=300
+// (ready at 900). These tests arm the manual bypass on that same trace.
+
+static void test_cool_manual_bypasses_min_off() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);          // start 1 (everCycled)
+  s.shape(0.0f, 600);          // comfort stop at min-run -> off at 600
+  s.armManual(610);            // user drops the cool setpoint
+  // AUTO would sit off until 900; the manual arm starts immediately instead.
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 650));
+  TEST_ASSERT_TRUE(s.on());
+}
+
+static void test_cool_manual_does_not_bypass_starts_cap() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // cap 3/h
+  // Spend the whole starts budget (invalid drops bypass min-run, like the
+  // existing cap test), then a manual arm must STILL be denied.
+  s.shape(100.0f, 0);      // start 1
+  s.shape(NAN, 10);        // off
+  s.shape(100.0f, 310);    // start 2 (min-off 300 served)
+  s.shape(NAN, 320);       // off
+  s.shape(100.0f, 620);    // start 3
+  s.shape(NAN, 630);       // off
+  s.armManual(640);        // manual bypass of min-OFF...
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 930));  // ...but the cap holds
+  TEST_ASSERT_EQUAL_UINT8(3, s.startsInLastHour(930));
+}
+
+static void test_cool_manual_does_not_bypass_gate() {
+  FakeGate gate;
+  gate.allowStart = false;   // CompressorGuard downstream refuses the start
+  StagedCoolShaper s(gate, coolCfg());
+  s.armManual(0);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 10));  // manual can't override the gate
+  TEST_ASSERT_EQUAL_UINT8(0, s.startsInLastHour(10));
+}
+
+static void test_cool_manual_arm_is_one_shot() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);          // start 1
+  s.shape(0.0f, 600);          // off at 600
+  s.armManual(601);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 610));  // manual start 2 (consumes arm)
+  s.shape(0.0f, 1210);         // held to min-run (610+600), then off
+  TEST_ASSERT_FALSE(s.on());
+  // A LATER automatic start must again wait the full min-off (arm was one-shot).
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 1509));  // 1210 + 299 < min-off
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 1510));  // min-off served
+}
+
+static void test_cool_manual_arm_expires() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // manualArmWindowS defaults to 120
+  s.shape(100.0f, 0);
+  s.shape(0.0f, 600);          // off at 600
+  s.armManual(601);
+  // Attempt past the arm window (601+121): the stale arm no longer bypasses,
+  // and min-off (ready at 900) is not yet served.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(100.0f, 722));
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(100.0f, 900));  // normal min-off still governs
+}
+
+static void test_cool_manual_started_run_still_holds_min_on() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  s.shape(0.0f, 600);          // off at 600
+  s.armManual(601);
+  s.shape(100.0f, 610);        // manual start 2
+  // min-ON is preserved for a manual-started run: an early call-drop is held.
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(0.0f, 650));   // held (610+600 not served)
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, s.shape(0.0f, 1209));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(0.0f, 1210));   // min-run served -> off
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_gas_boot_state_no_demand);
@@ -596,5 +676,11 @@ int main() {
   RUN_TEST(test_cool_gate_refuses_start_stays_off);
   RUN_TEST(test_cool_starts_per_hour_cap_holds_even_with_permissive_gate);
   RUN_TEST(test_cool_config_clamps_period_to_starts_cap);
+  RUN_TEST(test_cool_manual_bypasses_min_off);
+  RUN_TEST(test_cool_manual_does_not_bypass_starts_cap);
+  RUN_TEST(test_cool_manual_does_not_bypass_gate);
+  RUN_TEST(test_cool_manual_arm_is_one_shot);
+  RUN_TEST(test_cool_manual_arm_expires);
+  RUN_TEST(test_cool_manual_started_run_still_holds_min_on);
   return UNITY_END();
 }

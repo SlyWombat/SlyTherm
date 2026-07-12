@@ -2004,8 +2004,10 @@ void consumeCommands(uint32_t nowS) {
   // guard min-OFF (ODU restart delay is the backstop; see GuardGate). NB per
   // #91 an HA *scheduler* setpoint write is indistinguishable here from a human
   // tapping HA, so it also arms — safe: max-starts/hour still caps oscillation.
-  if (p.hasMode || p.hasEmHeat || p.hasSetpoint || p.hasLow || p.hasHigh || p.hasPreset)
+  if (p.hasMode || p.hasEmHeat || p.hasSetpoint || p.hasLow || p.hasHigh || p.hasPreset) {
     gGuardGate.armManual(nowS);
+    gCoolShaper.armManual(nowS);  // #151: also relax the cool shaper's demand-level min-OFF
+  }
   if (p.hasSleepOverride) gSleep.setOverride(p.sleepOverride);  // #90 HA hook
   if (p.hasHold) {
     if (p.hold.clear) gModeSm->clearHold();
@@ -2075,11 +2077,13 @@ void consumeCommands(uint32_t nowS) {
       case ui::IntentType::kSetSetpoints:
         gModeSm->setHeatSetpoint(intent.heatC, nowS);
         gModeSm->setCoolSetpoint(intent.coolC, nowS);
-        gGuardGate.armManual(nowS);  // on-panel setpoint change: immediate demand (see GuardGate)
+        gGuardGate.armManual(nowS);   // on-panel setpoint change: immediate demand (see GuardGate)
+        gCoolShaper.armManual(nowS);  // #151: relax the cool shaper's demand-level min-OFF too
         break;
       case ui::IntentType::kSetMode:
         gModeSm->setMode(static_cast<UserMode>(intent.mode), nowS);
-        gGuardGate.armManual(nowS);  // on-panel mode change: immediate demand
+        gGuardGate.armManual(nowS);   // on-panel mode change: immediate demand
+        gCoolShaper.armManual(nowS);  // #151
         break;
       case ui::IntentType::kSetPreset: {
         // #74: preset is carried as a roster INDEX (UI cards map 1:1 to the live
@@ -2089,7 +2093,7 @@ void consumeCommands(uint32_t nowS) {
         // overrides any active hold (incl. the auto 4h manual hold) instead of being
         // silently swallowed. applyPreset() keeps its hold-respecting semantics for
         // HA/programmatic callers; we clear the hold here first, at the UI layer only.
-        if (d) { gModeSm->clearHold(); gModeSm->applyPreset(d->name, nowS); gGuardGate.armManual(nowS); }
+        if (d) { gModeSm->clearHold(); gModeSm->applyPreset(d->name, nowS); gGuardGate.armManual(nowS); gCoolShaper.armManual(nowS); }  // #151
         break;
       }
       case ui::IntentType::kAckAlarms:

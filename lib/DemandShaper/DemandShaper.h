@@ -217,6 +217,12 @@ class StagedCoolShaper : public DemandShaper {
     uint32_t minOffS       = kCoolMinOffS;        // min rest, ditto
     uint32_t cyclePeriodS  = kCoolCyclePeriodS;   // base duty period (>= 3600/maxStartsPerH)
     float    fullDutyErrC  = kCoolFullDutyErrC;   // proportional band top (requestFromError)
+    // Manual-arm expiry: a user-initiated setpoint/mode/preset change arms a
+    // one-shot (armManual) that lets the NEXT start skip the demand-level
+    // min-OFF rest. Beyond this window the arm is ignored, so a stale manual
+    // intent can never bypass an unrelated later AUTOMATIC start. Mirrors the
+    // CompressorGuard manual window (main_thermostat kManualStartArmWindowS).
+    uint32_t manualArmWindowS = kCoolManualArmWindowS;
   };
   static constexpr uint8_t kMaxStartHistory = 16;
 
@@ -235,8 +241,21 @@ class StagedCoolShaper : public DemandShaper {
   float requestFromError(float errC, float predBiasC) const;
 
   float shape(float requestPct, uint32_t nowS) override;  // output: 0 or stagePct
-  void reset() override;  // clears phase state, keeps start history + alarms
+  void reset() override;  // clears phase state + manual arm, keeps start history + alarms
   bool alarm() const override { return inputAlarm_; }
+
+  // Manual-start bypass (issue #151, mirrors CompressorGuard's manual path).
+  // A user-initiated setpoint/mode/preset change arms this one-shot; the next
+  // start consumes it and skips the demand-level min-OFF rest ONLY, so a
+  // deliberate human cool request isn't held for minOffS (up to 8 min). The
+  // AUTOMATIC control loop is unaffected — its min-OFF (long-low modulation,
+  // dehumidification; docs/13 §4/§8) stands. Every other protection is
+  // preserved even for a manual start: min-ON still holds the resulting run,
+  // the starts/hour cap still applies (this is what bounds any restart-abuse
+  // pattern, so the ODU can't be walked into a latched fault), and the
+  // CompressorGuard gate is still consulted downstream. The arm expires after
+  // cfg.manualArmWindowS and is cleared by reset()/safety stop.
+  void armManual(uint32_t nowS) { manualArmed_ = true; manualArmS_ = nowS; }
 
   bool on() const { return on_; }
   bool inputAlarm() const { return inputAlarm_; }
@@ -255,6 +274,8 @@ class StagedCoolShaper : public DemandShaper {
   bool     everCycled_  = false;  // first start needs no off-phase wait (gate owns boot hold-off)
   uint32_t phaseStartS_ = 0;
   bool     inputAlarm_  = false;
+  bool     manualArmed_ = false;  // one-shot: next start skips the demand-level min-OFF
+  uint32_t manualArmS_  = 0;      // when armed (armManual); expires after cfg.manualArmWindowS
   uint32_t startTimesS_[kMaxStartHistory] = {};
   uint8_t  startCount_  = 0;  // valid entries, oldest overwritten ring-style
   uint8_t  startHead_   = 0;

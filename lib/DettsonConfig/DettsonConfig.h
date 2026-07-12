@@ -150,7 +150,14 @@ constexpr float    kHpFloorPct              = 30.0f;  // verify against installe
 constexpr float    kCoolStagePct            = 30.0f;  // the stage's engage demand
 constexpr uint8_t  kCoolMaxStartsPerH       = 2;      // hard demand-level cap (< guard's 3)
 constexpr uint32_t kCoolMinOnS              = 780;    // 13 min; OEM's shortest observed run was 14.5 min
-constexpr uint32_t kCoolMinOffS             = 480;    // 8 min demand-level rest (guard min-off 300 stays downstream)
+// AUTOMATIC-loop rest between cool cycles. NOT a compressor-safety timer (the
+// ODU's ~3-min restart delay + CompressorGuard min-OFF are that, downstream):
+// this longer rest exists for long-low modulation + wet-coil dehumidification
+// (short cycles push effective SHR->1.0, docs/13 §4/§8). A MANUAL (#151)
+// setpoint-down bypasses it via StagedCoolShaper::armManual so a deliberate
+// human request isn't held up to 8 min; the AUTO loop keeps the full rest.
+constexpr uint32_t kCoolMinOffS             = 480;    // 8 min demand-level rest (AUTO only; manual bypasses)
+constexpr uint32_t kCoolManualArmWindowS    = 120;    // #151: manual-bypass arm valid for a start within ~2 min (matches guard)
 constexpr uint32_t kCoolCyclePeriodS        = 4500;   // base duty period ~= OEM's mean cycle period (45-115 min observed)
 constexpr float    kCoolFullDutyErrC        = 0.45f;  // proportional band top: err >= this -> continuous run
 

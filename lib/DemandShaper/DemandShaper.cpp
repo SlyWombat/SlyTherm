@@ -310,14 +310,22 @@ float StagedCoolShaper::shape(float requestPct, uint32_t nowS) {
     const float offTimeS = duty >= 1.0f
                                ? static_cast<float>(cfg_.minOffS)
                                : (1.0f - duty) * periodS(duty);
+    // Manual bypass (#151): a user-initiated request within the arm window
+    // skips the demand-level min-OFF rest ONLY. The starts-cap and the gate
+    // below are still enforced (so this can't short-cycle the compressor into
+    // an ODU fault-latch), and min-ON still holds the run once it starts.
+    const bool manual =
+        manualArmed_ && elapsedS(nowS, manualArmS_) <= cfg_.manualArmWindowS;
     const bool offPhaseDone =
         !everCycled_ ||  // first call from idle: boot hold-off belongs to the gate
+        manual ||        // deliberate human request: don't sit out the rest
         static_cast<float>(elapsedS(nowS, phaseStartS_)) >= offTimeS;
     if (offPhaseDone && startBudgetOk(nowS) && gate_.canStart(nowS)) {
       on_ = true;
       everCycled_ = true;
       phaseStartS_ = nowS;
       recordStart(nowS);
+      if (manual) manualArmed_ = false;  // one-shot: consumed on a committed start
     }
   }
 
@@ -330,6 +338,7 @@ void StagedCoolShaper::reset() {
   on_ = false;
   everCycled_ = false;
   phaseStartS_ = 0;
+  manualArmed_ = false;  // a safety stop / reset cancels any pending manual bypass
 }
 
 }  // namespace dettson
