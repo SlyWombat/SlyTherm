@@ -18,7 +18,9 @@ static void test_frame_geometry() {
 
 static void test_defaults_sane() {
   TEST_ASSERT_TRUE(dettson::kGasFloorPct == 40.0f);
-  TEST_ASSERT_TRUE(dettson::kCompressorMinOffS >= 240);
+  // Floor = the ODU's own ~3-min (180 s) internal restart delay: SlyTherm's
+  // auto min-off must never sit BELOW the hardware's own protection (docs/04).
+  TEST_ASSERT_TRUE(dettson::kCompressorMinOffS >= 180);
   TEST_ASSERT_TRUE(dettson::kMinSetpointDeltaC > dettson::kMinSetpointDeltaFloorC);
   TEST_ASSERT_TRUE(dettson::kFallbackCoolSetpointC > dettson::kFallbackHeatSetpointC);
 }
