@@ -3059,6 +3059,13 @@ void setup() {
     // variant A (payload[12]=refresh timer, [13]=demand). Only in the TX build —
     // shadow/probe builds leave kUnset so buildDemandFrame() refuses every demand.
     cc.offsetVariant = ct485::OffsetVariant::kVarA;
+    // Go-live join (observed on the real bus, v1.0): this Controller REPLACES the
+    // OEM thermostat on a coordinator that already knows node 1 and R2R-polls it
+    // directly (255->1, docs/02 §6). AutoNet never completes — the coordinator
+    // won't re-address an occupied slot, so a fresh node cycles slot_wait/
+    // discovery_responded forever. Claim node 1 and answer those polls instead:
+    // the "remove-and-impersonate the OEM stat" path this whole design is built on.
+    cc.assumeAddressed = true;   // assumedAddress defaults to kAddrThermostat (1)
 #endif
     gCt = new ct485::Ct485Thermostat(cc);
   }
