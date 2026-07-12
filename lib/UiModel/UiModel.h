@@ -133,6 +133,16 @@ struct DisplayState {
   uint32_t compressorLockoutRemainS = 0;
   float    gasModulationPct         = 0.0f;
 
+  // Compressor anti-short-cycle "soon" acknowledgement (owner report: a min-OFF
+  // wait must not read as plain "Idle"). A genuine heat/cool call is pending but
+  // the compressor start is currently denied by a min-OFF timer — CompressorGuard
+  // (180 s) and/or the StagedCoolShaper cool min-OFF (480 s). Distinct from plain
+  // Idle (satisfied) AND from compressorLockoutRemainS (OAT / reset-loop LOCKOUT).
+  // Panel/UI only — NEVER folded into HvacAction (HA's hvac_action stays idle).
+  bool         compressorHeldOff     = false;
+  SetpointSide compressorHeldSide    = SetpointSide::kCool;  // "Cooling" vs "Heating" verb
+  uint32_t     compressorHeldRemainS = 0;                    // binding min-OFF rest, seconds
+
   // Active hold (issue #81): type + seconds remaining (timed holds only, else 0).
   HoldType holdType    = HoldType::kNone;
   uint32_t holdRemainS = 0;
@@ -228,6 +238,44 @@ inline Setpoints applyDeadbandClampPush(Setpoints sp, SetpointSide moved, float 
   return sp;
 }
 
+// ---------- Compressor-held-off predicate (min-OFF "soon" ack) ----------
+// PURE + testable: decide whether the panel must say "Cooling/Heating soon"
+// (with a rest countdown) instead of "Idle", given whether a genuine compressor
+// call is pending-but-idle on each side and the two min-OFF remaining timers.
+//
+//  - coolPendingIdle / heatPendingIdle: a real call wants the compressor (cool
+//    duty / HP-heat request > 0) yet nothing is emitted this cycle. Gas heat is
+//    NOT compressor-gated, so it never sets heatPendingIdle.
+//  - lockedOut (reset-loop latch / OAT): NOT a min-OFF wait — it suppresses the
+//    "soon" text entirely (the guard-anchor countdown would otherwise show a
+//    misleadingly short rest against a forever-latch).
+//  - Cool binds on the LARGER of the guard (180 s) and cool-shaper (480 s)
+//    rests. Heat is compressor-guard-only: the HP relay shaper has no
+//    demand-level min-OFF, so coolMinOffRemainS is irrelevant on the heat side.
+//  - remainS == 0 -> NOT held (blocked by duty/starts hygiene, not a min-OFF):
+//    fall back to plain Idle.
+struct CompressorHold {
+  bool         held    = false;
+  SetpointSide side    = SetpointSide::kCool;
+  uint32_t     remainS = 0;
+};
+inline CompressorHold evalCompressorHold(bool coolPendingIdle, bool heatPendingIdle,
+                                         bool lockedOut, uint32_t guardMinOffRemainS,
+                                         uint32_t coolMinOffRemainS) {
+  CompressorHold r;
+  if (lockedOut) return r;
+  if (coolPendingIdle) {
+    const uint32_t rem = guardMinOffRemainS > coolMinOffRemainS ? guardMinOffRemainS
+                                                                : coolMinOffRemainS;
+    if (rem > 0) { r.held = true; r.side = SetpointSide::kCool; r.remainS = rem; }
+  } else if (heatPendingIdle) {
+    if (guardMinOffRemainS > 0) {
+      r.held = true; r.side = SetpointSide::kHeat; r.remainS = guardMinOffRemainS;
+    }
+  }
+  return r;
+}
+
 // ---------- UiCommands: the interface screens call ----------
 class UiCommands {
  public:
@@ -301,6 +349,14 @@ class UiModel : public UiCommands {
   void setMinSetpointDelta(float deltaC);  // runtime-tunable, floor-clamped
   // Active hold echo (issue #81); rendered every tick, so no dirty bit needed.
   void setHoldStatus(HoldType t, uint32_t remainS) { state_.holdType = t; state_.holdRemainS = remainS; }
+  // Compressor-held-off echo (min-OFF "Cooling/Heating soon"): rendered every
+  // tick (renderMain/renderAmbient redraw the action line each pass), so no
+  // dirty bit. held=false restores the plain Idle/holding text.
+  void setCompressorHold(bool held, SetpointSide side, uint32_t remainS) {
+    state_.compressorHeldOff = held;
+    state_.compressorHeldSide = side;
+    state_.compressorHeldRemainS = remainS;
+  }
   // Vacation banner echo (#78); control fills it from the date compare. No dirty bit.
   void setVacation(bool active, const char* banner) {
     state_.vacationActive = active;

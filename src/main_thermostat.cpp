@@ -464,6 +464,20 @@ bool compressorProvenIdle(uint32_t nowS) {
          nowS >= gBootHoldEndS;
 }
 
+// Guard-side compressor min-OFF remaining (CompressorGuard 180 s min-OFF plus
+// the post-boot hold-off): the single source of truth for both the HA
+// compressor_min_off_remaining sensor snapshot AND the on-panel "Cooling/
+// Heating soon" acknowledgement. 0 while the compressor runs or the rest is
+// served. NB: the reset-loop LOCKOUT latch is NOT reflected here — that is
+// gGuard.lockedOut(), and callers surfacing "soon" must exclude it (the anchor
+// countdown would otherwise imply a short wait against a forever-latch).
+uint32_t compGuardMinOffRemainS(uint32_t nowS) {
+  if (gGuard.running()) return 0;
+  uint32_t end = gCompStopAnchorS + kCompressorMinOffS;
+  if (gBootHoldEndS > end) end = gBootHoldEndS;
+  return nowS < end ? end - nowS : 0;
+}
+
 void compressorSafetyStop(uint32_t nowS) {
   if (gGuard.running()) {
     gGuard.requestStop(nowS, /*safety=*/true);
@@ -2351,12 +2365,8 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
            occupied ? "true" : "false", domId);
 
   // Compressor diagnostics (glue estimate; the guard owns the real timers).
-  if (gGuard.running()) s.compMinOffRemainS = 0;
-  else {
-    uint32_t end = gCompStopAnchorS + kCompressorMinOffS;
-    if (gBootHoldEndS > end) end = gBootHoldEndS;
-    s.compMinOffRemainS = nowS < end ? end - nowS : 0;
-  }
+  // Shared helper: the UI "cooling/heating soon" ack reuses the SAME value.
+  s.compMinOffRemainS = compGuardMinOffRemainS(nowS);
   s.compLockedOut = gGuard.lockedOut() || !oat.valid ||
                     oat.valueC < gDualFuel->config().compressorMinOatC;
 
@@ -2733,6 +2743,21 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
                     : out.coolPct > 0 ? ui::HvacAction::kCooling
                     : out.fanPct > 0 ? ui::HvacAction::kFanOnly
                                      : ui::HvacAction::kIdle);
+  // "Cooling/Heating soon" ack (owner report): a genuine compressor call is
+  // pending but a min-OFF timer denies the start, so the panel must NOT read
+  // plain "Idle". HvacAction above stays idle (HA hvac_action enum unchanged) —
+  // this is on-panel richness only. Pending = the call wants the compressor
+  // (cool duty / HP-heat request > 0) yet nothing is emitted this cycle; the
+  // predicate then binds on the larger of the guard (180 s) and cool-shaper
+  // (480 s) min-OFF rests, and a lockout suppresses it (see evalCompressorHold).
+  { const bool coolPendingIdle =
+        call.type == CallType::kCool && coolReq > 0.0f && out.coolPct <= 0.0f;
+    const bool heatPendingIdle =
+        call.type == CallType::kHeat && hpReq > 0.0f && out.hpHeatPct <= 0.0f;
+    const ui::CompressorHold chold = ui::evalCompressorHold(
+        coolPendingIdle, heatPendingIdle, gGuard.lockedOut(),
+        compGuardMinOffRemainS(nowS), gCoolShaper.minOffRemainingS(nowS));
+    gUi.setCompressorHold(chold.held, chold.side, chold.remainS); }
   gUi.setOutdoor(oat.valueC, oat.valid,
                  oat.rung == OatRung::kBus ? ui::OutdoorSource::kBus
                  : oat.rung == OatRung::kWired ? ui::OutdoorSource::kWiredDs18b20

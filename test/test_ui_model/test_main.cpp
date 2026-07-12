@@ -582,6 +582,64 @@ static void test_pin_entry_cancel_and_nondigit_ignored() {
                     static_cast<int>(m.lockState()));
 }
 
+// ---------- compressor-held-off predicate (min-OFF "Cooling/Heating soon") ----------
+
+static void test_comp_hold_idle_when_nothing_pending() {
+  // No pending call on either side -> plain Idle, even if a rest is running.
+  CompressorHold h = evalCompressorHold(false, false, false, 120, 300);
+  TEST_ASSERT_FALSE(h.held);
+}
+
+static void test_comp_hold_cool_binds_on_larger_of_the_two_min_offs() {
+  // Cool pending: guard 90 s vs cool-shaper 300 s -> the shaper is binding.
+  CompressorHold h = evalCompressorHold(true, false, false, 90, 300);
+  TEST_ASSERT_TRUE(h.held);
+  TEST_ASSERT_EQUAL(static_cast<int>(SetpointSide::kCool), static_cast<int>(h.side));
+  TEST_ASSERT_EQUAL_UINT32(300, h.remainS);
+}
+
+static void test_comp_hold_cool_uses_guard_when_it_is_larger() {
+  // Cool pending: guard 150 s, cool-shaper already served -> guard is binding.
+  CompressorHold h = evalCompressorHold(true, false, false, 150, 0);
+  TEST_ASSERT_TRUE(h.held);
+  TEST_ASSERT_EQUAL(static_cast<int>(SetpointSide::kCool), static_cast<int>(h.side));
+  TEST_ASSERT_EQUAL_UINT32(150, h.remainS);
+}
+
+static void test_comp_hold_heat_is_guard_only() {
+  // Heat pending: the cool-shaper timer is irrelevant (HP relay shaper has no
+  // demand-level min-OFF); only the guard governs the heat side.
+  CompressorHold h = evalCompressorHold(false, true, false, 120, 999);
+  TEST_ASSERT_TRUE(h.held);
+  TEST_ASSERT_EQUAL(static_cast<int>(SetpointSide::kHeat), static_cast<int>(h.side));
+  TEST_ASSERT_EQUAL_UINT32(120, h.remainS);
+}
+
+static void test_comp_hold_not_held_when_no_timer_remaining() {
+  // Pending but both min-OFFs served -> blocked by duty/starts hygiene, not a
+  // min-OFF: fall back to plain Idle (requirement 4).
+  CompressorHold h = evalCompressorHold(true, false, false, 0, 0);
+  TEST_ASSERT_FALSE(h.held);
+}
+
+static void test_comp_hold_lockout_suppresses_soon() {
+  // Reset-loop / OAT LOCKOUT is not a min-OFF wait: never say "soon" (the guard
+  // anchor would otherwise imply a short rest against a forever-latch).
+  CompressorHold h = evalCompressorHold(true, false, true, 120, 300);
+  TEST_ASSERT_FALSE(h.held);
+}
+
+static void test_comp_hold_setter_survives_model_path() {
+  UiModel m = freshModel();
+  m.setCompressorHold(true, SetpointSide::kCool, 240);
+  TEST_ASSERT_TRUE(m.state().compressorHeldOff);
+  TEST_ASSERT_EQUAL(static_cast<int>(SetpointSide::kCool),
+                    static_cast<int>(m.state().compressorHeldSide));
+  TEST_ASSERT_EQUAL_UINT32(240, m.state().compressorHeldRemainS);
+  m.setCompressorHold(false, SetpointSide::kHeat, 0);  // satisfied again -> plain Idle
+  TEST_ASSERT_FALSE(m.state().compressorHeldOff);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_is_safe_and_fully_dirty);
@@ -616,5 +674,12 @@ int main() {
   RUN_TEST(test_lock_blob_roundtrip_hashes_survive);
   RUN_TEST(test_lock_blob_corrupt_or_missing_fails_open);
   RUN_TEST(test_pin_entry_cancel_and_nondigit_ignored);
+  RUN_TEST(test_comp_hold_idle_when_nothing_pending);
+  RUN_TEST(test_comp_hold_cool_binds_on_larger_of_the_two_min_offs);
+  RUN_TEST(test_comp_hold_cool_uses_guard_when_it_is_larger);
+  RUN_TEST(test_comp_hold_heat_is_guard_only);
+  RUN_TEST(test_comp_hold_not_held_when_no_timer_remaining);
+  RUN_TEST(test_comp_hold_lockout_suppresses_soon);
+  RUN_TEST(test_comp_hold_setter_survives_model_path);
   return UNITY_END();
 }

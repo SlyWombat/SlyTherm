@@ -263,6 +263,16 @@ class StagedCoolShaper : public DemandShaper {
   uint8_t startsInLastHour(uint32_t nowS) const;
   const Config& config() const { return cfg_; }
 
+  // Seconds until THIS shaper's demand-level min-OFF rest is served — i.e. how
+  // long a wanted restart is still blocked by the cool-side min-OFF (up to
+  // minOffS, 480 s in the field config). Powers the on-panel "Cooling soon"
+  // acknowledgement (owner report: min-OFF must not read as plain "Idle").
+  // Returns 0 while running, before the first cycle, while a manual bypass
+  // (armManual) is still armed, or once the rest is served. Surfaces the
+  // existing timer state (phaseStartS_) — it does NOT recompute independently;
+  // mirrors GasShaper::minOffServed's use of the same elapsed-since-off clock.
+  uint32_t minOffRemainingS(uint32_t nowS) const;
+
  private:
   float periodS(float duty) const;  // P(d) above; duty must be in (0,1)
   bool startBudgetOk(uint32_t nowS) const;

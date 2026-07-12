@@ -155,6 +155,8 @@ void renderAmbient(const DisplayState& s){ char b[80];
     lv_obj_set_style_text_color(aTemp,lv_color_hex(heat?COL_DIM_EMB:cool?COL_DIM_CRY:COL_TEXT3),0);
     if(heat){ snprintf(b,sizeof(b),"Heating to %.1f\xC2\xB0",(double)s.heatSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_DIM_EMB),0); }
     else if(cool){ snprintf(b,sizeof(b),"Cooling to %.1f\xC2\xB0",(double)s.coolSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_DIM_CRY),0); }
+    else if(s.compressorHeldOff){ const bool cs=s.compressorHeldSide==SetpointSide::kCool;   // min-OFF ack (mirrors Home hero)
+      snprintf(b,sizeof(b),"%s soon \xE2\x80\xA2 %lu min",cs?"Cooling":"Heating",(unsigned long)((s.compressorHeldRemainS+59u)/60u)); lv_obj_set_style_text_color(aTarget,lv_color_hex(cs?COL_DIM_CRY:COL_DIM_EMB),0); }
     else if(s.mode==UserMode::kOff){ strcpy(b,"System off"); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_MUTED),0); }
     else if(s.mode==UserMode::kAuto){ snprintf(b,sizeof(b),"Idle - holding %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_MUTED),0); }
     else { strcpy(b,"Idle"); lv_obj_set_style_text_color(aTarget,lv_color_hex(COL_MUTED),0); }

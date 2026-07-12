@@ -625,6 +625,30 @@ static void test_cool_manual_started_run_still_holds_min_on() {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, s.shape(0.0f, 1210));   // min-run served -> off
 }
 
+// minOffRemainingS surfaces the demand-level rest for the UI "Cooling soon" ack.
+static void test_cool_min_off_remaining_counts_down_after_stop() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());  // minOffS = 300
+  TEST_ASSERT_EQUAL_UINT32(0, s.minOffRemainingS(0));    // never cycled -> nothing owed
+  s.shape(100.0f, 0);                                    // start
+  TEST_ASSERT_EQUAL_UINT32(0, s.minOffRemainingS(100));  // running -> 0
+  s.shape(0.0f, 600);                                    // comfort stop at 600 (min-on served)
+  TEST_ASSERT_FALSE(s.on());
+  TEST_ASSERT_EQUAL_UINT32(300, s.minOffRemainingS(600));  // full rest ahead
+  TEST_ASSERT_EQUAL_UINT32(100, s.minOffRemainingS(800));  // 200 s elapsed
+  TEST_ASSERT_EQUAL_UINT32(0, s.minOffRemainingS(900));    // rest served
+  TEST_ASSERT_EQUAL_UINT32(0, s.minOffRemainingS(1000));   // stays 0
+}
+
+static void test_cool_min_off_remaining_zero_while_manual_armed() {
+  FakeGate gate;
+  StagedCoolShaper s(gate, coolCfg());
+  s.shape(100.0f, 0);
+  s.shape(0.0f, 600);           // off at 600
+  s.armManual(601);             // #151 manual bypass armed within the window
+  TEST_ASSERT_EQUAL_UINT32(0, s.minOffRemainingS(650));  // bypass waives the rest -> no wait shown
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_gas_boot_state_no_demand);
@@ -682,5 +706,7 @@ int main() {
   RUN_TEST(test_cool_manual_arm_is_one_shot);
   RUN_TEST(test_cool_manual_arm_expires);
   RUN_TEST(test_cool_manual_started_run_still_holds_min_on);
+  RUN_TEST(test_cool_min_off_remaining_counts_down_after_stop);
+  RUN_TEST(test_cool_min_off_remaining_zero_while_manual_armed);
   return UNITY_END();
 }
