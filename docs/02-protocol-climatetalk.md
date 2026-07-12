@@ -142,11 +142,12 @@ Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Paramet
 | Code | Command | Payload encoding (after 2-byte cmd code) |
 | --- | --- | --- |
 | `0x64` | **HEAT_DEMAND** | `[12]=refreshTimer, [13]=demand`. **Demand byte = percent × 2** (0–200 = 0–100 %). **Primary modulation channel.** ✅ CONFIRMED 2026-07-09: true closed-loop modulation — OEM stat opened at 100 % (0xC8), walked the full 40–100 % range in ~5 % steps with corrections in BOTH directions, held the 40 % floor, ended with an explicit demand 0. |
-| `0x65` | COOL_DEMAND | percent × 2. ✅ CONFIRMED: on this install cooling is **staged, not modulating** — always exactly `0x3C` (30 %) when on, `0x00` when off, regardless of setpoint error (tested 1.5–8.5 °C). |
+| `0x65` | COOL_DEMAND | percent × 2. ✅ CONFIRMED: on this install cooling is **staged, not modulating** — always exactly `0x3C` (30 %) when on, `0x00` when off, regardless of setpoint error. **Re-confirmed at the EXTREME 2026-07-12** (annotated capture session): cool setpoint driven to **8 °C** still produced only `0x3C` (30 %) — cooling never modulates up, even at an absurd error. Heat vs cool asymmetry is fundamental: heat 40–100 % modulating, cool fixed 30 % (why #140 duty-cycles 30 % rather than raising demand). |
 | `0x66` | FAN_DEMAND | `[12]=timer, [13]=mode, [14]=percent×2`. ✅ CONFIRMED: manual fan = mode 0, three discrete speeds **Low 25 % (0x32) / Med 50 % (0x64) / High 75 % (0x96)**; fan-on enters at Med. NOT used during heat/cool — the IFC maps airflow to fire rate internally; the stat never commands CFM in normal operation. |
 | `0x61` | SUBSYSTEM_BUSY_STATUS | ✅ OBSERVED 2026-07-08/09, **characterization CORRECTED 2026-07-12**: sent **coordinator → thermostat** (payload `61 00 60 00`, value 0 = "not busy"), 1–6 s after a demand transition — an equipment-readiness handshake. The earlier "operator-initiated only / never during automatic cycling" note was WRONG (limited early window): overnight 2026-07-11→12 it fired 7× at 2 am with nobody at the stat, each 1–6 s after an **automatic COOL_DEMAND cycle transition** (start/stop). Arrives in a short burst with two `0x06` token/session frames (see below). **TX-relevance: when SlyTherm asserts its own COOL_DEMAND, expect and tolerate this `0x61` follow-up from the coordinator — it is not a command to us.** |
 | `0x67`/`0x68`/`0x69` | BACKUP_HEAT / DEFROST / AUX_HEAT | percent × 2 |
 | `0x60` | DAMPER_POSITION | position × 2 |
+| `0xAC` | *unmapped status* (thermostat → bcast) | ✅ OBSERVED (not Set-Control, so it slips past the novel-command detector): 2-byte payload `AC 06`, sent **thermostat (node 1) → 255**, **75× over 2026-07-08→12**, correlating with cool-cycle transitions — part of the same handshake burst as `0x61` + the two `0x06` token frames. Value `0x06` constant so far. Meaning TBD; catalog it, don't let it alarm. |
 | `0x6A` | SET_MOTOR_SPEED | RPM × 4, little-endian `[13][14]` |
 | `0x6B` | SET_MOTOR_TORQUE | value × 2048, LE |
 | `0x6C` | SET_AIRFLOW_DEMAND | CFM × 4, LE |
@@ -200,6 +201,8 @@ Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Paramet
 4. **Steady-state polling / token.** Coordinator cycles **R2R (`0x00`) / Token Offer (`0x77`)** to each node to grant bus access. `R2R_LOOPS_PERDATACYCLE=5`; node list re-polled ≈ 110 s; a node silent > 120 s is dropped. Per-exchange `RESPONSE_TIMEOUT=3000 ms`, `MSG_RESEND_ATTEMPTS=3`.
 
 **Implication: the bus is coordinator-polled and token-mediated, not CSMA.** A subordinate transmits **only when granted the token / R2R**. This is the single biggest constraint on a virtual thermostat that wants to *write*.
+
+> **Setpoints/modes are NEVER on the bus — only demands (annotated capture 2026-07-12).** Driving the OEM stat through hold 8/23/37/9 °C and mode heat/off/cool produced **zero** setpoint- or mode-modify frames (`0x01/0x02/0x05/0x47`); only the resulting `HEAT/COOL/FAN/DEHUM_DEMAND` broadcasts changed. The thermostat computes demands internally from setpoint + measured temp and puts only the demands on the wire. **TX design consequence: SlyTherm controls by writing DEMANDS (`0x64/0x65/0x66/...`), which we fully decode — there is no setpoint to echo. Our "setpoint" lives in OUR pipeline; the bus only ever carries the demand it produces.**
 
 ---
 
