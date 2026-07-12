@@ -3066,6 +3066,12 @@ void setup() {
     // discovery_responded forever. Claim node 1 and answer those polls instead:
     // the "remove-and-impersonate the OEM stat" path this whole design is built on.
     cc.assumeAddressed = true;   // assumedAddress defaults to kAddrThermostat (1)
+    // Address demands to the COORDINATOR (0xFF), not broadcast (0x00). Observed
+    // on the real bus (v1.0.2): our broadcast COOL_DEMAND (01->00) drew no furnace
+    // 0x61 subsystem-busy ack and tripped the starvation watchdog, while the OEM
+    // thermostat we replaced always sent demands 01->FF and the coordinator relayed
+    // them to the furnace (which then ACKed). Match the OEM's proven routing.
+    cc.demandDst = ct485::kAddrCoordinator;
 #endif
     gCt = new ct485::Ct485Thermostat(cc);
   }
