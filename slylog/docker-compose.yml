@@ -61,6 +61,26 @@ services:
       # historical archives for migrate.py — READ-ONLY, never written
       - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
 
+  # #27 aid: phone-friendly capture-session annotation logger (:8091).
+  # Operator logs what they do at the OEM stat; entries are server-timestamped
+  # (postgres now(), same clock as raw_frames) into events(kind='annotation').
+  annotator:
+    build: ./annotator
+    container_name: slylog-annotator
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-America/Toronto}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    ports:
+      - "8091:8091"
+
   grafana:
     image: grafana/grafana:latest
     container_name: slylog-grafana
