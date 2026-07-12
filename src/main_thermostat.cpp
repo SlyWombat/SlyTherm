@@ -1553,9 +1553,12 @@ void sniffFrame(const ct485::Frame& f) {
 void mirrorTxFrame(const ct485::Frame& f) {
   if (!gSniffActive) return;
   const unsigned long ms = millis();
-  char line[96];
-  int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u",
-                   ms, f.src, f.dst, f.msgType, f.payloadLen);
+  char line[128];
+  // Full header (sn=subnet sm=sendMethod sp=sendParamHi nt=nodeType pk=packetNum)
+  // so a rejected demand can be diffed byte-for-byte against docs/02 §5a.
+  int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u sn%02X sm%02X sp%02X nt%02X pk%02X",
+                   ms, f.src, f.dst, f.msgType, f.payloadLen,
+                   f.subnet, f.sendMethod, f.sendParamHi, f.srcNodeType, f.packetNum);
   int nb = f.payloadLen; if (nb > 16) nb = 16;
   for (int i = 0; i < nb && n < (int)sizeof(line) - 3; ++i)
     n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
@@ -3072,6 +3075,14 @@ void setup() {
     // thermostat we replaced always sent demands 01->FF and the coordinator relayed
     // them to the furnace (which then ACKed). Match the OEM's proven routing.
     cc.demandDst = ct485::kAddrCoordinator;
+    // Node 1 (address 0x01) is a V1-range address (docs/02 §6: V1 = 0x01-0x0E,
+    // V2 = 0x10-0x3E) so it lives on subnet V1 (0x02). Because assumeAddressed
+    // skips the coordinator's Set Address — where a real node LEARNS its subnet
+    // (handleSetAddress: subnet_ = payload[1]) — we must hardcode the right one.
+    // Observed on the real bus (v1.0.3): with the default kSubnetV2 (0x03), R2R
+    // (address-based) worked but the coordinator REJECTED every COOL_DEMAND with
+    // no 0x83/0x06 ack (subnet-validated) and the furnace never engaged.
+    cc.assumedSubnet = ct485::kSubnetV1;
 #endif
     gCt = new ct485::Ct485Thermostat(cc);
   }
