@@ -278,10 +278,18 @@ void Ct485Thermostat::handleDiscovery(const Frame& f, uint32_t nowMs) {
   if (filter != 0x00 && filter != static_cast<uint8_t>(NodeType::kThermostat)) return;
 
   if (addressed()) {
-    // Node Discovery while addressed = the coordinator is re-enumerating
-    // (restart/replacement). Drop everything and rejoin from scratch —
-    // demanding into a network being rebuilt is unsafe (docs/02 §6).
     reenumerations_++;
+    // Impersonation mode (go-live): we deliberately ARE a fixed node — the OEM
+    // thermostat we replaced, whose node-1 slot this coordinator remembers and
+    // R2R-polls directly. Observed on the real bus (v1.0/1.0.1): this coordinator
+    // broadcasts Node Discovery ROUTINELY, not only on restart. Surrendering
+    // node 1 on each one strands us in AutoNet forever (it will not re-grant an
+    // occupied slot), flapping addressed<->slot_wait. Hold our address; we stay
+    // on the node list by answering the coordinator's R2R polls, not discovery.
+    if (cfg_.assumeAddressed) return;
+    // Fresh-join mode: Node Discovery while addressed = the coordinator is
+    // re-enumerating (restart/replacement). Drop everything and rejoin from
+    // scratch — demanding into a network being rebuilt is unsafe (docs/02 §6).
     clearDemands();
     cmdCount_ = 0;
     cmdHead_  = 0;
