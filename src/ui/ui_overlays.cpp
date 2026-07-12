@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "ui_shared.h"
+#include "ui_port.h"      // portBacklight(): wake the panel for scripted captures
 #include "wifi_prov.h"
 #include "mqtt_cfg.h"
 #include "telnet_log.h"
@@ -589,8 +590,22 @@ static void hideAllSheets(){
   for(lv_obj_t* o:ov) if(o) lv_obj_add_flag(o,LV_OBJ_FLAG_HIDDEN);
   gWifiOpen=false;
 }
+// A screenshot snapshots the ACTIVE screen. After kIdleMs the panel loads its
+// ambient screensaver (scrAmb), so a scripted nav would drive the hidden Home
+// tabview and we'd capture scrAmb instead of the screen we asked for (cool/heat
+// look identical there — ambient shows "Idle" for any single-setpoint mode).
+// Force the panel awake first (mirrors ambWake in ui_modes.cpp) so every
+// scripted screen renders for real.
+static void wakeForCapture(){
+  if(!gAmbient && !gBlanked) return;
+  gAmbient=false; gAmbShiftIdx=0;
+  lv_scr_load(scrMain);
+  DisplayState s; L(); s=gM->state(); U(); renderMain(s);
+  if(gBlanked){ portBacklight(true); gBlanked=false; }
+}
 static void navScreen(const char* cmd){
   if(!cmd || !cmd[0]) return;
+  wakeForCapture();
   bool digits=true; for(const char*p=cmd;*p;++p) if(*p<'0'||*p>'9'){ digits=false; break; }
   if(digits){ hideAllSheets(); navToTab(atoi(cmd)); return; }
   if(!strncmp(cmd,"tab:",4)){ hideAllSheets(); navToTab(tabIndex(cmd+4)); return; }
