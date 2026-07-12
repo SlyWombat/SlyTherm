@@ -422,8 +422,30 @@ void evaluateVacation(uint32_t /*nowS*/) {
   gVacUiActive = true;
 }
 
+// A MANUAL (user-initiated) setpoint/mode change should get its compressor
+// demand out IMMEDIATELY — the CompressorGuard min-OFF exists to stop the
+// AUTOMATIC control loop from oscillating, not to block an explicit human
+// request (the ODU's own ~3-min restart delay is the physical backstop,
+// docs/04 §1a). The setpoint/mode change path (MQTT + on-panel intents,
+// below) arms this one-shot; the next compressor start consumes it and passes
+// manual=true to CompressorGuard::requestStart, which bypasses min-OFF ONLY.
+// A short expiry keeps a stale arm from ever bypassing an unrelated later
+// AUTOMATIC start; max-starts/hour + boot hold-off + lockout are NEVER
+// bypassed even for a manual start.
+constexpr uint32_t kManualStartArmWindowS = 120;  // arm applies to a start within ~2 min of the user action
+
 struct GuardGate : public CompressorGate {
-  bool canStart(uint32_t nowS) override { return gGuard.requestStart(nowS).allowed; }
+  bool     manualArmed_ = false;
+  uint32_t manualArmS_  = 0;
+  void armManual(uint32_t nowS) { manualArmed_ = true; manualArmS_ = nowS; }
+
+  bool canStart(uint32_t nowS) override {
+    const bool manual =
+        manualArmed_ && (nowS - manualArmS_) <= kManualStartArmWindowS;
+    const auto d = gGuard.requestStart(nowS, manual);
+    if (manual && d.allowed) manualArmed_ = false;  // consume on a committed start
+    return d.allowed;
+  }
   bool canStop(uint32_t nowS) override {
     if (!gGuard.requestStop(nowS, /*safety=*/false).allowed) return false;
     gCompStopAnchorS = nowS;
@@ -1966,6 +1988,13 @@ void consumeCommands(uint32_t nowS) {
   if (p.hasLow) gModeSm->setHeatSetpoint(p.lowC);    // #91: HA write, no hold
   if (p.hasHigh) gModeSm->setCoolSetpoint(p.highC);  // #91: HA write, no hold
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
+  // A remote setpoint/mode/preset change is a user-directed request: arm the
+  // manual compressor-start bypass so the resulting demand isn't held by the
+  // guard min-OFF (ODU restart delay is the backstop; see GuardGate). NB per
+  // #91 an HA *scheduler* setpoint write is indistinguishable here from a human
+  // tapping HA, so it also arms — safe: max-starts/hour still caps oscillation.
+  if (p.hasMode || p.hasEmHeat || p.hasSetpoint || p.hasLow || p.hasHigh || p.hasPreset)
+    gGuardGate.armManual(nowS);
   if (p.hasSleepOverride) gSleep.setOverride(p.sleepOverride);  // #90 HA hook
   if (p.hasHold) {
     if (p.hold.clear) gModeSm->clearHold();
@@ -2035,9 +2064,11 @@ void consumeCommands(uint32_t nowS) {
       case ui::IntentType::kSetSetpoints:
         gModeSm->setHeatSetpoint(intent.heatC, nowS);
         gModeSm->setCoolSetpoint(intent.coolC, nowS);
+        gGuardGate.armManual(nowS);  // on-panel setpoint change: immediate demand (see GuardGate)
         break;
       case ui::IntentType::kSetMode:
         gModeSm->setMode(static_cast<UserMode>(intent.mode), nowS);
+        gGuardGate.armManual(nowS);  // on-panel mode change: immediate demand
         break;
       case ui::IntentType::kSetPreset: {
         // #74: preset is carried as a roster INDEX (UI cards map 1:1 to the live
@@ -2047,7 +2078,7 @@ void consumeCommands(uint32_t nowS) {
         // overrides any active hold (incl. the auto 4h manual hold) instead of being
         // silently swallowed. applyPreset() keeps its hold-respecting semantics for
         // HA/programmatic callers; we clear the hold here first, at the UI layer only.
-        if (d) { gModeSm->clearHold(); gModeSm->applyPreset(d->name, nowS); }
+        if (d) { gModeSm->clearHold(); gModeSm->applyPreset(d->name, nowS); gGuardGate.armManual(nowS); }
         break;
       }
       case ui::IntentType::kAckAlarms:

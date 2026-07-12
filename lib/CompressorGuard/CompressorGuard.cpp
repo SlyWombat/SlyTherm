@@ -89,7 +89,7 @@ uint32_t CompressorGuard::startsInWindow(uint32_t nowS) const {
   return n;
 }
 
-CompressorGuard::Decision CompressorGuard::requestStart(uint32_t nowS) {
+CompressorGuard::Decision CompressorGuard::requestStart(uint32_t nowS, bool manual) {
   if (lockedOut_) return {false, kForeverS, Deny::kResetLoopLockout};
   if (running_) return {true, 0, Deny::kAlreadyInState};
 
@@ -104,7 +104,12 @@ CompressorGuard::Decision CompressorGuard::requestStart(uint32_t nowS) {
     wait = holdoffEndS_ - nowS;
     reason = Deny::kBootHoldoff;
   }
-  if (hasLastStop_) {
+  // min-OFF gates AUTOMATIC restarts only. A MANUAL (user-initiated) request
+  // bypasses it — the demand goes out immediately; the ODU's own ~3-min
+  // restart delay is the physical backstop (docs/04 §1a; see header). Every
+  // other gate above/below (boot hold-off, lockout, max-starts/hour) still
+  // applies to a manual start.
+  if (!manual && hasLastStop_) {
     const uint32_t off = elapsedS(nowS, lastStopS_);
     if (off < cfg_.minOffS && cfg_.minOffS - off > wait) {
       wait = cfg_.minOffS - off;

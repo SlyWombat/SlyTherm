@@ -78,11 +78,12 @@ static void test_min_off_enforced_after_stop() {
   CompressorGuard g = freshGuard(0);
   TEST_ASSERT_TRUE(g.requestStart(300).allowed);
   TEST_ASSERT_TRUE(g.requestStop(1000, true).allowed);
-  auto d = g.requestStart(1100);
+  auto d = g.requestStart(1100);  // 100 s into the 180 s min-off
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
-  TEST_ASSERT_EQUAL_UINT32(200, d.waitS);
-  TEST_ASSERT_TRUE(g.requestStart(1300).allowed);
+  TEST_ASSERT_EQUAL_UINT32(80, d.waitS);
+  TEST_ASSERT_FALSE(g.requestStart(1179).allowed);  // 1 s short
+  TEST_ASSERT_TRUE(g.requestStart(1180).allowed);   // 180 s served
 }
 
 static void test_min_on_advisory_for_comfort_stop() {
@@ -123,6 +124,84 @@ static void test_start_idempotent_while_running() {
   TEST_ASSERT_EQUAL_UINT32(1, g.startsInWindow(310));  // no extra start burned
 }
 
+// ---------- manual (user-initiated) min-off bypass ----------
+// docs/04 §1a: min-OFF gates the AUTOMATIC control loop; a deliberate human
+// setpoint/mode change should issue demand immediately. requestStart(now,
+// manual=true) bypasses min-OFF ONLY — the ODU's own ~3-min restart delay is
+// the physical backstop. Every other gate stays in force.
+
+static void test_auto_min_off_default_is_180() {
+  // The shipped default now matches the ODU's ~3-min restart delay.
+  TEST_ASSERT_EQUAL_UINT32(180u, dettson::kCompressorMinOffS);
+}
+
+static void test_manual_bypasses_min_off_auto_does_not() {
+  CompressorGuard g = freshGuard(0);
+  TEST_ASSERT_TRUE(g.requestStart(300).allowed);
+  TEST_ASSERT_TRUE(g.requestStop(1000, /*safety=*/true).allowed);
+
+  // Same instant, 100 s into the 180 s min-off: an AUTOMATIC start is denied…
+  auto autoD = g.requestStart(1100, /*manual=*/false);
+  TEST_ASSERT_FALSE(autoD.allowed);
+  TEST_ASSERT_EQUAL(Deny::kMinOff, autoD.reason);
+  TEST_ASSERT_EQUAL_UINT32(80, autoD.waitS);
+  TEST_ASSERT_FALSE(g.running());
+
+  // …but a MANUAL (user-initiated) start goes out immediately.
+  auto manD = g.requestStart(1100, /*manual=*/true);
+  TEST_ASSERT_TRUE(manD.allowed);
+  TEST_ASSERT_EQUAL(Deny::kNone, manD.reason);
+  TEST_ASSERT_TRUE(g.running());
+  TEST_ASSERT_EQUAL_UINT32(2, g.startsInWindow(1100));  // the manual start is still counted
+}
+
+static void test_manual_start_does_not_bypass_boot_holdoff() {
+  // Boot hold-off is preserved for manual requests (only min-off is relaxed).
+  CompressorGuard g = freshGuard(1000);
+  auto d = g.requestStart(1000, /*manual=*/true);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(Deny::kBootHoldoff, d.reason);
+}
+
+static void test_manual_start_does_not_bypass_lockout() {
+  CompressorGuard::Config cfg;
+  cfg.resetLoopCount = 1;  // latch on the first abnormal boot
+  CompressorGuard g(cfg);
+  g.bootRestore(nullptr, 0, /*abnormalReset=*/true);
+  TEST_ASSERT_TRUE(g.lockedOut());
+  auto d = g.requestStart(5000, /*manual=*/true);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(Deny::kResetLoopLockout, d.reason);
+}
+
+static void test_manual_start_does_not_bypass_starts_per_hour() {
+  // max-starts/hour still caps a manual (or oscillating) request.
+  CompressorGuard::Config cfg;
+  cfg.minOffS = 0;  // isolate the starts cap from min-off
+  cfg.minOnS = 0;
+  cfg.bootHoldoffS = 0;
+  CompressorGuard g = freshGuard(0, cfg);
+  TEST_ASSERT_TRUE(g.requestStart(0).allowed);
+  TEST_ASSERT_TRUE(g.requestStop(5, true).allowed);
+  TEST_ASSERT_TRUE(g.requestStart(10).allowed);
+  TEST_ASSERT_TRUE(g.requestStop(15, true).allowed);
+  TEST_ASSERT_TRUE(g.requestStart(20).allowed);
+  TEST_ASSERT_TRUE(g.requestStop(25, true).allowed);
+  auto d = g.requestStart(30, /*manual=*/true);  // 4th start, manual — still capped
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(Deny::kStartsPerHour, d.reason);
+}
+
+static void test_safety_stop_immediate_after_manual_start() {
+  CompressorGuard g = freshGuard(0);
+  TEST_ASSERT_TRUE(g.requestStart(300).allowed);
+  TEST_ASSERT_TRUE(g.requestStop(1000, /*safety=*/true).allowed);
+  TEST_ASSERT_TRUE(g.requestStart(1100, /*manual=*/true).allowed);  // bypassed min-off
+  auto d = g.requestStop(1105, /*safety=*/true);  // safety stop still always immediate
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_FALSE(g.running());
+}
+
 // ---------- starts-per-hour rolling window ----------
 
 static void test_starts_per_hour_rolling_window() {
@@ -159,12 +238,12 @@ static void test_min_off_survives_reboot_via_blob() {
   a.save(&b);
 
   CompressorGuard g;
-  g.bootRestore(&b, 800, false);  // reboot 100 s into the 300 s min-off
+  g.bootRestore(&b, 800, false);  // reboot 100 s into the 180 s min-off
   auto d = g.requestStart(800);
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
-  TEST_ASSERT_EQUAL_UINT32(200, d.waitS);  // remainder, not a fresh 300+holdoff
-  TEST_ASSERT_TRUE(g.requestStart(1000).allowed);
+  TEST_ASSERT_EQUAL_UINT32(80, d.waitS);  // remainder, not a fresh 180+holdoff
+  TEST_ASSERT_TRUE(g.requestStart(880).allowed);  // 700 stop + 180
 }
 
 static void test_reboot_while_running_assumes_stop_at_boot() {
@@ -176,11 +255,11 @@ static void test_reboot_while_running_assumes_stop_at_boot() {
   CompressorGuard g;
   g.bootRestore(&b, 900, false);
   TEST_ASSERT_FALSE(g.running());  // boot = no demand
-  auto d = g.requestStart(1000);   // full min-off measured from boot
+  auto d = g.requestStart(1000);   // full min-off measured from boot (900)
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
-  TEST_ASSERT_EQUAL_UINT32(200, d.waitS);
-  TEST_ASSERT_TRUE(g.requestStart(1200).allowed);
+  TEST_ASSERT_EQUAL_UINT32(80, d.waitS);
+  TEST_ASSERT_TRUE(g.requestStart(1080).allowed);  // 900 assumed-stop + 180
 }
 
 static void test_starts_window_survives_reboot() {
@@ -225,9 +304,9 @@ static void test_ota_reboot_immediately_after_stop_no_short_cycle() {
   auto d = g.requestStart(706);   // first demand post-boot (boot-to-no-demand)
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
-  TEST_ASSERT_EQUAL_UINT32(294, d.waitS);          // remainder of 300 from t=700
-  TEST_ASSERT_FALSE(g.requestStart(999).allowed);  // 1 s short: still held
-  TEST_ASSERT_TRUE(g.requestStart(1000).allowed);  // min-off truly served
+  TEST_ASSERT_EQUAL_UINT32(174, d.waitS);          // remainder of 180 from t=700
+  TEST_ASSERT_FALSE(g.requestStart(879).allowed);  // 1 s short: still held
+  TEST_ASSERT_TRUE(g.requestStart(880).allowed);   // min-off truly served
 }
 
 static void test_reboot_clock_behind_stop_serves_full_min_off() {
@@ -245,9 +324,9 @@ static void test_reboot_clock_behind_stop_serves_full_min_off() {
   auto d = g.requestStart(950);
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(Deny::kMinOff, d.reason);
-  TEST_ASSERT_EQUAL_UINT32(dettson::kCompressorMinOffS, d.waitS);  // full 300
-  TEST_ASSERT_FALSE(g.requestStart(1240).allowed);
-  TEST_ASSERT_TRUE(g.requestStart(1300).allowed);  // 1000(blob stop) + 300
+  TEST_ASSERT_EQUAL_UINT32(dettson::kCompressorMinOffS, d.waitS);  // full 180
+  TEST_ASSERT_FALSE(g.requestStart(1179).allowed);
+  TEST_ASSERT_TRUE(g.requestStart(1180).allowed);  // 1000(blob stop) + 180
 }
 
 // ---------- reset-loop lockout ----------
@@ -333,6 +412,12 @@ int main() {
   RUN_TEST(test_boot_holdoff_jitter_added);
   RUN_TEST(test_corrupt_blob_treated_as_unknown);
   RUN_TEST(test_min_off_enforced_after_stop);
+  RUN_TEST(test_auto_min_off_default_is_180);
+  RUN_TEST(test_manual_bypasses_min_off_auto_does_not);
+  RUN_TEST(test_manual_start_does_not_bypass_boot_holdoff);
+  RUN_TEST(test_manual_start_does_not_bypass_lockout);
+  RUN_TEST(test_manual_start_does_not_bypass_starts_per_hour);
+  RUN_TEST(test_safety_stop_immediate_after_manual_start);
   RUN_TEST(test_min_on_advisory_for_comfort_stop);
   RUN_TEST(test_safety_stop_always_allowed);
   RUN_TEST(test_start_idempotent_while_running);

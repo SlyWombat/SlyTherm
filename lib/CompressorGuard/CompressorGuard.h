@@ -2,9 +2,9 @@
 //
 // Enforces min-OFF, min-ON, max starts/hour, post-boot hold-off, and the
 // reset-loop lockout (docs/04-safety.md §1a/§3, docs/05 defaults table).
-// The ODU's internal ~3-minute delay is a backstop only; this module is the
-// primary protection and NO code path (failsafe recovery, mode changeover)
-// may bypass it.
+// This module is the primary anti-short-cycle protection for the AUTOMATIC
+// control loop; the ODU's internal ~3-minute restart delay is a hardware
+// backstop underneath it.
 //
 // Stop semantics (docs/04 §1 prime directive — fail toward no-demand):
 //   - Stopping for SAFETY is ALWAYS allowed, immediately, regardless of
@@ -13,7 +13,22 @@
 //   - min-ON is ADVISORY for COMFORT stops only (setpoint satisfied a moment
 //     after start): a comfort stop inside min-ON returns allowed=false with
 //     the remaining seconds, and the caller keeps the compressor running.
-//   - Restart after ANY stop honors min-OFF.
+//   - Restart after ANY *automatic* stop honors min-OFF.
+//
+// Start semantics — the MANUAL bypass (deliberate design relaxation):
+//   min-OFF exists to keep the AUTOMATIC control loop from oscillating the
+//   compressor. It is NOT meant to block an explicit human request. When a
+//   user deliberately changes the setpoint/mode asking for conditioning, the
+//   demand should go out immediately: requestStart(now, /*manual=*/true)
+//   bypasses min-OFF ONLY. This is safe because the ODU enforces its own
+//   ~3-minute internal restart delay (docs/04 §1a) as the physical backstop,
+//   and it is the equipment's job, not ours, to protect the compressor on a
+//   human-initiated call. Every OTHER protection is preserved even for a
+//   manual start: reset-loop lockout, post-boot hold-off, and max-starts/hour
+//   ALL still apply (a misbehaving/oscillating command is still capped at
+//   maxStartsPerHour). This is a deliberate departure from the historical
+//   "no code path may bypass min-OFF" rule, narrowed to genuine user intent
+//   with the documented equipment backstop as the justification.
 //
 // Persistence: timer state is exported/imported as a POD blob (PersistBlob)
 // so a reboot cannot erase a pending min-off (docs/04 §2 brownout row). The
@@ -97,7 +112,10 @@ class CompressorGuard {
                    uint32_t jitterS = 0);
 
   // Commits the start when allowed. Idempotent while running.
-  Decision requestStart(uint32_t nowS);
+  // manual=true: a user-initiated request (MQTT/on-panel setpoint or mode
+  // change) — bypasses min-OFF ONLY (see header "MANUAL bypass"). All other
+  // gates (reset-loop lockout, boot hold-off, max-starts/hour) still apply.
+  Decision requestStart(uint32_t nowS, bool manual = false);
 
   // safety=true: always allowed, commits immediately (see header note).
   // safety=false: denied (advisory) until min-ON has elapsed.

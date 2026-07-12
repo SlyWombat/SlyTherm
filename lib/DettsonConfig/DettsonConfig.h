@@ -16,7 +16,14 @@
 namespace dettson {
 
 // ---------- Compressor protection (CompressorGuard) ----------
-constexpr uint32_t kCompressorMinOffS       = 300;   // range 240-900
+// Anti-short-cycle min-OFF for AUTOMATIC control decisions. Set to ~3 min to
+// match the ODU's own internal compressor restart delay (docs/04 §1a: "an
+// internal ~3-minute compressor restart delay"), rather than over-waiting and
+// duplicating a protection the equipment already enforces. Tune this exactly
+// if the owner supplies the installed model's precise ODU restart-delay spec.
+// MANUAL (user-initiated) setpoint/mode changes bypass this min-off entirely —
+// the ODU's ~3-min delay is the physical backstop (see CompressorGuard).
+constexpr uint32_t kCompressorMinOffS       = 180;   // ~3 min (ODU-matched); range 180-900
 constexpr uint32_t kCompressorMinOnS        = 300;   // range 60-1200
 constexpr uint8_t  kCompressorMaxStartsPerH = 3;
 constexpr uint32_t kBootCompressorHoldoffS  = 300;   // + 0-60 s jitter; if persisted state unknown -> full hold-off
