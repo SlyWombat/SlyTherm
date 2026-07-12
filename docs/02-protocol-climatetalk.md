@@ -157,7 +157,7 @@ Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Paramet
 | `0x07` | FAN_KEY_SELECTION | fan mode select (auto/on) |
 | `0x47` | SET_POINT_TEMP_AND_TEMPORARY_HOLD | setpoint + hold-time combo |
 | `0x5D`/`0x5E` | DEHUMIDIFICATION/HUMIDIFICATION_SET_POINT_MODIFY | setpoint % |
-| `0x62`/`0x63` | DEHUMIDIFICATION/HUMIDIFICATION_DEMAND | demand % |
+| `0x62`/`0x63` | DEHUMIDIFICATION/HUMIDIFICATION_DEMAND | demand %. ✅ CONFIRMED 2026-07-12 (annotated capture): both are **RH-vs-setpoint driven, NOT heat/cool-mode gated**. Structure `62/63 00 60 [val]`. **DEHUM `0x62`**: setpoint→95 % (max) drops the demand to `0x00` (off — house RH never reaches 95 %); nonzero values seen (0x1e/0x28/0x32) while active — value semantics TBD. **HUM `0x63`**: raising the humidification setpoint above the room's RH fired `HUM_DEMAND` = `0x96` (75 %) **during COOLING season** (no humidifier likely acting, but the demand is broadcast). **Install note:** the OEM stat's RH sensor read ~7 % LOW (43 % shown vs 50 % actual, corrected via the ±9 % Humidity-adjustment setting); dehum was left at 95 % = effectively disabled. Do NOT trust OEM RH — SlyTherm uses its own calibrated sensor (#106/#107) for the §8 humidity logic. |
 
 **Refresh-timer byte:** high nibble = minutes (0–15), low nibble = seconds in 3.75 s units. The demand **must be re-sent before the timer expires** or the subordinate reverts to off — a deliberate safety watchdog the firmware must honour (re-issue well within it). The timer is **per demand channel** (HEAT, COOL, FAN, BACKUP, DEFROST, AUX each refresh independently).
 
