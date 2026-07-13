@@ -2821,8 +2821,15 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   // temp-health text ("Local sensor only" / "No room sensor reporting").
   {
     char room[kSensorNameLen] = "";
-    if (pres.present && pres.dominantId != 0xFF && pres.dominantId < kFusionSlots) {
-      const SensorEntry& e = gSensorTable[pres.dominantId];
+    // Name the room the fusion is actually FOLLOWING for control — the dominant
+    // PARTICIPANT (same source as the Sensors page's "Following") — not merely
+    // the most-recently-SEEN presence room (pres.dominantId), which can be a room
+    // someone just passed through, or even a non-participating one. Keeps the
+    // Home "Reading <room>" line consistent with what drives the fused temp.
+    const uint8_t follow = gFusion.dominantParticipant();
+    const uint8_t which  = (follow != 0xFF) ? follow : pres.dominantId;
+    if (pres.present && which != 0xFF && which < kFusionSlots) {
+      const SensorEntry& e = gSensorTable[which];
       strlcpy(room, e.disp[0] ? e.disp : e.name, sizeof(room));
     }
     gUi.setPresence(pres.anyReporting, pres.present, pres.anyReporting, room,
