@@ -317,15 +317,22 @@ Preferences gPrefs;
 // (uiToggleSensor), read by handleSensorRoster. See lib/SensorParticipation.
 dettson::SensorParticipation gParticipation;
 using ParticipationBlob = dettson::SensorParticipation::PersistBlob;
-// gCmdMux held. Records the wire-id-keyed choice and mirrors it into the slot.
-// If the effective value changed, fills `outBlob` and returns true so the caller
-// can flush to NVS AFTER releasing the mutex (NVS writes are slow, ~15ms).
-static bool setParticipationLocked(uint8_t idx, const char* wireId, bool on,
-                                   ParticipationBlob& outBlob) {
+static_assert(kSensorNameLen == dettson::SensorParticipation::kIdLen,
+              "participation store key length must match the sensor wire-id length");
+// gCmdMux held. Records the wire-id-keyed choice, mirrors it into the slot, and
+// persists to NVS on change. The write stays INSIDE the mutex on purpose: "part"
+// is written from two tasks (uiToggleSensor on the UI task, the cmd handler on
+// the MQTT task), so serializing build+write under the one lock is what prevents
+// a concurrent double-write from dropping a setting. The ~15ms NVS hold is rare
+// (only on an actual change) and gCmdMux is otherwise held only briefly.
+static void setParticipationLocked(uint8_t idx, const char* wireId, bool on) {
   const bool changed = gParticipation.set(wireId, on);
   gSensorTable[idx].participating = on;
-  if (changed) gParticipation.toBlob(outBlob);
-  return changed;
+  if (changed) {
+    ParticipationBlob blob;
+    gParticipation.toBlob(blob);
+    gPrefs.putBytes("part", &blob, sizeof(blob));
+  }
 }
 SensorFusion        gFusion;
 // #90 night Sleep state: window/idle/override logic (lib/SleepState) + the
@@ -955,19 +962,17 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     if (strcmp(slash, "/participating") == 0) {
       const bool on = strcmp(buf, "ON") == 0;
       if (!on && strcmp(buf, "OFF") != 0) return;  // reject junk payloads
-      ParticipationBlob blob; bool persist = false;
       xSemaphoreTake(gCmdMux, portMAX_DELAY);
       uint8_t idx = findSensor(name);  // topic carries the wire id
       if (idx != 0 && idx != 0xFF && idx < kFusionSlots && gSensorTable[idx].used) {
         // #119: absolute set of the PARTICIPATION choice (not roster membership),
         // persisted to NVS so it survives the next reconnect/reboot.
-        persist = setParticipationLocked(idx, gSensorTable[idx].name, on, blob);
+        setParticipationLocked(idx, gSensorTable[idx].name, on);
         gPending.sensorRosterDirty = true;
         gPending.anyInbound = true;
         gDiscoveryDirty = true;
       }
       xSemaphoreGive(gCmdMux);
-      if (persist) gPrefs.putBytes("part", &blob, sizeof(blob));  // NVS write off the mutex
       return;
     }
     if (strcmp(slash, "/offset") != 0) return;
@@ -1127,17 +1132,14 @@ extern "C" void uiClearReducedMode() {
 // which keys by wire id — applies the same choice and cannot clobber it (#155).
 extern "C" void uiToggleSensor(const char* name) {
   if (!name || !name[0]) return;
-  ParticipationBlob blob; bool persist = false;
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   uint8_t idx = findSensor(name);
   if (idx == 0 || idx == 0xFF || idx >= kFusionSlots || !gSensorTable[idx].used) { xSemaphoreGive(gCmdMux); return; }
-  const bool next = !gSensorTable[idx].participating;
-  persist = setParticipationLocked(idx, gSensorTable[idx].name, next, blob);
+  setParticipationLocked(idx, gSensorTable[idx].name, !gSensorTable[idx].participating);
   gPending.sensorRosterDirty = true;
   gPending.anyInbound = true;
   gDiscoveryDirty = true;
   xSemaphoreGive(gCmdMux);
-  if (persist) gPrefs.putBytes("part", &blob, sizeof(blob));  // NVS write off the mutex
 }
 
 // RS-485 LISTEN capture (#71). Single-writer (ct485Task) -> single-reader (UI
