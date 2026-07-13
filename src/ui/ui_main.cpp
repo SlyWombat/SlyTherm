@@ -267,11 +267,13 @@ void buildTopBar(lv_obj_t*scr){
   // #150: camera-serving indicator, same 8px-dot pattern as wOnline; hidden
   // unless remote_camera::clientActive() (toggled in renderMain).
   wCamDot=lv_obj_create(bar); lv_obj_set_size(wCamDot,8,8); lv_obj_set_style_radius(wCamDot,LV_RADIUS_CIRCLE,0); lv_obj_set_style_border_width(wCamDot,0,0);
-  lv_obj_set_style_bg_color(wCamDot,lv_color_hex(0xE05555),0); lv_obj_align(wCamDot,LV_ALIGN_RIGHT_MID,-260,0); lv_obj_add_flag(wCamDot,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_bg_color(wCamDot,lv_color_hex(0xE05555),0); lv_obj_align(wCamDot,LV_ALIGN_RIGHT_MID,-284,0); lv_obj_add_flag(wCamDot,LV_OBJ_FLAG_HIDDEN);
 #endif
-  wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-178,0);
+  wOat=lv_label_create(bar); lv_obj_set_style_text_color(wOat,lv_color_hex(COL_MUTED),0); lv_obj_align(wOat,LV_ALIGN_RIGHT_MID,-202,0);
   // #127: WiFi RSSI bars between Outside and the clock; tap opens WiFi status.
-  wRssiBox=lv_btn_create(bar); lv_obj_set_size(wRssiBox,28,24); lv_obj_align(wRssiBox,LV_ALIGN_RIGHT_MID,-140,0);
+  // Cluster pinned 24px further left than the original -140/-178 so the widest
+  // 12h clock ("Wed  02:30 PM", ~133px) clears the RSSI box instead of colliding.
+  wRssiBox=lv_btn_create(bar); lv_obj_set_size(wRssiBox,28,24); lv_obj_align(wRssiBox,LV_ALIGN_RIGHT_MID,-164,0);
   lv_obj_set_style_bg_opa(wRssiBox,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(wRssiBox,0,0);
   lv_obj_set_style_pad_all(wRssiBox,0,0); lv_obj_add_event_cb(wRssiBox,openWifi,LV_EVENT_CLICKED,nullptr);
   for(int i=0;i<4;i++){ const int h=4+3*i;  // 4/7/10/13px ascending
