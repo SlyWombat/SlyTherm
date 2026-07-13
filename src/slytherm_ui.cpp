@@ -19,6 +19,17 @@ extern "C" bool uiTxTurnStress();  // #28 bench stress flag (main_thermostat)
 
 namespace slytherm_ui {
 
+// #92 warm-up splash timeout. On the VPN Remote the full reconnect
+// (WiFi -> WireGuard tunnel -> MQTT -> first controller echo/state) takes
+// ~100s, so a 60s cap would time out to a misleading seeded "System off"
+// before the real mode arrives. Hold the splash long enough for the slow
+// tunnel path; the LAN/Controller build keeps the snappy 60s cap.
+#ifdef SLYTHERM_WG
+constexpr uint32_t kSplashMaxMs = 180000u;  // VPN remote: outlast the tunnel reconnect
+#else
+constexpr uint32_t kSplashMaxMs = 60000u;
+#endif
+
 void begin(UiModel* model, SemaphoreHandle_t mux, bool reducedUi, bool firstRun){
   gM=model; gMux=mux; gReduced=reducedUi;
   portInit();
@@ -55,9 +66,9 @@ void service(){
         Serial.println("[ui] onboarding connected -> #92 warm-up splash"); }
       else { if(!gWifiOpen && lv_scr_act()!=scrWelcome) lv_scr_load(scrWelcome);   // backed out of WiFi setup -> Welcome (never a bare screen)
         renderWifi(); screenshotPoll(); lv_timer_handler(); return; } }
-    if(gBootActive){   // #92: warm-up splash — hold Home until outdoor + current temp are live (<=60s)
+    if(gBootActive){   // #92: warm-up splash — hold Home until outdoor + current temp are live (kSplashMaxMs cap)
       if(!gBootExiting){ renderBoot(s);
-        if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>60000u){ gBootExiting=true; bootExit(); } }   // ready: roll the logo off; its ready_cb loads Home
+        if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>kSplashMaxMs){ gBootExiting=true; bootExit(); } }   // ready: roll the logo off; its ready_cb loads Home
       screenshotPoll(); lv_timer_handler(); return; }   // stay on the splash through the roll-off anim
     if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
     // Ambient starts on idle regardless of alarms; the ambient screen shows the

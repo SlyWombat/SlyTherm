@@ -43,7 +43,7 @@ constexpr int kMipiLdoMv = 2500;
 constexpr size_t kFrameBytes = (size_t)kW * kH * 2;
 constexpr size_t kJpgOutBytes = 1024 * 1024;
 constexpr uint16_t kHttpPort = 8080;
-constexpr uint32_t kStreamMinIntervalMs = 100;  // ~10 fps cap on /stream
+constexpr uint32_t kStreamMinIntervalMs = 200;  // ~5 fps cap on /stream (round-5)
 
 // Round-4 memory hardening (#150 OOM fix). The big camera buffers already live
 // in PSRAM and gJpgOut is reused, but SERVING through the WireGuard tunnel is
@@ -69,6 +69,24 @@ constexpr uint32_t kStreamMinIntervalMs = 100;  // ~10 fps cap on /stream
 // so the dip is shallow; (2) guard floors high enough that heap never nears
 // the SDIO panic point. httpTask is single-threaded (one serve at a time); the
 // hammer's extra connections are refused via the tiny backlog.
+//
+// Round-5 (fresh coredump, USB): the SAME sdio_rx_get_buffer assert
+// (sdio_drv.c:953, rst:0xc SW_CPU_RESET, reason=panic) STILL fires under heavy
+// INBOUND load even with internal heap healthy (~32KB at crash; the device
+// survives at <2KB) — so this failure mode is RX-QUEUE/POOL depletion, NOT the
+// round-4 heap-OOM path. Mechanism: sdio_read (esp-hosted, prio 23) fills the
+// fixed H_SDIO_RX_Q faster than the consumer drains it. The consumer is the
+// lwIP tcpip thread (prio 18, pinned CORE0); with CONFIG_LWIP_TCPIP_CORE_LOCKING
+// off, our cam_http c.write()s ALSO execute on that tcpip thread, and over the
+// WireGuard tunnel every streamed byte is chacha20-ENCRYPTED there too — the
+// exact core0 CPU the RX path needs to DECRYPT+drain inbound. The RX pool size
+// is baked into the precompiled arduino esp-hosted .a (no sdkconfig/Kconfig
+// knob in this framework), and our tasks are already prio 1-2 (can't donate CPU
+// to prio-18/23), so the ONLY camera-side lever is to shrink the stream's core0
+// footprint: lower fps (10->5) + quality (50->35), keeping quarter-res. That is
+// HEADROOM, not a cure — a pure external RX flood (e.g. ICMP-over-WG storm) will
+// still deplete a fixed pool. Real fixes are non-camera: rebuild esp-hosted from
+// source to enlarge H_SDIO_RX_Q, or rate-limit inbound at the OPNsense/WG layer.
 constexpr uint32_t kServeStartHeap    = 50 * 1024;  // gate to BEGIN a serve
 constexpr uint32_t kStreamContinueHeap = 40 * 1024; // per-frame: stop a stream below this
 constexpr uint32_t kSendAbortHeap     = 34 * 1024;  // hard-abort a send in progress
@@ -750,7 +768,7 @@ void serveStream(WiFiClient& c) {
     for (int i = 0; i < 50 && gSeq == lastSeq; i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (gSeq == lastSeq) continue;  // still no new frame; re-check the socket
     lastSeq = gSeq;
-    const uint32_t sz = encodeLatest(50, /*scaleDiv=*/4);  // quarter-res stream: small frames = shallow heap dip
+    const uint32_t sz = encodeLatest(35, /*scaleDiv=*/4);  // quarter-res q35 stream (round-5): fewer/smaller frames -> less core0 tcpip/WG-encrypt CPU stolen from RX-decrypt
     if (sz == 0) continue;
     c.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n\r\n",
              (unsigned long)sz);
