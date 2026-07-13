@@ -30,6 +30,9 @@ void healthyTick(uint32_t nowMs);
 
 const char* reason();        // fixed esp_reset_reason() mapping (see .cpp)
 bool coredumpPresent();      // a crash dump is waiting on flash (#124 pulls it)
+bool coredumpFresh();        // that dump belongs to the RUNNING app (a
+                             // real crash of this firmware, not a stale dump);
+                             // false if none/stale/summary API unavailable
 uint32_t prevUptimeS();      // previous run's uptime; 0 = unknown (power loss)
 uint32_t bootCount();        // consecutive ABNORMAL boots (0 after a clean one)
 // #123/#145 payload: boot facts are captured at begin(); uptimeS is stamped

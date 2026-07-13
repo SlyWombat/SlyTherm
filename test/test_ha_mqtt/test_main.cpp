@@ -977,10 +977,11 @@ static void test_remote_state_json_extras() {  // #116/#118
   TEST_ASSERT_TRUE(has(j, "\"vacation\":false"));
 }
 
-static void test_boot_status_json() {  // #123/#145
+static void test_boot_status_json() {  // #123/#145 + coredump freshness
   BootStatus s;
   s.reason = "panic";
   s.coredump = true;
+  s.coredumpFresh = true;  // real crash of the running app
   s.prevUptimeS = 8130;
   s.version = "0.5.0";
   s.bootCount = 3;
@@ -990,10 +991,12 @@ static void test_boot_status_json() {  // #123/#145
   s.lastAliveUptimeS = 28458;
   s.lastAliveEpoch = 1783148392;
   s.uptimeS = 7;
+  s.republish = true;  // reconnect echo
   std::string j = bootStatusJson(s);
   assertCoherentJson(j);
   TEST_ASSERT_TRUE(has(j, "\"reason\":\"panic\""));
   TEST_ASSERT_TRUE(has(j, "\"coredump\":true"));
+  TEST_ASSERT_TRUE(has(j, "\"coredumpFresh\":true"));
   TEST_ASSERT_TRUE(has(j, "\"prevUptimeS\":8130"));
   TEST_ASSERT_TRUE(has(j, "\"version\":\"0.5.0\""));
   TEST_ASSERT_TRUE(has(j, "\"bootCount\":3"));
@@ -1003,6 +1006,7 @@ static void test_boot_status_json() {  // #123/#145
   TEST_ASSERT_TRUE(has(j, "\"lastAliveUptimeS\":28458"));
   TEST_ASSERT_TRUE(has(j, "\"lastAliveEpoch\":1783148392"));
   TEST_ASSERT_TRUE(has(j, "\"uptimeS\":7"));
+  TEST_ASSERT_TRUE(has(j, "\"republish\":true"));
   BootStatus d;  // defaults: nulls read unknown/empty, extras zero
   d.reason = nullptr;
   d.version = nullptr;
@@ -1010,7 +1014,30 @@ static void test_boot_status_json() {  // #123/#145
   assertCoherentJson(j);
   TEST_ASSERT_TRUE(has(j, "\"reason\":\"unknown\""));
   TEST_ASSERT_TRUE(has(j, "\"coredump\":false"));
+  // A stale dump present but not this build: coredump true, freshness false.
+  TEST_ASSERT_TRUE(has(j, "\"coredumpFresh\":false"));
+  TEST_ASSERT_TRUE(has(j, "\"republish\":false"));  // boot announce, not echo
   TEST_ASSERT_TRUE(has(j, "\"uptimeS\":0"));
+}
+
+static void test_coredump_sha_matches() {  // freshness compare (pure)
+  // The running app's full 64-char hex SHA; the on-flash dump summary keeps
+  // only a truncated prefix (CONFIG_APP_RETRIEVE_LEN_ELF_SHA, e.g. 9 chars).
+  const char* appFull = "dd7cf267ea1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbc";
+  // Fresh: dump prefix is a prefix of the running app's SHA.
+  TEST_ASSERT_TRUE(coredumpShaMatches("dd7cf267e", appFull));
+  // Stale (the reboot-deepdive case): different build entirely.
+  TEST_ASSERT_FALSE(coredumpShaMatches("2e65b8b1e", appFull));
+  // Case-insensitive (belt-and-suspenders; IDF emits lowercase).
+  TEST_ASSERT_TRUE(coredumpShaMatches("DD7CF267E", appFull));
+  // Degrade: null / empty / too-short inputs are never "fresh".
+  TEST_ASSERT_FALSE(coredumpShaMatches(nullptr, appFull));
+  TEST_ASSERT_FALSE(coredumpShaMatches("", appFull));
+  TEST_ASSERT_FALSE(coredumpShaMatches("dd7cf26", appFull));  // 7 chars < 8 floor
+  // A matching 8-char prefix is enough to clear the floor.
+  TEST_ASSERT_TRUE(coredumpShaMatches("dd7cf267", appFull));
+  // Off by one at the very end of the overlap still rejects.
+  TEST_ASSERT_FALSE(coredumpShaMatches("dd7cf2670", appFull));
 }
 
 static void test_parse_remote_intent_vacation_and_ack() {  // #118
@@ -1141,6 +1168,7 @@ int main() {
   RUN_TEST(test_remote_state_json_round_trip);
   RUN_TEST(test_remote_state_json_extras);
   RUN_TEST(test_boot_status_json);
+  RUN_TEST(test_coredump_sha_matches);
   RUN_TEST(test_parse_remote_intent_vacation_and_ack);
   RUN_TEST(test_ota_topics_and_state_json);
   RUN_TEST(test_parse_remote_intent_setpoints_and_mode);

@@ -890,10 +890,25 @@ std::string controllerStatusJson(const std::string& cid, bool online,
       .close();
 }
 
+bool coredumpShaMatches(const char* dumpShaHex, const char* appShaHex) {
+  if (!dumpShaHex || !appShaHex) return false;
+  const size_t da = strlen(dumpShaHex);
+  const size_t ap = strlen(appShaHex);
+  const size_t n = da < ap ? da : ap;
+  if (n < 8) return false;  // too short to distinguish builds
+  for (size_t i = 0; i < n; ++i) {
+    if (tolower((unsigned char)dumpShaHex[i]) !=
+        tolower((unsigned char)appShaHex[i]))
+      return false;
+  }
+  return true;
+}
+
 std::string bootStatusJson(const BootStatus& s) {
   return Obj()
       .str("reason", s.reason ? s.reason : "unknown")
       .raw("coredump", s.coredump ? "true" : "false")
+      .raw("coredumpFresh", s.coredumpFresh ? "true" : "false")
       .num("prevUptimeS", s.prevUptimeS)
       .str("version", s.version ? s.version : "")
       .num("bootCount", s.bootCount)
@@ -903,6 +918,7 @@ std::string bootStatusJson(const BootStatus& s) {
       .num("lastAliveUptimeS", s.lastAliveUptimeS)
       .num("lastAliveEpoch", s.lastAliveEpoch)
       .num("uptimeS", s.uptimeS)
+      .raw("republish", s.republish ? "true" : "false")
       .close();
 }
 

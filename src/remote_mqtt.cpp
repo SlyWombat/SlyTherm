@@ -450,8 +450,8 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(gCamTopic);          // #150 camera privacy switch
 #endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
-    { char t[48];  // #123/#145: retained boot/crash telemetry (uptimeS marks
-      // a reconnect echo vs a fresh boot)
+    { char t[48];  // #123/#145: retained boot/crash telemetry (republish=false
+      // marks the boot announce; reconnect echoes carry republish=true)
       snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
       gMqtt.publish(t, boot_guard::statusJson(millis() / 1000u).c_str(), true); }
     gOtaStateCache[0] = 0;               // republish OTA status after (re)connect
