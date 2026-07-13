@@ -98,6 +98,7 @@
 #include "RelaySequencer.h"
 #include "SafetySupervisor.h"
 #include "SensorFusion.h"
+#include "SensorParticipation.h"  // durable per-sensor participation (NVS), decoupled from roster
 #include "SensorRoster.h"  // #155: resolve slots by wire id OR friendly name
 #include "SleepState.h"
 #include "TrendEstimator.h"
@@ -196,7 +197,10 @@ struct SensorEntry {
   bool used = false;
   char name[kSensorNameLen] = {};   // topic id / wire segment (unchanged)
   char disp[kSensorNameLen] = {};   // #85: friendly display label; empty -> fall back to name
-  bool inRoster = false;
+  bool inRoster = false;      // is a member of the configured roster (HA-owned, retained topic)
+  bool participating = true;  // user's persisted "include in fusion" choice (NVS); default ON.
+                              // Fusion gates on inRoster && participating — decoupled so a roster
+                              // replay/reconnect can't clobber an OFF (dettson::fusionParticipates).
   bool hasMaxAge = false;
   uint32_t maxAgeS = kSensorMaxAgeS;
   float offsetC = 0.0f;
@@ -295,8 +299,6 @@ Snapshot gSnap;
 char gPresetNames[kMaxPresets][kPresetNameMaxLen + 1] = {};
 size_t gPresetNameCount = 0;
 volatile bool gDiscoveryDirty = false;
-volatile bool gRosterPubReq = false;   // UI sensor-toggle -> mqttTask republishes the rebuilt roster
-std::string   gRosterPubJson;          // guarded by gCmdMux
 volatile bool gCopProxyPubReq = false; // #143: control task staged fresh COP-proxy telemetry
 std::string   gCopProxyJson;           // guarded by gCmdMux
 
@@ -310,6 +312,21 @@ bool gFirstRun = false;   // #82: no saved Wi-Fi -> boot the Welcome onboarding 
 // Modules (constructed in setup() once the persisted clock is known)
 // ============================================================================
 Preferences gPrefs;
+// Durable per-sensor participation (NVS key "part"), keyed by wire id. Guarded
+// by gCmdMux — mutated from the MQTT task (roster/cmd handlers) and the UI task
+// (uiToggleSensor), read by handleSensorRoster. See lib/SensorParticipation.
+dettson::SensorParticipation gParticipation;
+using ParticipationBlob = dettson::SensorParticipation::PersistBlob;
+// gCmdMux held. Records the wire-id-keyed choice and mirrors it into the slot.
+// If the effective value changed, fills `outBlob` and returns true so the caller
+// can flush to NVS AFTER releasing the mutex (NVS writes are slow, ~15ms).
+static bool setParticipationLocked(uint8_t idx, const char* wireId, bool on,
+                                   ParticipationBlob& outBlob) {
+  const bool changed = gParticipation.set(wireId, on);
+  gSensorTable[idx].participating = on;
+  if (changed) gParticipation.toBlob(outBlob);
+  return changed;
+}
 SensorFusion        gFusion;
 // #90 night Sleep state: window/idle/override logic (lib/SleepState) + the
 // reversible sleep-preset glue. Control-task-only; touch arrives via the
@@ -758,7 +775,10 @@ void handleSensorRoster(const char* json) {
     uint8_t idx = findOrAddSensor(e.id.c_str());
     if (idx == 0) continue;  // table full (fusion mask is 8 wide)
     SensorEntry& s = gSensorTable[idx];
-    s.inRoster = true;
+    // Mark roster membership AND apply the user's PERSISTED participation choice
+    // (default ON) — never force true. This is the fix: a RETAINED-roster replay
+    // (reboot / MQTT reconnect) must leave a sensor the user turned OFF still off.
+    dettson::applyRosterMember(s, e.id.c_str(), gParticipation);
     s.hasMaxAge = e.hasMaxAge;
     if (e.hasMaxAge) s.maxAgeS = e.maxAgeS;
     s.offsetC = e.offsetC;
@@ -935,15 +955,19 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     if (strcmp(slash, "/participating") == 0) {
       const bool on = strcmp(buf, "ON") == 0;
       if (!on && strcmp(buf, "OFF") != 0) return;  // reject junk payloads
+      ParticipationBlob blob; bool persist = false;
       xSemaphoreTake(gCmdMux, portMAX_DELAY);
-      uint8_t idx = findSensor(name);
+      uint8_t idx = findSensor(name);  // topic carries the wire id
       if (idx != 0 && idx != 0xFF && idx < kFusionSlots && gSensorTable[idx].used) {
-        gSensorTable[idx].inRoster = on;
+        // #119: absolute set of the PARTICIPATION choice (not roster membership),
+        // persisted to NVS so it survives the next reconnect/reboot.
+        persist = setParticipationLocked(idx, gSensorTable[idx].name, on, blob);
         gPending.sensorRosterDirty = true;
         gPending.anyInbound = true;
         gDiscoveryDirty = true;
       }
       xSemaphoreGive(gCmdMux);
+      if (persist) gPrefs.putBytes("part", &blob, sizeof(blob));  // NVS write off the mutex
       return;
     }
     if (strcmp(slash, "/offset") != 0) return;
@@ -1096,29 +1120,24 @@ extern "C" void uiClearReducedMode() {
   esp_restart();
 }
 
-// Sensor participation toggle (#68): flip inRoster for the named room, re-fuse,
-// and republish the retained roster so it persists (broker echoes it back).
+// Sensor participation toggle (#68): flip the room's PARTICIPATION choice
+// (not roster membership — the roster is HA-owned and retained), persist it to
+// NVS, and re-fuse. The panel hands the #85 DISPLAY name; findSensor resolves it
+// to the slot, and we persist under the slot's WIRE id so a roster replay —
+// which keys by wire id — applies the same choice and cannot clobber it (#155).
 extern "C" void uiToggleSensor(const char* name) {
   if (!name || !name[0]) return;
+  ParticipationBlob blob; bool persist = false;
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   uint8_t idx = findSensor(name);
   if (idx == 0 || idx == 0xFF || idx >= kFusionSlots || !gSensorTable[idx].used) { xSemaphoreGive(gCmdMux); return; }
-  gSensorTable[idx].inRoster = !gSensorTable[idx].inRoster;
+  const bool next = !gSensorTable[idx].participating;
+  persist = setParticipationLocked(idx, gSensorTable[idx].name, next, blob);
   gPending.sensorRosterDirty = true;
   gPending.anyInbound = true;
   gDiscoveryDirty = true;
-  std::string js = "{\"sensors\":["; bool first = true; char ob[16];
-  for (size_t i = 1; i < kFusionSlots; ++i) {
-    if (!gSensorTable[i].used || !gSensorTable[i].inRoster) continue;
-    snprintf(ob, sizeof(ob), "%.1f", (double)gSensorTable[i].offsetC);
-    js += first ? "" : ",";  first = false;
-    js += "{\"id\":\"" + hm::jsonEscape(gSensorTable[i].name) + "\",\"max_age_s\":" +
-          std::to_string(gSensorTable[i].hasMaxAge ? gSensorTable[i].maxAgeS : 300u) +
-          ",\"offset\":" + ob + "}";
-  }
-  js += "]}";
-  gRosterPubJson = js; gRosterPubReq = true;   // defer publish to mqttTask (PubSubClient not thread-safe)
   xSemaphoreGive(gCmdMux);
+  if (persist) gPrefs.putBytes("part", &blob, sizeof(blob));  // NVS write off the mutex
 }
 
 // RS-485 LISTEN capture (#71). Single-writer (ct485Task) -> single-reader (UI
@@ -1524,9 +1543,6 @@ void mqttTask(void*) {
     if (gMqttConnected) {
       gMqtt.loop();
       if (gDiscoveryDirty) { gDiscoveryDirty = false; publishDiscovery(); }
-      if (gRosterPubReq) {  // UI sensor-toggle staged a roster; publish it here (mqttTask owns gMqtt)
-        xSemaphoreTake(gCmdMux, portMAX_DELAY); std::string j = gRosterPubJson; gRosterPubReq = false; xSemaphoreGive(gCmdMux);
-        pubRetained(hm::topic::kConfigSensors, j); }
       if (gCopProxyPubReq) {  // #143: control task staged COP-proxy telemetry (retained)
         xSemaphoreTake(gCmdMux, portMAX_DELAY); std::string j = gCopProxyJson; gCopProxyPubReq = false; xSemaphoreGive(gCmdMux);
         pubRetained(hm::topic::kStateCopProxy, j); }
@@ -1968,7 +1984,9 @@ void consumeCommands(uint32_t nowS) {
     for (size_t i = 1; i < kFusionSlots; ++i) {
       if (!table[i].used) continue;
       gFusion.registerSensor(static_cast<uint8_t>(i));  // duplicate -> false, harmless
-      gFusion.setParticipating(static_cast<uint8_t>(i), table[i].inRoster);
+      // Fuse iff it's a known roster member AND the user has it participating.
+      gFusion.setParticipating(static_cast<uint8_t>(i),
+                               dettson::fusionParticipates(table[i].inRoster, table[i].participating));
       if (table[i].hasMaxAge) gFusion.setSensorMaxAgeS(static_cast<uint8_t>(i), table[i].maxAgeS);
       gFusion.setSensorOffsetC(static_cast<uint8_t>(i), table[i].offsetC);
     }
@@ -2348,7 +2366,10 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
     strlcpy(sp.name, gSensorTable[i].name, sizeof(sp.name));
     const SensorStatus st = gFusion.status(static_cast<uint8_t>(i), nowS);
     sp.ageS = st.ageS == UINT32_MAX ? 0 : st.ageS;
-    sp.participating = st.live;
+    // Reflect the user's effective opt-in choice (roster member AND participating),
+    // which fusion carries as st.participating — not st.live, so an ON-but-stale
+    // sensor still shows participating (staleness has its own age topic).
+    sp.participating = st.participating;
     sp.offsetC = st.offsetC;
   }
   xSemaphoreGive(gCmdMux);
@@ -2807,7 +2828,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       r.tempC = stt.tempC;
       r.occupied = stt.occupied;
       r.ageS = (stt.ageS == 0xFFFFFFFFu) ? 0 : stt.ageS;
-      r.participating = stt.participating || gSensorTable[i].inRoster;
+      r.participating = dettson::fusionParticipates(gSensorTable[i].inRoster,
+                                                    gSensorTable[i].participating);
       r.healthy = stt.faults == 0 && stt.hasTemp;
       r.dominant = (static_cast<uint8_t>(i) == dom);
       r.lastOccAgeS = stt.lastOccAgeS;
@@ -3107,11 +3129,20 @@ void setup() {
   }
 
   // ---- Sensors ----
+  // Restore persisted per-sensor participation BEFORE any roster replay so the
+  // first fusion already reflects the user's choices. Fails open (all default
+  // ON) on an absent/corrupt blob (fromBlob returns false, store stays empty).
+  {
+    ParticipationBlob blob;
+    if (gPrefs.getBytes("part", &blob, sizeof(blob)) == sizeof(blob))
+      gParticipation.fromBlob(blob);
+  }
 #ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;
   strlcpy(gSensorTable[0].name, hm::kLocalSensorId, kSensorNameLen);
   gSensorTable[0].inRoster = true;
+  gSensorTable[0].participating = true;  // local slot always participates (fusion treats it as isLocal)
 #endif
 #ifdef SLYTHERM_DS18B20
   if (cfg::kOneWirePin >= 0) {
