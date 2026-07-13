@@ -6,7 +6,8 @@
 #
 # Install: see ha/README.md. Entities this package expects from the
 # thermostat's MQTT discovery (lib/HaMqtt):
-#   climate.slytherm_hvac                  presets: home / away / sleep
+#   climate.slytherm_hvac   presets: morning / daytime / evening / night / away
+#     (roster is published to retained slytherm/config/presets; edit there, NOT here)
 #   sensor.slytherm_active_equipment       idle / hp_heat / gas_heat / cool / defrost
 #
 # You must create yourself (no YAML config flow exists for these):
@@ -17,34 +18,26 @@
 # Search this file for "EDIT ME" before enabling.
 
 # ---------------------------------------------------------------------------
-# 1. Weekly schedule
+# 1. Daily preset schedule (time-of-day + weekday -> one of the 4 presets)
 # ---------------------------------------------------------------------------
-# One on/off schedule: ON = "home" preset, OFF = "sleep" preset. Daytime Away
-# comes from presence (section 6), not from the schedule — with phones doing
-# Away, a two-block schedule is all most homes need. Edit the blocks to taste
-# (or migrate to the UI editor under Settings > Devices & Services > Helpers).
-schedule:
-  slytherm_occupied:
-    name: SlyTherm occupied hours
-    icon: mdi:home-clock
-    monday: &weekday
-      - from: "06:00:00"
-        to: "22:30:00"
-    tuesday: *weekday
-    wednesday: *weekday
-    thursday: *weekday
-    friday:
-      - from: "06:00:00"
-        to: "23:00:00"
-    saturday: &weekend
-      - from: "07:00:00"
-        to: "23:00:00"
-    sunday:
-      - from: "07:00:00"
-        to: "22:30:00"
+# The presets themselves (setpoints) live in the THERMOSTAT, published to the
+# retained slytherm/config/presets topic — the panel and HA both build their
+# preset lists from it. HA does NOT define presets; it only SELECTS which one is
+# active by time-of-day. To change setpoints, edit the roster (see the SlyTherm
+# presets/scheduling reference), NOT this file. To change the *times*, edit the
+# trigger list in the "schedule -> preset" automation below + the hour cutoffs
+# in the script here (keep them in sync).
+#
+#   Weekdays: 07:00 morning · 10:00 daytime · 20:00 evening · 23:00 night
+#   Weekends: 07:00 daytime · 23:00 night
+#   00:00–07:00 = night (carried over from 23:00)
+#
+# Daytime Away is layered on top by presence (section 6); multi-day Away by the
+# vacation calendar (section 3). Both hand back to this schedule when they end.
 
-# Shared "follow the schedule" step: home while the schedule is ON, sleep
-# while OFF. Called by the schedule edge, vacation end, and presence return.
+# "What preset should be active right now?" — computed purely from the wall
+# clock, so the block-boundary automation, vacation-end, AND presence-return all
+# resume to the correct current block.
 script:
   slytherm_apply_scheduled_preset:
     alias: SlyTherm apply scheduled preset
@@ -55,7 +48,14 @@ script:
           entity_id: climate.slytherm_hvac
         data:
           preset_mode: >-
-            {{ 'home' if is_state('schedule.slytherm_occupied', 'on') else 'sleep' }}
+            {% set h = now().hour %}
+            {% set weekend = now().weekday() >= 5 %}
+            {% if h < 7 or h >= 23 %}night
+            {% elif weekend %}daytime
+            {% elif h < 10 %}morning
+            {% elif h < 20 %}daytime
+            {% else %}evening
+            {% endif %}
 
 # ---------------------------------------------------------------------------
 # Helpers (thresholds, filter counter)
@@ -150,14 +150,16 @@ automation:
   - id: slytherm_schedule_to_preset
     alias: "SlyTherm: schedule -> preset"
     description: >-
-      Follows schedule.slytherm_occupied: ON -> home, OFF -> sleep. Stands down
-      while a vacation event is active or while presence has set Away.
+      At each daily block boundary applies the time-appropriate preset
+      (morning/daytime/evening/night; weekends collapse to daytime). Also fires
+      at HA start so a reboot lands on the right block. Stands down while a
+      vacation event is active or while presence has set Away (they override
+      until they end, then hand back via the shared script).
     trigger:
-      - platform: state
-        entity_id: schedule.slytherm_occupied
-        to:
-          - "on"
-          - "off"
+      - platform: time
+        at: ["07:00:00", "10:00:00", "20:00:00", "23:00:00"]
+      - platform: homeassistant
+        event: start
     condition:
       - condition: state
         entity_id: calendar.slytherm_vacation
