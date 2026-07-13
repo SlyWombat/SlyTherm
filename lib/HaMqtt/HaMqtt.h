@@ -444,9 +444,9 @@ std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
                              const char* vacBanner = "");
 
 // #123/#145: retained boot/crash telemetry (slytherm/boot, slytherm/remote/<id>/boot):
-//   {"reason":"panic","coredump":true,"prevUptimeS":8130,"version":"0.4.3","bootCount":17,
-//    "rawReason":4,"rtcReason0":1,"rtcReason1":14,
-//    "lastAliveUptimeS":28458,"lastAliveEpoch":1783148392,"uptimeS":3}
+//   {"reason":"panic","coredump":true,"coredumpFresh":true,"prevUptimeS":8130,
+//    "version":"0.4.3","bootCount":17,"rawReason":4,"rtcReason0":1,"rtcReason1":14,
+//    "lastAliveUptimeS":28458,"lastAliveEpoch":1783148392,"uptimeS":3,"republish":false}
 // reason is the fixed esp_reset_reason() mapping in src/boot_guard.cpp;
 // prevUptimeS==0 means unknown (RTC lost, e.g. true power cycle). The #145
 // fields survive that case: lastAlive* is the NVS heartbeat from the previous
@@ -454,9 +454,22 @@ std::string remoteStateJson(float heatC, float coolC, Mode mode, bool emHeat,
 // esp_reset_reason() and per-CPU ROM reset codes, and uptimeS is stamped at
 // PUBLISH time — the topic is republished retained on every MQTT reconnect,
 // so uptimeS well above 0 marks a reconnect echo, not a fresh boot.
+//
+// coredump is a STICKY presence flag: true whenever ANY dump sits in the
+// coredump partition, even a stale one from an earlier build (see
+// docs/notes/reboot-deepdive.md). coredumpFresh disambiguates it: true only
+// when the on-flash dump's app-ELF SHA matches the CURRENTLY running app (a
+// real crash of THIS firmware). It is false when there is no dump, when the
+// dump is stale (different build), or when the summary API is unavailable —
+// so `coredump:true, coredumpFresh:false` reads "stale dump, not this build."
+//
+// republish is false on the boot-announce (the first publish after boot) and
+// true on every later reconnect echo of the retained topic — a consumer no
+// longer has to infer a real boot from a small uptimeS.
 struct BootStatus {
   const char* reason = "unknown";
-  bool coredump = false;
+  bool coredump = false;          // #124: ANY dump present on flash (sticky)
+  bool coredumpFresh = false;     // dump belongs to the running app (real crash)
   uint32_t prevUptimeS = 0;
   const char* version = "";
   uint32_t bootCount = 0;
@@ -466,8 +479,17 @@ struct BootStatus {
   uint32_t lastAliveUptimeS = 0;  // previous run's last NVS heartbeat
   uint32_t lastAliveEpoch = 0;    // wall clock of that heartbeat (0 = no NTP)
   uint32_t uptimeS = 0;           // THIS run's uptime at publish time
+  bool republish = false;         // false = boot announce, true = reconnect echo
 };
 std::string bootStatusJson(const BootStatus& s);
+
+// Coredump-freshness compare (native-testable, no IDF dep). Both args are the
+// app-ELF SHA256 as lowercase hex strings: the on-flash dump's (from
+// esp_core_dump_get_summary()) and the running app's (esp_app_desc). Compares
+// case-insensitively over the shorter length — the summary stores only a
+// truncated hex prefix (CONFIG_APP_RETRIEVE_LEN_ELF_SHA chars). Requires >= 8
+// overlapping hex chars; null/short inputs read "not a match" (not fresh).
+bool coredumpShaMatches(const char* dumpShaHex, const char* appShaHex);
 
 // Discovery payloads for the diagnostic entities (docs/06 "Entities" table).
 std::string activeEquipmentDiscoveryJson();      // sensor

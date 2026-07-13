@@ -18,6 +18,21 @@
 #include "esp_rom_sys.h"
 #define BOOTG_HAS_ROM_RESET 1
 #endif
+// Running-app ELF SHA (for coredump-freshness compare) comes from the OTA
+// partition description — same source main_thermostat uses for its fw-id check.
+#if __has_include("esp_ota_ops.h")
+#include "esp_ota_ops.h"
+#define BOOTG_HAS_OTA_DESC 1
+#endif
+// esp_core_dump_get_summary() + esp_core_dump_summary_t are compiled only for
+// the ELF-to-flash coredump config (this project's config; verified in the
+// pinned framework sdkconfig). Guard on the exact macros the IDF header uses so
+// a different coredump config degrades to freshness-unknown instead of failing.
+#if defined(BOOTG_HAS_COREDUMP) && defined(BOOTG_HAS_OTA_DESC) && \
+    defined(CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH) &&               \
+    defined(CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF)
+#define BOOTG_HAS_COREDUMP_SUMMARY 1
+#endif
 
 #ifndef SLYTHERM_FW_BUILD
 #define SLYTHERM_FW_BUILD "0.0.0-dev"
@@ -43,6 +58,8 @@ Preferences gPrefs;
 char gReason[12] = "unknown";
 bool gAbnormal = false;
 bool gCoredump = false;
+bool gCoredumpFresh = false;  // on-flash dump belongs to the running app
+bool gAnnounced = false;      // statusJson emitted once: republish marker
 uint32_t gPrevUptimeS = 0;
 uint32_t gCount = 0;
 bool gCleared = false;  // healthyTick's once-latch
@@ -70,6 +87,18 @@ const char* mapReason(esp_reset_reason_t r, bool& abnormal) {
   }
 }
 
+#ifdef BOOTG_HAS_COREDUMP_SUMMARY
+// Lowercase-hex a byte buffer; out must hold 2*n+1 chars.
+void bytesToHexLower(const uint8_t* b, size_t n, char* out) {
+  static const char kHex[] = "0123456789abcdef";
+  for (size_t i = 0; i < n; ++i) {
+    out[2 * i] = kHex[b[i] >> 4];
+    out[2 * i + 1] = kHex[b[i] & 0x0F];
+  }
+  out[2 * n] = '\0';
+}
+#endif
+
 }  // namespace
 
 void begin(const char* nvsNamespace) {
@@ -86,6 +115,30 @@ void begin(const char* nvsNamespace) {
 
 #ifdef BOOTG_HAS_COREDUMP
   gCoredump = (esp_core_dump_image_check() == ESP_OK);
+#endif
+#ifdef BOOTG_HAS_COREDUMP_SUMMARY
+  // Freshness — the sticky coredump flag says a dump EXISTS, not that it
+  // belongs to THIS firmware. Compare the dump's app-ELF SHA to the running
+  // app's; a stale dump from an earlier build reads coredumpFresh=false. Any
+  // failure here (no dump, summary error, no app desc) leaves freshness false.
+  if (gCoredump) {
+    esp_core_dump_summary_t* sum =
+        (esp_core_dump_summary_t*)malloc(sizeof(esp_core_dump_summary_t));
+    if (sum) {
+      if (esp_core_dump_get_summary(sum) == ESP_OK) {
+        esp_app_desc_t d{};
+        const esp_partition_t* run = esp_ota_get_running_partition();
+        if (run && esp_ota_get_partition_description(run, &d) == ESP_OK) {
+          char appHex[2 * sizeof(d.app_elf_sha256) + 1];
+          bytesToHexLower(d.app_elf_sha256, sizeof(d.app_elf_sha256), appHex);
+          // sum->app_elf_sha256 is a truncated null-terminated hex string.
+          gCoredumpFresh = dettson::hamqtt::coredumpShaMatches(
+              (const char*)sum->app_elf_sha256, appHex);
+        }
+      }
+      free(sum);
+    }
+  }
 #endif
 
   if (gUpMagic == kUpMagic) gPrevUptimeS = gUpSeconds;  // else power loss: unknown
@@ -105,10 +158,10 @@ void begin(const char* nvsNamespace) {
   if (gLastAliveUptimeS) gPrefs.putUInt("laU", 0);
   if (gLastAliveEpoch) gPrefs.putUInt("laE", 0);
 
-  Serial.printf("[boot] reason=%s raw=%lu/%lu/%lu coredump=%d prevUptime=%lus "
-                "lastAlive=%lus@%lu abnormalBoots=%lu\n",
+  Serial.printf("[boot] reason=%s raw=%lu/%lu/%lu coredump=%d fresh=%d "
+                "prevUptime=%lus lastAlive=%lus@%lu abnormalBoots=%lu\n",
                 gReason, (unsigned long)gRawReason, (unsigned long)gRtcReason0,
-                (unsigned long)gRtcReason1, (int)gCoredump,
+                (unsigned long)gRtcReason1, (int)gCoredump, (int)gCoredumpFresh,
                 (unsigned long)gPrevUptimeS, (unsigned long)gLastAliveUptimeS,
                 (unsigned long)gLastAliveEpoch, (unsigned long)gCount);
 }
@@ -129,6 +182,7 @@ void healthyTick(uint32_t nowMs) {
 
 const char* reason() { return gReason; }
 bool coredumpPresent() { return gCoredump; }
+bool coredumpFresh() { return gCoredumpFresh; }
 uint32_t prevUptimeS() { return gPrevUptimeS; }
 uint32_t bootCount() { return gCount; }
 
@@ -136,6 +190,7 @@ std::string statusJson(uint32_t uptimeS) {
   dettson::hamqtt::BootStatus s;
   s.reason = gReason;
   s.coredump = gCoredump;
+  s.coredumpFresh = gCoredumpFresh;
   s.prevUptimeS = gPrevUptimeS;
   s.version = SLYTHERM_FW_BUILD;
   s.bootCount = gCount;
@@ -145,6 +200,11 @@ std::string statusJson(uint32_t uptimeS) {
   s.lastAliveUptimeS = gLastAliveUptimeS;
   s.lastAliveEpoch = gLastAliveEpoch;
   s.uptimeS = uptimeS;
+  // Republish marker: the first publish after boot is the announce; every later reconnect
+  // republish of this retained topic is an echo. gAnnounced latches on first
+  // call (both call sites run on the single MQTT task — no race).
+  s.republish = gAnnounced;
+  gAnnounced = true;
   return dettson::hamqtt::bootStatusJson(s);
 }
 
