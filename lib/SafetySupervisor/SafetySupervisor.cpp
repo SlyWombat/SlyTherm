@@ -219,8 +219,14 @@ void SafetySupervisor::update(const HealthFacts& f, uint32_t nowS) {
     }
     if (!deadmanTripped_ && elapsedS(nowS, busSilentSinceS_) >= cfg_.busDeadmanS) {
       deadmanTripped_ = true;
+      // autoClear: this is a transient condition (bus silent -> bus alive), like
+      // the sensor/MQTT staleness alarms (#72). demandDropRequested() already
+      // lifts the moment busAlive returns (deadmanTripped_ = false above); the
+      // ALARM must drop with it, not linger as a stale un-acked entry after the
+      // bus recovers. Without autoClear=true, clearCondition() above (persist-
+      // until-ack contract) leaves it latched — the stale-alarm bug.
       alarms_.raise(kAlarmBusDeadman, Severity::kCritical,
-                    "CT-485 silent: deadman demand drop", nowS);
+                    "CT-485 silent: deadman demand drop", nowS, /*autoClear=*/true);
     }
   }
 

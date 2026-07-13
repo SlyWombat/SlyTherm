@@ -192,7 +192,10 @@ static void test_deadman_recovery_and_restart() {
   sup.update(allGood(), 200 + kBusDeadmanS);  // bus back
   TEST_ASSERT_FALSE(sup.busDeadmanTripped());
   TEST_ASSERT_TRUE(sup.demandPermitted());
-  TEST_ASSERT_FALSE(sup.alarms().find(kAlarmBusDeadman)->active);
+  // autoClear: the entry is REMOVED on bus recovery (not just marked inactive)
+  // so the published alarmN = alarms().count() drops — the stale-alarm fix. A
+  // latched (autoClear=false) deadman would linger here as an un-acked entry.
+  TEST_ASSERT_NULL(sup.alarms().find(kAlarmBusDeadman));
 
   // A new silence restarts the timer from its own start, not the old one.
   uint32_t t = 1000;
