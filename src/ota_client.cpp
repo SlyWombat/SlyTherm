@@ -396,13 +396,23 @@ bool doApply() {
     lastDataMs = millis();
     size_t chunk = avail > sizeof(buf) ? sizeof(buf) : avail;
 #ifdef CONFIG_IDF_TARGET_ESP32P4
-    // #129: pace the download so the esp-hosted SDIO drainer keeps up. The
-    // RX pool asserts (sdio_drv.c:953) when inbound TLS data outruns the
-    // sdio_read task — cap the per-iteration read and yield between reads
-    // (~500 KB/s ceiling; a 2 MB image gains a few seconds, the transport
-    // survives).
+    // Pace the download so the esp-hosted SDIO drainer keeps up. The RX pool
+    // asserts (sdio_drv.c:953) when inbound data outruns the sdio_read task —
+    // cap the per-iteration read and yield between reads.
+#ifdef SLYTHERM_WG
+    // Over the WireGuard tunnel (off-LAN) the inbound path also carries
+    // per-packet chacha20 decrypt AND, on the camera build, the MJPEG SDIO
+    // traffic — so #129's pacing isn't enough and the sdio_read task falls
+    // behind and asserts mid-download (observed off-LAN on dc25b0). Throttle
+    // harder: 1 KB reads + a 10 ms yield (~85 KB/s). A ~1.9 MB image takes
+    // ~22 s but the tunnel + camera survive. Slow beats a reboot loop.
+    if (chunk > 1024) chunk = 1024;
+    vTaskDelay(pdMS_TO_TICKS(10));
+#else
+    // #129 LAN pacing (~500 KB/s ceiling; a 2 MB image gains a few seconds).
     if (chunk > 2048) chunk = 2048;
     vTaskDelay(pdMS_TO_TICKS(4));
+#endif
 #endif
     if (ram && written + chunk > expect) chunk = expect - written;
     if (ram && chunk == 0) break;  // server sent more than expected
