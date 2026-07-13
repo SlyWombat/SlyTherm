@@ -32,6 +32,9 @@
 #endif
 #ifdef SLYTHERM_CAM
 #include "remote_camera.h"    // #150: HTTP MJPEG camera server (pilot Remote only)
+// #150: src/remote_sdio_tune.c enlarges the esp-hosted SDIO RX buffer pool by
+// overriding the port default sdio config (no call site needed - it shadows the
+// framework's esp_hosted_get_default_sdio_config used by arduino's hostedInit).
 #endif
 
 // Dev builds may carry a compiled-in seed; production images ship secretless
