@@ -214,6 +214,9 @@ struct Pending {
   bool hasSetpoint = false;    float setpointC = 0;
   bool hasLow = false;         float lowC = 0;
   bool hasHigh = false;        float highC = 0;
+  bool manualSetpoint = false; // hasLow/hasHigh came from a person tapping a REMOTE
+                               // panel (arms the 4h hold like the wall panel), vs an
+                               // HA cmd/heat|cool scheduler write (stays no-hold, #91)
   bool hasFan = false;         hm::FanMode fan = hm::FanMode::kAuto;
   bool hasFanCircMin = false;  uint32_t fanCircMin = 0;   // #128 circulate minutes-per-hour
   bool hasFanCircPct = false;  float fanCircPct = 0;      // #128 circulate speed %
@@ -851,6 +854,8 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
               case hm::RemoteIntentType::kSetpoints:
                 gPending.hasLow = true; gPending.lowC = ri.heatC;
                 gPending.hasHigh = true; gPending.highC = ri.coolC;
+                gPending.manualSetpoint = true;  // a person tapped a remote panel:
+                // treat like the wall panel (arm the 4h manual hold), not an HA write
                 break;
               case hm::RemoteIntentType::kMode:
                 gPending.hasMode = true; gPending.mode = ri.mode;
@@ -2031,8 +2036,17 @@ void consumeCommands(uint32_t nowS) {
     else if (gModeSm->mode() == UserMode::kCool)
       gModeSm->setCoolSetpoint(p.setpointC);
   }
-  if (p.hasLow) gModeSm->setHeatSetpoint(p.lowC);    // #91: HA write, no hold
-  if (p.hasHigh) gModeSm->setCoolSetpoint(p.highC);  // #91: HA write, no hold
+  // A REMOTE-panel setpoint change is a manual user action, so it arms the same
+  // 4h hold as the wall panel (2-arg setter -> onManualChange -> startHold). An
+  // HA cmd/heat|cool write stays no-hold (#91): HA owns the schedule + holds.
+  if (p.hasLow) {
+    if (p.manualSetpoint) gModeSm->setHeatSetpoint(p.lowC, nowS);
+    else                  gModeSm->setHeatSetpoint(p.lowC);
+  }
+  if (p.hasHigh) {
+    if (p.manualSetpoint) gModeSm->setCoolSetpoint(p.highC, nowS);
+    else                  gModeSm->setCoolSetpoint(p.highC);
+  }
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
   // A remote setpoint/mode/preset change is a user-directed request: arm the
   // manual compressor-start bypass so the resulting demand isn't held by the
