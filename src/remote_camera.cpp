@@ -94,6 +94,12 @@ constexpr size_t   kSendChunk         = 4096;       // per write() — finer hea
 constexpr uint8_t  kHttpBacklog       = 1;          // lwIP listen backlog (was default 4)
 
 inline uint32_t internalFree() { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL); }
+// The RAM the SDIO RX drainer actually competes for: internal AND DMA-capable.
+// This is the metric the sdio_rx_get_buffer assert depends on — measure it
+// directly rather than inferring from the internal-only number.
+inline uint32_t internalDmaFree() {
+  return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+}
 
 // AE follow-up (host-side loop; the sensor has no working internal AEC):
 // register semantics per Linux drivers/media/i2c/ov02c10.c — exposure is a
@@ -579,10 +585,12 @@ void captureTask(void*) {
     static uint32_t sLumaTick = 0;
     if (++sLumaTick >= 6 && gSeq != 0) {
       sLumaTick = 0;
-      telnet_log::logf("[cam] mean luma %lu/63 exp=%u gain=%u/16x heap_int=%lu low=%lu (frame %lu)",
+      telnet_log::logf("[cam] mean luma %lu/63 exp=%u gain=%u/16x heap_int=%lu low=%lu dma=%lu dmalow=%lu (frame %lu)",
                        (unsigned long)meanLuma(), gAeExp, gAeGain,
                        (unsigned long)internalFree(),
                        (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                       (unsigned long)internalDmaFree(),
+                       (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
                        (unsigned long)gSeq);
     }
   }

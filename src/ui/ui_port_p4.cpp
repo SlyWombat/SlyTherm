@@ -18,6 +18,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_ldo_regulator.h"
+#include "esp_heap_caps.h"
 
 #ifdef SLYTHERM_CAM
 #include "remote_camera.h"  // #150 AE follow-up: shared-I2C lock (AE task vs this touch poll)
@@ -240,8 +241,20 @@ void initPanel() {
 // starve touch sampling (quick taps fell between indev reads). Rotating
 // here goes SRAM draw buffer -> static SRAM bounce buffer -> one DSI DMA.
 lv_disp_draw_buf_t gDrawBuf;
-lv_color_t gLineBuf[kHRes * 40];   // internal RAM, matches the Controller's recipe
-lv_color_t gRotBuf[kHRes * 40];    // internal RAM rotation bounce, same capacity
+// gLineBuf (the LVGL single draw buffer, 37.5KB) is heap-allocated in portInit
+// (internal RAM by default; PSRAM ONLY on the camera/VPN build, see there): it
+// is NEVER handed to DMA — LVGL renders into it and flushCb reads it
+// back sequentially as `px` — so PSRAM is safe (no cache-writeback hazard) and
+// the sequential reads stay cache-friendly. This frees ~37.5KB of internal
+// DMA-capable RAM that the P4<->C6 hosted-WiFi SDIO RX drainer (lwIP tcpip +
+// WireGuard decrypt) needs under heavy INBOUND load; when that heap craters the
+// RX pool depletes and the driver asserts (sdio_rx_get_buffer sdio_drv.c:953).
+// Allocated in portInit(). gRotBuf STAYS internal on purpose: it is the live DMA
+// SOURCE for esp_lcd_panel_draw_bitmap and takes strided CPU writes — in PSRAM
+// the DPI blit could read stale (un-written-back) cache lines and it would slow
+// repaints (the rejected sw_rotate-into-PSRAM pattern, gotcha #1).
+lv_color_t* gLineBuf = nullptr;
+lv_color_t gRotBuf[kHRes * 40];    // internal RAM rotation bounce (DMA source — keep internal)
 lv_disp_drv_t gDispDrv;
 lv_indev_drv_t gIndevDrv;
 
@@ -307,6 +320,25 @@ bool portInit() {
   Serial.printf("[ui] GT911 %s\n", gTouchOk ? "present" : "NO ACK");
 
   lv_init();
+  // Draw-buffer placement is build-gated. ONLY the camera/VPN build
+  // (SLYTHERM_WG/SLYTHERM_CAM) puts gLineBuf in PSRAM — that frees ~37.5KB of
+  // internal DMA RAM for the P4<->C6 SDIO RX drainer, curing the
+  // sdio_rx_get_buffer assert under heavy inbound-over-WireGuard load. Plain P4
+  // wall remotes have no such network load and no SDIO-starvation problem, so
+  // they keep the buffer in FAST internal RAM (PSRAM would only slow repaints).
+#if defined(SLYTHERM_WG) || defined(SLYTHERM_CAM)
+  // Fall back to internal if PSRAM is somehow unavailable so the UI still comes up.
+  gLineBuf = (lv_color_t*)heap_caps_malloc(sizeof(lv_color_t) * kHRes * 40,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!gLineBuf) {
+    Serial.println("[ui] WARN: gLineBuf PSRAM alloc failed, using internal");
+    gLineBuf = (lv_color_t*)heap_caps_malloc(sizeof(lv_color_t) * kHRes * 40,
+                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+#else
+  gLineBuf = (lv_color_t*)heap_caps_malloc(sizeof(lv_color_t) * kHRes * 40,
+                                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
   lv_disp_draw_buf_init(&gDrawBuf, gLineBuf, nullptr, kHRes * 40);
   lv_disp_drv_init(&gDispDrv);
   gDispDrv.hor_res = kHRes;
