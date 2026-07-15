@@ -19,6 +19,7 @@ plus owner-read rating-plate serials.
 | Interface board (K03085) | **Not present** — no separate RJ-11 + COND-1/2/3 board in cabinet | Med-High | wide shot |
 | Inducer motor | FASCO; standard layout | High | wide shot |
 | ECM blower drive | Separate variable-speed inverter/VFD board, label `ODEL-VFD00H111A` (DC-bus cap, common-mode choke, IGBTs); green LED = powered. Commanded by the IFC, **not** on the CT-485 thermostat bus. | High | back-of-cabinet shot (`PXL_20260704_153152842`) |
+| Air cleaner (airstream accessory) | **Honeywell F300E1019** whole-house **Electronic Air Cleaner**, 16" × 25", installed in the return. **Not a media/replaceable-filter unit** — washable electronic cells (clean every 6–12 mo, at least yearly), washable prefilter, replaceable postfilter (~6 mo). Passive to SlyTherm (no bus/24 V interface); tracked only via the HA runtime-service reminder. | High | owner-supplied (2026-07-15) |
 
 > **Modulation floor confirmed:** min input 42,000 ÷ max 105,000 = **40 %** — exactly the firmware's
 > 40–100 % demand range and min-fire clamp. Hardware matches the design target.

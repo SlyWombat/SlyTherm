@@ -104,10 +104,16 @@ input_number:
     unit_of_measurement: "h"
     icon: mdi:air-filter
     mode: box
-  # Reminder threshold in blower hours. Recommended: 300 h (~2-3 months of
-  # heating-season runtime; tighten for pets/allergies).
+  # Reminder threshold in blower hours. Installed unit is a Honeywell F300
+  # Electronic Air Cleaner (washable cells, NOT a replaceable media filter) —
+  # Honeywell calls for cleaning the cells every 6-12 months (at least yearly).
+  # 600 h is a rough runtime proxy for that ~6-month cadence; it is only an
+  # approximation of a calendar interval — tighten for pets/dust, or reset
+  # seasonally by calendar. `initial:` seeds fresh installs only; a system that
+  # already has a stored value keeps it, so change the live value in the UI.
   slytherm_filter_alert_hours:
-    name: SlyTherm filter reminder threshold
+    name: SlyTherm air cleaner service threshold
+    initial: 600
     min: 50
     max: 2000
     step: 10
@@ -237,16 +243,17 @@ automation:
       - service: persistent_notification.create
         data:
           notification_id: slytherm_filter_reminder
-          title: "SlyTherm: furnace filter due"
+          title: "SlyTherm: air cleaner service due"
           message: >-
             Blower runtime is
             {{ states('input_number.slytherm_filter_runtime_h') | float(0) | round(0) }} h
-            since the last filter change
+            since the last service
             ({{ states('input_datetime.slytherm_filter_last_changed') }}) —
             past the
             {{ states('input_number.slytherm_filter_alert_hours') | float(0) | round(0) }} h
-            interval. Replace the filter, then press "SlyTherm filter changed
-            (reset)".
+            interval. Service the Honeywell F300: wash the electronic cells and
+            prefilter, replace the postfilter (~6 mo). Then press "SlyTherm
+            filter changed (reset)".
     mode: single
 
   - id: slytherm_filter_reset
