@@ -112,6 +112,13 @@ struct RowSrc {
   bool occupied = false;
   uint32_t lastSeenEpoch = 0;
   bool dominant = false;
+  // Optimistic-toggle bookkeeping: pendingPart marks a locally-flipped
+  // participation choice awaiting the Controller's confirming echo; pendingWant
+  // is that desired state. A confirming echo (==pendingWant) clears pendingPart;
+  // a disagreeing echo while pending is STALE and ignored (never reverts the
+  // flip). Un-confirmed intents are re-sent on reconnect (flaky-link recovery).
+  bool pendingPart = false;
+  bool pendingWant = false;
 };
 RowSrc gRows[kMaxSensorRows] = {};
 uint8_t gRowCount = 0;
@@ -283,6 +290,7 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
         r.hasTemp = prev->hasTemp; r.tempC = prev->tempC; r.ageS = prev->ageS;
         r.participating = prev->participating; r.occupied = prev->occupied;
         r.lastSeenEpoch = prev->lastSeenEpoch; r.dominant = prev->dominant;
+        r.pendingPart = prev->pendingPart; r.pendingWant = prev->pendingWant;
       }
       ++n;
     }
@@ -313,7 +321,16 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       const unsigned long v = strtoul(buf, &end, 10);
       if (end != buf) { r->ageS = static_cast<uint32_t>(v); gRowsDirty = true; }
     } else if (strcmp(slash, "/participating") == 0) {
-      r->participating = strcmp(buf, "ON") == 0;
+      const bool echoOn = strcmp(buf, "ON") == 0;
+      // Reconcile the optimistic flip: while an intent is pending, an echo that
+      // disagrees with what we asked for is STALE (a pre-change or in-flight
+      // echo) and must not revert the flip. An agreeing echo confirms it.
+      if (r->pendingPart && echoOn != r->pendingWant) {
+        // stale — ignore (keep the optimistic value)
+      } else {
+        r->participating = echoOn;
+        r->pendingPart = false;  // confirmed by the Controller
+      }
       gRowsDirty = true;
     }
   } else if (strncmp(topic, "slytherm/sensors/", 17) == 0) {  // #117 state|presence
@@ -450,6 +467,17 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(gCamTopic);          // #150 camera privacy switch
 #endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
+    // Resend any un-confirmed participation intents: an optimistic OFF pressed
+    // while the (flaky camera) link was down must not be silently lost. The
+    // Controller re-applies idempotently and re-echoes the retained truth.
+    for (uint8_t i = 0; i < gRowCount; ++i) {
+      if (!gRows[i].pendingPart) continue;
+      char t[64];
+      snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", gRows[i].id);
+      gMqtt.publish(t, gRows[i].pendingWant ? "ON" : "OFF");
+      Serial.printf("[link] resend participation %s -> %s\n", gRows[i].id,
+                    gRows[i].pendingWant ? "ON" : "OFF");
+    }
     { char t[48];  // #123/#145: retained boot/crash telemetry (republish=false
       // marks the boot announce; reconnect echoes carry republish=true)
       snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
@@ -599,18 +627,25 @@ bool connected() { return gMqtt.connected(); }
 bool controllerOnline() { return gControllerOnline; }
 
 void toggleSensorParticipation(const char* displayName) {
-  // #119: the shared UI hands us the DISPLAY name; map back to the roster id
-  // and publish the inverse of the current state. No optimistic flip — the
-  // button renders from the echoed per-sensor participating topic (#117), so
-  // a lost publish self-corrects instead of lying.
-  if (displayName == nullptr || !gMqtt.connected()) return;
+  // #119/#155: the shared UI hands us the DISPLAY name; map back to the roster
+  // id. OPTIMISTIC FLIP: turn the button visually to the new state IMMEDIATELY
+  // (even if MQTT is down), THEN start transmitting the intent. A future echo
+  // reinforces (never reverts — see the stale-ignore reconcile in onMessage).
+  // Un-confirmed intents are re-sent on reconnect so a press on the flaky camera
+  // link isn't silently lost.
+  if (displayName == nullptr) return;
   for (uint8_t i = 0; i < gRowCount; ++i) {
     if (strncmp(gRows[i].name, displayName, sizeof(gRows[i].name)) != 0) continue;
+    const bool want = !gRows[i].participating;
+    gRows[i].participating = want;   // visual flip now
+    gRows[i].pendingPart = true;     // awaiting the Controller's confirming echo
+    gRows[i].pendingWant = want;
+    gRowsDirty = true;
     char t[64];
     snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", gRows[i].id);
-    gMqtt.publish(t, gRows[i].participating ? "OFF" : "ON");
-    Serial.printf("[link] participation %s -> %s\n", gRows[i].id,
-                  gRows[i].participating ? "OFF" : "ON");
+    const bool sent = gMqtt.connected() && gMqtt.publish(t, want ? "ON" : "OFF");
+    Serial.printf("[link] participation %s -> %s (%s)\n", gRows[i].id,
+                  want ? "ON" : "OFF", sent ? "sent" : "queued-for-reconnect");
     return;
   }
 }
