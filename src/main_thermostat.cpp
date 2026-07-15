@@ -328,6 +328,12 @@ static_assert(kSensorNameLen == dettson::SensorParticipation::kIdLen,
 // the MQTT task), so serializing build+write under the one lock is what prevents
 // a concurrent double-write from dropping a setting. The ~15ms NVS hold is rare
 // (only on an actual change) and gCmdMux is otherwise held only briefly.
+// Set by setParticipationLocked (UI/cmd task), consumed by publishSnapshot on the
+// mqttTask. Publishing MQTT directly from setParticipationLocked would race the
+// mqttTask's own PubSubClient use (not thread-safe); the flag hands the retained
+// participating echo to the state-publish path so it goes out within one cycle of
+// a change instead of waiting for the next heartbeat.
+volatile bool gParticipationEchoDirty = false;
 static void setParticipationLocked(uint8_t idx, const char* wireId, bool on) {
   const bool changed = gParticipation.set(wireId, on);
   gSensorTable[idx].participating = on;
@@ -336,6 +342,8 @@ static void setParticipationLocked(uint8_t idx, const char* wireId, bool on) {
     gParticipation.toBlob(blob);
     gPrefs.putBytes("part", &blob, sizeof(blob));
   }
+  gParticipationEchoDirty = true;  // re-echo even on an idempotent re-assert (a
+                                   // prior retained echo may have been lost)
 }
 SensorFusion        gFusion;
 // #90 night Sleep state: window/idle/override logic (lib/SleepState) + the
@@ -1383,17 +1391,38 @@ void publishSnapshot(bool force) {
              force); }
 #endif
 
-  if (force) {  // per-sensor diagnostics on the heartbeat only (age ticks anyway)
+  if (force) {  // age/offset diagnostics on the heartbeat only (NON-retained:
+                // age ticks constantly, retaining it would churn the broker)
     for (const auto& sp : s.sensors) {
       if (!sp.used) continue;
       std::string id(sp.name);
       snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(sp.ageS));
       gMqtt.publish(sensorAgeStateTopic(id).c_str(), b);
-      gMqtt.publish(sensorParticipatingStateTopic(id).c_str(),
-                    sp.participating ? payload::kOn : payload::kOff);
       snprintf(b, sizeof(b), "%.1f", static_cast<double>(sp.offsetC));
       gMqtt.publish(sensorOffsetStateTopic(id).c_str(), b);
     }
+  }
+  // Participating echo: RETAINED so a reconnecting Remote gets the true state
+  // without waiting for a heartbeat, and emitted PROMPTLY on change (the dirty
+  // flag) not just on the heartbeat. Read the AUTHORITATIVE gSensorTable choice
+  // under gCmdMux — the snapshot's participating lags a control cycle behind a
+  // just-applied toggle and would latch a stale retained value for up to a
+  // heartbeat. Copy under the lock, publish outside it (no MQTT under gCmdMux).
+  if (force || gParticipationEchoDirty) {
+    gParticipationEchoDirty = false;
+    struct { char id[kSensorNameLen]; bool part; } pe[kFusionSlots];
+    size_t peN = 0;
+    xSemaphoreTake(gCmdMux, portMAX_DELAY);
+    for (size_t i = 0; i < kFusionSlots; ++i) {
+      if (!gSensorTable[i].used) continue;
+      strlcpy(pe[peN].id, gSensorTable[i].name, sizeof(pe[peN].id));
+      pe[peN].part = gSensorTable[i].participating;
+      ++peN;
+    }
+    xSemaphoreGive(gCmdMux);
+    for (size_t k = 0; k < peN; ++k)
+      pubRetained(sensorParticipatingStateTopic(std::string(pe[k].id)),
+                  pe[k].part ? payload::kOn : payload::kOff);
   }
   if (s.lockTombstone) {
     // Retained empty message deletes any retained lock_clear copy (docs/06).
