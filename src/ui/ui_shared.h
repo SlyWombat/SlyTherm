@@ -155,6 +155,8 @@ void openNet(lv_event_t*);         // ui_overlays.cpp — Networking sub-sheet (
 void openDisplay(lv_event_t*);     // ui_overlays.cpp — Display sub-sheet
 void openSecurity(lv_event_t*);    // ui_overlays.cpp — Security sub-sheet
 void openSystem(lv_event_t*);      // ui_overlays.cpp — System sub-sheet
+void openMode(lv_event_t*);        // ui_main.cpp — System Mode sub-sheet (Off/Heat/Cool/Auto moved off Home)
+lv_obj_t* sheetShell(lv_obj_t*scr,int w,int h,const char*title,const char*sub);  // ui_overlays.cpp — shared category-sheet shell
 void openSniff(lv_event_t*);       // ui_overlays.cpp — RS-485 LISTEN screen (#71)
 void openWifi(lv_event_t*);        // ui_overlays.cpp
 void openServer(lv_event_t*);      // ui_overlays.cpp

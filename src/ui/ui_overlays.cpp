@@ -208,7 +208,8 @@ lv_obj_t *wSetVpn=nullptr;   // #148 VPN status word — now inside the Networki
 static void sheetClose(lv_event_t*e){ lv_obj_t* sheet=(lv_obj_t*)lv_event_get_user_data(e); if(sheet) lv_obj_add_flag(sheet,LV_OBJ_FLAG_HIDDEN); }
 // Build a hidden centered card sheet with a title, optional subtitle, and the
 // top-right X close — the shared shell every category sub-sheet is built on.
-static lv_obj_t* sheetShell(lv_obj_t*scr,int w,int h,const char*title,const char*sub){
+// Non-static: the Mode sheet (ui_main.cpp) reuses this same shell.
+lv_obj_t* sheetShell(lv_obj_t*scr,int w,int h,const char*title,const char*sub){
   lv_obj_t*sh=lv_obj_create(scr); lv_obj_set_size(sh,w,h); lv_obj_center(sh);
   lv_obj_set_style_bg_color(sh,lv_color_hex(COL_CARD),0); lv_obj_set_style_border_color(sh,lv_color_hex(COL_CRYO),0);
   lv_obj_set_style_border_width(sh,2,0); lv_obj_set_style_radius(sh,14,0); lv_obj_set_style_pad_all(sh,0,0); lv_obj_clear_flag(sh,LV_OBJ_FLAG_SCROLLABLE);

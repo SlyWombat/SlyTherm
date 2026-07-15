@@ -42,7 +42,8 @@ lv_obj_t *gVacHome=nullptr;                      // Home vacation banner (#78): 
 lv_obj_t *gPresetHold=nullptr;                   // Presets page: centered hold status ("On hold - Xh Ym left")
 // Settings information-architecture reorg: one live one-line summary per
 // category card (updated each renderMain, like the old WiFi/Home status words).
-lv_obj_t *wCatNet=nullptr,*wCatFan=nullptr,*wCatDisp=nullptr,*wCatSec=nullptr,*wCatSys=nullptr;
+lv_obj_t *wCatNet=nullptr,*wCatFan=nullptr,*wCatDisp=nullptr,*wCatSec=nullptr,*wCatSys=nullptr,*wCatMode=nullptr;
+lv_obj_t *gModeSheet=nullptr;   // System Mode sub-sheet (Off/Heat/Cool/Auto — moved off Home into Settings)
 #ifdef SLYTHERM_CAM
 lv_obj_t *wCamDot=nullptr;   // #150: red top-bar dot while a camera client is being served
 #endif
@@ -110,19 +111,12 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
   wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&font_set48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,34);
   spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_MID,76,-8);
-  wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\npick a mode to set a temperature");
+  wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\nset a mode in Settings \xE2\x80\xBA System Mode");
   lv_obj_set_style_text_color(wOffMsg,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(wOffMsg,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(wOffMsg,LV_ALIGN_TOP_RIGHT,-64,96);
-  // mode selector across the reclaimed bottom
-  const char*mn[4]={"OFF","HEAT","COOL","AUTO"}; UserMode mv[4]={UserMode::kOff,UserMode::kHeat,UserMode::kCool,UserMode::kAuto};
-  lv_obj_t*mrow=lv_obj_create(tab); lv_obj_set_size(mrow,470,56); lv_obj_align(mrow,LV_ALIGN_BOTTOM_MID,0,-12);
-  lv_obj_set_style_bg_color(mrow,lv_color_hex(COL_CARD),0); lv_obj_set_style_bg_opa(mrow,LV_OPA_COVER,0); lv_obj_set_style_border_width(mrow,0,0);
-  lv_obj_set_style_radius(mrow,12,0); lv_obj_set_style_pad_all(mrow,4,0);  // #fix1: segmented control track, not floating pills
-  lv_obj_set_flex_flow(mrow,LV_FLEX_FLOW_ROW); lv_obj_set_flex_align(mrow,LV_FLEX_ALIGN_SPACE_BETWEEN,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
-  lv_obj_clear_flag(mrow,LV_OBJ_FLAG_SCROLLABLE);
-  for(int i=0;i<4;i++){ lv_obj_t*b=lv_btn_create(mrow); lv_obj_set_size(b,108,48);
-    lv_obj_set_style_bg_opa(b,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(b,0,0); lv_obj_set_style_radius(b,9,0);  // flat segment; renderMain fills the active one
-    lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
-    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_center(l); modeBtns[i]=b; } }
+  // Mode selector (Off/Heat/Cool/Auto) was here; moved off Home into
+  // Settings > System Mode (set-once, not a daily control). modeBtns[] are now
+  // created in buildModeSheet(); Home's bottom strip stays clean.
+}
 
 // #90/preset-highlight: title-case a stored preset id for DISPLAY only ("home"->"Home",
 // "night sleep"->"Night Sleep"). The stored lowercase name stays the HA preset_mode
@@ -218,6 +212,27 @@ void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   // busless Remote persona never shows a dead LISTEN button.
   gBtnListen=mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300); }
 
+// System Mode sub-sheet (Settings): the Off/Heat/Cool/Auto selector, relocated
+// off Home (set-once, not a daily control). Same segmented-control grammar as
+// the old Home bottom bar; modeBtns[] live here now and renderMain still fills
+// the active segment. modeEvt (mode intent -> gM->setMode) is unchanged.
+void openMode(lv_event_t*){ if(!gModeSheet) return; lv_obj_clear_flag(gModeSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gModeSheet); }
+void buildModeSheet(lv_obj_t*scr){ gModeSheet=sheetShell(scr,480,270,"System Mode","How the system runs");
+  const char*mn[4]={"OFF","HEAT","COOL","AUTO"}; UserMode mv[4]={UserMode::kOff,UserMode::kHeat,UserMode::kCool,UserMode::kAuto};
+  lv_obj_t*mrow=lv_obj_create(gModeSheet); lv_obj_set_size(mrow,440,64); lv_obj_align(mrow,LV_ALIGN_TOP_MID,0,110);
+  lv_obj_set_style_bg_color(mrow,lv_color_hex(COL_BG),0); lv_obj_set_style_bg_opa(mrow,LV_OPA_COVER,0); lv_obj_set_style_border_width(mrow,0,0);
+  lv_obj_set_style_radius(mrow,12,0); lv_obj_set_style_pad_all(mrow,4,0);  // segmented control track
+  lv_obj_set_flex_flow(mrow,LV_FLEX_FLOW_ROW); lv_obj_set_flex_align(mrow,LV_FLEX_ALIGN_SPACE_BETWEEN,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+  lv_obj_clear_flag(mrow,LV_OBJ_FLAG_SCROLLABLE);
+  for(int i=0;i<4;i++){ lv_obj_t*b=lv_btn_create(mrow); lv_obj_set_size(b,102,52);
+    lv_obj_set_style_bg_opa(b,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(b,0,0); lv_obj_set_style_radius(b,9,0);  // flat segment; renderMain fills the active one
+    lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
+    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_center(l); modeBtns[i]=b; }
+  lv_obj_t*hint=lv_label_create(gModeSheet); lv_obj_set_style_text_font(hint,&lv_font_montserrat_16,0);
+  lv_obj_set_style_text_color(hint,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(hint,LV_TEXT_ALIGN_CENTER,0);
+  lv_obj_set_width(hint,440); lv_obj_align(hint,LV_ALIGN_TOP_MID,0,196);
+  lv_label_set_text(hint,"Set once - not a daily control.\nAdjust temperatures on the Home screen."); }
+
 // Settings information-architecture reorg (#128/settings): the flat button list
 // became a short list of CATEGORY CARDS. Each card shows a live one-line summary
 // (filled in renderMain) and drills into a grouping sub-sheet (ui_overlays.cpp).
@@ -226,16 +241,16 @@ void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
 // Card tap -> open the matching sub-sheet. Index dispatch (the codebase idiom)
 // avoids a function-pointer-through-void* cast; keep in sync with cats[] below.
 void catCardEvt(lv_event_t*e){ switch((int)(intptr_t)lv_event_get_user_data(e)){
-  case 0: openNet(e); break;      case 1: openFan(e); break;   case 2: openDisplay(e); break;
-  case 3: openSecurity(e); break; case 4: openSystem(e); break; } }
+  case 0: openMode(e); break;     case 1: openNet(e); break;      case 2: openFan(e); break;
+  case 3: openDisplay(e); break;  case 4: openSecurity(e); break; case 5: openSystem(e); break; } }
 void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
   // One tap-through card per category: title + live summary + chevron. Sensors
   // deliberately stays its own top tab; Fan reuses the #128 sheet. The whole
   // card is the tap target; index (user-data) selects the sub-sheet.
   struct Cat{const char*title; lv_obj_t**sum;};
-  Cat cats[5]={{"Networking",&wCatNet},{"Fan",&wCatFan},
+  Cat cats[6]={{"System Mode",&wCatMode},{"Networking",&wCatNet},{"Fan",&wCatFan},
                {"Display",&wCatDisp},{"Security",&wCatSec},{"System",&wCatSys}};
-  for(int i=0;i<5;i++){ lv_obj_t*c=lv_btn_create(tab); lv_obj_set_size(c,748,62); lv_obj_align(c,LV_ALIGN_TOP_LEFT,6,46+i*70);
+  for(int i=0;i<6;i++){ lv_obj_t*c=lv_btn_create(tab); lv_obj_set_size(c,748,58); lv_obj_align(c,LV_ALIGN_TOP_LEFT,6,46+i*64);
     lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0); lv_obj_set_style_bg_color(c,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(c,0,0); lv_obj_set_style_radius(c,10,0); lv_obj_set_style_pad_all(c,0,0);
     lv_obj_add_event_cb(c,catCardEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
@@ -318,6 +333,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
     lv_obj_clear_flag(tvc,LV_OBJ_FLAG_SCROLL_ELASTIC); }
   buildNavMenu(scrMain);
   buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildFanSheet(scrMain);
+  buildModeSheet(scrMain);   // System Mode sheet (Off/Heat/Cool/Auto) — must run before first renderMain so modeBtns[] exist
   buildNetSheet(scrMain); buildDisplaySheet(scrMain); buildSecuritySheet(scrMain); buildSystemSheet(scrMain);   // Settings reorg drill-in sheets
   buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
 
@@ -432,7 +448,8 @@ void renderMain(const DisplayState& s){ char b[128];
     if(gHomeTab && tint!=lastTint){ lastTint=tint;
       lv_obj_set_style_bg_opa(gHomeTab,LV_OPA_COVER,0); lv_obj_set_style_bg_color(gHomeTab,lv_color_hex(tint),0);
       lv_obj_set_style_bg_grad_dir(gHomeTab,LV_GRAD_DIR_NONE,0); } }
-  for(int i=0;i<4;i++){ bool on=((i==0)&&s.mode==UserMode::kOff)||((i==1)&&s.mode==UserMode::kHeat)||((i==2)&&s.mode==UserMode::kCool)||((i==3)&&s.mode==UserMode::kAuto);
+  for(int i=0;i<4;i++){ if(!modeBtns[i]) continue;   // now built in buildModeSheet (Settings); guard first render
+    bool on=((i==0)&&s.mode==UserMode::kOff)||((i==1)&&s.mode==UserMode::kHeat)||((i==2)&&s.mode==UserMode::kCool)||((i==3)&&s.mode==UserMode::kAuto);
     lv_obj_t*sl=lv_obj_get_child(modeBtns[i],0);  // fill only the active segment (SOLID — no gradient)
     if(on){ const uint32_t c=(i==1)?COL_EMBER:COL_CRYO;
       lv_obj_set_style_bg_opa(modeBtns[i],LV_OPA_COVER,0); lv_obj_set_style_bg_color(modeBtns[i],lv_color_hex(c),0);
@@ -509,6 +526,9 @@ void renderMain(const DisplayState& s){ char b[128];
   if(gBtnListen){ if(s.hasBus) lv_obj_clear_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); }   // #101
   // Settings category-card live summaries (IA reorg): one condensed line per
   // card, refreshed every renderMain like the old WiFi/Home status words were.
+  if(wCatMode){ const char*mnm; switch(s.mode){ case UserMode::kHeat:mnm="Heat"; break; case UserMode::kCool:mnm="Cool"; break;
+      case UserMode::kAuto:mnm="Auto"; break; case UserMode::kEmergencyHeat:mnm="Emergency heat"; break; default:mnm="Off"; }
+    setTxt(wCatMode,mnm); }
   if(wCatNet){ char ss[33],ip[20]; int8_t rs=0; bool wc=false; wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rs,&wc);
     snprintf(b,sizeof(b),"WiFi %s    %s    Home %s", wc?ss:"not set", wc?ip:"offline", s.mqttOk?"connected":"offline");
     setTxt(wCatNet,b); }
