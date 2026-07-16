@@ -135,6 +135,9 @@ void buildBoot();
 void renderMain(const DisplayState& s);      // ui_main.cpp
 void fillPresenceLine(const DisplayState& s, char* b, size_t n);  // #88 presence line (Home + ambient)
 void sysGraphSample(const DisplayState& s);
+void ingestGraphSeries(const char* json);    // ui_main.cpp — MQTT-task: parse slytherm/graph/system (#156)
+void applyGraphIfDirty();                     // ui_main.cpp — UI-task: push parsed series into the chart (#156)
+extern bool gGraphCentral;                    // #156 — true once a central series has populated the chart
 void renderWifi();                           // ui_overlays.cpp
 void renderServer();
 void renderSniff();

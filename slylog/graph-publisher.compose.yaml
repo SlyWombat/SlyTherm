@@ -1,0 +1,21 @@
+  # #156: publishes the System-tab trend graph series (outside/setpoint/room)
+  # to retained slytherm/graph/system. Separate process from the collector,
+  # which by design never publishes; reuses the collector image.
+  graph-publisher:
+    build: ./collector
+    container_name: slylog-graph-publisher
+    restart: unless-stopped
+    command: python -m slylog_collector.graph_publisher
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BROKER: ${BROKER}
+      BROKER_PORT: ${BROKER_PORT:-1883}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      TZ: ${TZ:-America/Toronto}
+

@@ -834,7 +834,7 @@ extern "C" void uiSniffStart();  // defined with the LISTEN globals below
 extern "C" void uiSniffStop();
 
 void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
-  static char buf[1100];
+  static char buf[2560];   // #156: holds the ~1.8 KiB slytherm/graph/system series
   if (len >= sizeof(buf)) return;
   memcpy(buf, payload, len);
   buf[len] = '\0';
@@ -1005,6 +1005,7 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, hm::topic::kConfigSensors) == 0) { handleSensorRoster(buf); return; }
   if (strcmp(topic, hm::topic::kConfigPresets) == 0) { handlePresetRoster(buf); return; }
+  if (strcmp(topic, hm::topic::kStateGraph) == 0) { slytherm_ui::ingestGraphSeries(buf); return; }  // #156
 #ifdef SLYTHERM_OTA
   // #61: payload deliberately ignored — any message triggers; the OTA task
   // no-ops requests that arrive mid-phase.
@@ -1258,6 +1259,7 @@ void subscribeAll() {
   gMqtt.subscribe(hm::topic::kCmdOtaCheck);  // #61
   gMqtt.subscribe(hm::topic::kCmdOtaApply);
 #endif
+  gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series
 }
 
 // State publish cache: one slot per fixed topic (diff suppression).

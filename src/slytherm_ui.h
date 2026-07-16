@@ -31,4 +31,9 @@ void begin(dettson::ui::UiModel* model, SemaphoreHandle_t mux,
 // and render the latest model snapshot. Runs on the UI task only.
 void service();
 
+// #156: hand the retained slytherm/graph/system payload (JSON) to the System-tab
+// trend chart. MQTT-task safe — parses ints into a buffer; service()/render (UI
+// task) applies it to LVGL. Called from the control/MQTT task.
+void ingestGraphSeries(const char* json);
+
 }  // namespace slytherm_ui

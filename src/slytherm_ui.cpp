@@ -70,7 +70,8 @@ void service(){
       if(!gBootExiting){ renderBoot(s);
         if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>kSplashMaxMs){ gBootExiting=true; bootExit(); } }   // ready: roll the logo off; its ready_cb loads Home
       screenshotPoll(); lv_timer_handler(); return; }   // stay on the splash through the roll-off anim
-    if(gGraphLastMs==0 || now-gGraphLastMs>=300000u){ gGraphLastMs=now; sysGraphSample(s); }  // #76: 12 h trend, ~5 min cadence
+    applyGraphIfDirty();  // #156: push any newly-received central series into the chart (UI-task side)
+    if(!gGraphCentral && (gGraphLastMs==0 || now-gGraphLastMs>=300000u)){ gGraphLastMs=now; sysGraphSample(s); }  // #76 fallback until the SlyLog series lands
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.
     if(!gAmbient && lv_disp_get_inactive_time(NULL)>kIdleMs){ gAmbient=true; gBlanked=false; lv_scr_load(scrAmb); gAmbShiftIdx=0; gAmbShiftMs=now; ambientShift(0); }

@@ -21,6 +21,10 @@
 #include "remote_camera.h"  // #150: MQTT privacy switch for the camera
 #endif
 
+// #156: ui_main.cpp, MQTT-task safe (parses ints into a buffer, never touches
+// LVGL). Forward-declared so this module needn't pull in the LVGL-heavy ui_shared.h.
+namespace slytherm_ui { void ingestGraphSeries(const char* json); }
+
 namespace remote_mqtt {
 namespace {
 
@@ -240,7 +244,9 @@ void applyRoster(const char* json) {
 
 void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   // NUL-terminate a bounded copy (PubSubClient payloads aren't terminated).
-  static char buf[1024];
+  // #156: sized for the ~1.8 KiB slytherm/graph/system series (a smaller buf
+  // silently drops it — the message never reaches the dispatch below).
+  static char buf[2560];
   if (len >= sizeof(buf) || gModel == nullptr) return;
   memcpy(buf, payload, len);
   buf[len] = '\0';
@@ -389,6 +395,8 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     char* end = nullptr;
     const unsigned long v = strtoul(buf, &end, 10);
     if (end != buf) gFanCircPct = static_cast<uint8_t>(v);
+  } else if (strcmp(topic, hm::topic::kStateGraph) == 0) {
+    slytherm_ui::ingestGraphSeries(buf);   // #156: SlyLog trend series -> System-tab chart
   }
 }
 
@@ -477,6 +485,7 @@ void tryConnect(uint32_t nowMs) {
 #endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
     gMqtt.subscribe(hm::topic::kCmdLockClear);   // #45: forgotten-PIN recovery reaches remotes too
+    gMqtt.subscribe(hm::topic::kStateGraph);     // #156: SlyLog-published System-tab trend series
     // Resend any un-confirmed participation intents: an optimistic OFF pressed
     // while the (flaky camera) link was down must not be silently lost. The
     // Controller re-applies idempotently and re-echoes the retained truth.
@@ -588,7 +597,7 @@ void begin() {
   Serial.printf("[mqtt] client id: %s\n", gClientId);
   gPrefs.begin("rlink", false);
   gIntentId = gPrefs.getUInt("iid", 0);
-  gMqtt.setBufferSize(1200);  // remote/state + roster payloads exceed the 256 default
+  gMqtt.setBufferSize(2560);  // remote/state + roster + #156 graph series (~1.8KiB) exceed the 256 default
   gMqtt.setCallback(onMessage);
   mqtt_cfg::begin("", 0, "", "");
 }

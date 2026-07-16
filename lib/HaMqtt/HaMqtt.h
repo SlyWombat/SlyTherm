@@ -91,6 +91,10 @@ constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/c
 // ("Reading Living Room • Present"). Mirror ui_main.cpp renderMain/fillPresenceLine.
 constexpr const char* kStateStatusLine          = SLYTHERM_TOPIC_PREFIX "state/status_line";
 constexpr const char* kStateTrackingLine        = SLYTHERM_TOPIC_PREFIX "state/tracking_line";
+// #156: System-tab trend graph series, published by the SlyLog graph-publisher
+// (NOT the device). Retained JSON {step_s,n,end,oat[],set[],room[]} of int
+// deci-degrees; devices SUBSCRIBE and render. See slytherm/graph/system.
+constexpr const char* kStateGraph               = SLYTHERM_TOPIC_PREFIX "graph/system";
 constexpr const char* kStateLock                = SLYTHERM_TOPIC_PREFIX "state/lock";  // JSON, see lockStateJson()
 constexpr const char* kStateFault               = SLYTHERM_TOPIC_PREFIX "state/fault";
 // #143: retained record-only COP-proxy telemetry (CopLearner::proxyJson()).

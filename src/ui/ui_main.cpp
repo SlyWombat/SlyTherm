@@ -51,7 +51,13 @@ lv_obj_t *wCamDot=nullptr;   // #150: red top-bar dot while a camera client is b
 constexpr int kGraphPts=144;
 lv_obj_t *gSysChart=nullptr,*wSysGraphLbl=nullptr;
 lv_chart_series_t *gSerActual=nullptr,*gSerHeat=nullptr,*gSerCool=nullptr;
-lv_coord_t gRingA[kGraphPts],gRingH[kGraphPts],gRingC[kGraphPts];  // actual / heat-set / cool-set
+lv_coord_t gRingA[kGraphPts],gRingH[kGraphPts],gRingC[kGraphPts];  // #156: room(avg) / setpoint / outside
+// #156: central trend series from the SlyLog graph-publisher. The MQTT task
+// parses the retained slytherm/graph/system into gGraphIn (plain ints, never
+// touches LVGL); the UI task copies it into the rings + refreshes. gGraphCentral
+// gates the legacy on-device sampler once real data has arrived.
+lv_coord_t gGraphIn[3][kGraphPts];   // 0=room 1=setpoint 2=outside
+volatile bool gGraphDirty=false; bool gGraphCentral=false;
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 lv_obj_t *modeBtns[4];
 lv_obj_t *gBtnListen=nullptr;   // Diag LISTEN button — render-gated on DisplayState.hasBus (#101)
@@ -205,7 +211,7 @@ void buildSystem(lv_obj_t*tab){ header(tab,"System");
   gSerHeat=lv_chart_add_series(gSysChart,lv_color_hex(COL_EMBER),LV_CHART_AXIS_PRIMARY_Y);
   gSerCool=lv_chart_add_series(gSysChart,lv_color_hex(COL_CRYO),LV_CHART_AXIS_PRIMARY_Y);
   lv_chart_set_ext_y_array(gSysChart,gSerActual,gRingA); lv_chart_set_ext_y_array(gSysChart,gSerHeat,gRingH); lv_chart_set_ext_y_array(gSysChart,gSerCool,gRingC);
-  wSysGraphLbl=lv_label_create(tab); lv_obj_set_style_text_font(wSysGraphLbl,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wSysGraphLbl,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysGraphLbl,LV_ALIGN_TOP_RIGHT,-8,322); lv_label_set_text(wSysGraphLbl,""); }
+  wSysGraphLbl=lv_label_create(tab); lv_label_set_recolor(wSysGraphLbl,true); lv_obj_set_style_text_font(wSysGraphLbl,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wSysGraphLbl,lv_color_hex(COL_MUTED),0); lv_obj_align(wSysGraphLbl,LV_ALIGN_TOP_RIGHT,-8,322); lv_label_set_text(wSysGraphLbl,""); }
 void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wDiagBody,"");
   // #101: built unconditionally, render-gated on DisplayState.hasBus so the
@@ -562,5 +568,44 @@ void sysGraphSample(const DisplayState& s){ if(!gSysChart) return;
     if(s.fusedTempValid) snprintf(g,sizeof(g),"now %.1f\xC2\xB0   set %.0f-%.0f\xC2\xB0",(double)s.fusedTempC,(double)s.heatSetpointC,(double)s.coolSetpointC);
     else snprintf(g,sizeof(g),"set %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC);
     setTxt(wSysGraphLbl,g); } }
+
+// #156: parse a "<key>":[d0,d1,...] int-deci-degree array into out[kGraphPts];
+// short/missing -> LV_CHART_POINT_NONE (the publisher emits -32768 == NONE).
+static void parseDeciArray(const char* json,const char* key,lv_coord_t* out){
+  for(int i=0;i<kGraphPts;i++) out[i]=LV_CHART_POINT_NONE;
+  const char* p=strstr(json,key); if(!p) return; p=strchr(p,'['); if(!p) return; p++;
+  int i=0;
+  while(*p && *p!=']' && i<kGraphPts){
+    while(*p==' '||*p==',') p++;
+    if(*p==']'||!*p) break;
+    char* end; long v=strtol(p,&end,10);
+    if(end==p) break;                 // no digits consumed -> malformed, stop
+    out[i++]=(lv_coord_t)v; p=end;
+  }
+}
+// MQTT-task side: parse the retained series into gGraphIn + flag dirty. No LVGL.
+void ingestGraphSeries(const char* json){
+  parseDeciArray(json,"\"room\"",gGraphIn[0]);
+  parseDeciArray(json,"\"set\"", gGraphIn[1]);
+  parseDeciArray(json,"\"oat\"", gGraphIn[2]);
+  gGraphDirty=true;
+  Serial.printf("[graph] rx %u B (room[0]=%d set[0]=%d oat[0]=%d)\n",
+                (unsigned)strlen(json),(int)gGraphIn[0][0],(int)gGraphIn[1][0],(int)gGraphIn[2][0]);
+}
+// UI-task side: copy the parsed series into the chart rings + auto-range + refresh.
+void applyGraphIfDirty(){
+  if(!gGraphDirty || !gSysChart) return;
+  gGraphDirty=false;
+  memcpy(gRingA,gGraphIn[0],sizeof(gRingA));   // room (COL_INK / white)
+  memcpy(gRingH,gGraphIn[1],sizeof(gRingH));   // setpoint (COL_EMBER / amber)
+  memcpy(gRingC,gGraphIn[2],sizeof(gRingC));   // outside (COL_CRYO / cyan)
+  lv_coord_t lo=32767,hi=-32768; lv_coord_t* rs[3]={gRingA,gRingH,gRingC};
+  for(int k=0;k<3;k++) for(int i=0;i<kGraphPts;i++){ lv_coord_t v=rs[k][i]; if(v==LV_CHART_POINT_NONE) continue; if(v<lo)lo=v; if(v>hi)hi=v; }
+  if(hi>=lo){ lo-=20; hi+=20; if(hi-lo<40){ lv_coord_t mid=(lv_coord_t)((lo+hi)/2); lo=(lv_coord_t)(mid-40); hi=(lv_coord_t)(mid+40); }
+    lv_chart_set_range(gSysChart,LV_CHART_AXIS_PRIMARY_Y,lo,hi); }
+  lv_chart_refresh(gSysChart);
+  gGraphCentral=true;
+  if(wSysGraphLbl) lv_label_set_text(wSysGraphLbl,"#EAF0F4 Room#   #F0A030 Setpoint#   #38C0E8 Outside#");  // colored legend matching the 3 lines
+}
 
 }  // namespace slytherm_ui

@@ -53,7 +53,7 @@ constexpr uint32_t kMqttStack         = 10240; // discovery JSON strings live he
 constexpr const char* kMqttClientId   = "slytherm-thermostat";
 constexpr uint32_t kWifiRetryMs       = 15000;
 constexpr uint32_t kMqttReconnectMs   = 5000;
-constexpr uint16_t kMqttBufBytes      = 2048;  // climate discovery JSON > 1 KiB
+constexpr uint16_t kMqttBufBytes      = 2560;  // climate discovery >1KiB; #156 graph series ~1.8KiB
 constexpr uint32_t kStateHeartbeatS   = 60;    // full state republish cadence
 
 // HA-weather bridge topic for the outdoor ladder's third rung (docs/06 topic
