@@ -1005,7 +1005,9 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, hm::topic::kConfigSensors) == 0) { handleSensorRoster(buf); return; }
   if (strcmp(topic, hm::topic::kConfigPresets) == 0) { handlePresetRoster(buf); return; }
+#ifdef SLYTHERM_UI
   if (strcmp(topic, hm::topic::kStateGraph) == 0) { slytherm_ui::ingestGraphSeries(buf); return; }  // #156
+#endif
 #ifdef SLYTHERM_OTA
   // #61: payload deliberately ignored — any message triggers; the OTA task
   // no-ops requests that arrive mid-phase.
@@ -1259,7 +1261,9 @@ void subscribeAll() {
   gMqtt.subscribe(hm::topic::kCmdOtaCheck);  // #61
   gMqtt.subscribe(hm::topic::kCmdOtaApply);
 #endif
-  gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series
+#ifdef SLYTHERM_UI
+  gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series (UI targets only)
+#endif
 }
 
 // State publish cache: one slot per fixed topic (diff suppression).
