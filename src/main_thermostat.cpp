@@ -2119,7 +2119,16 @@ void consumeCommands(uint32_t nowS) {
     saveVacation();
     Serial.println("[vac] remote cancel -> resume normal operation");
   }
-  if (p.hasAckAlarms) gSup->alarms().ackAll();  // #118
+  if (p.hasAckAlarms) {
+    gSup->alarms().ackAll();  // #118
+    // Also clear the LATCHED CT-485 bus alarms (starvation/comms/pairing).
+    // glueAlarm() re-raises them every cycle while gCt->*Alarm() stays latched,
+    // so acking the registry alone never sticks — without this they clear only
+    // on a Controller reboot. clearAlarms() resets the latch so the ack holds.
+    xSemaphoreTake(gCtMux, portMAX_DELAY);
+    gCt->clearAlarms();
+    xSemaphoreGive(gCtMux);
+  }
   if (p.hasFan) gFanMode = p.fan;
   if (p.hasFanCircMin) gFanCircMin = p.fanCircMin;  // #128 (already clamped on ingest)
   if (p.hasFanCircPct) gFanCircPct = p.fanCircPct;  // #128 (already snapped on ingest)
