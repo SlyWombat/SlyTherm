@@ -2351,7 +2351,8 @@ void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS
 }
 
 void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet& out,
-                  bool temperActive, const char* changeReason, uint32_t nowS) {
+                  bool temperActive, const char* changeReason,
+                  bool presAnyReporting, bool presPresent, uint32_t nowS) {
   Snapshot s;
   xSemaphoreTake(gSnapMux, portMAX_DELAY);
   s.lockTombstone = gSnap.lockTombstone;  // keep an unconsumed tombstone flag
@@ -2476,13 +2477,33 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   else
     strlcpy(s.statusLine, "Idle", sizeof(s.statusLine));
 
+  // HA display parity: mirror ui_main.cpp fillPresenceLine EXACTLY — same
+  // anyReporting/present predicate the wall+remote screens use, and the dominant
+  // participant's FRIENDLY (disp-fallback) name. (domId above stays the raw wire
+  // name for the machine-readable fusionJson "dominant"/Remote-"Following" match.)
+  // Previously this used `occupied` (retained lastOcc bits) + raw domId, which
+  // diverged from the screen — e.g. HA "Reading living - Nobody home" while the
+  // remote showed "Reading Living Room - Present".
+  char followRoom[kSensorNameLen] = "";
+  { const uint8_t dom = gFusion.dominantParticipant();
+    xSemaphoreTake(gCmdMux, portMAX_DELAY);
+    if (dom < kFusionSlots && gSensorTable[dom].used)
+      strlcpy(followRoom, gSensorTable[dom].disp[0] ? gSensorTable[dom].disp
+                                                    : gSensorTable[dom].name,
+              sizeof(followRoom));
+    xSemaphoreGive(gCmdMux); }
   if (s.asleep) {
-    if (domId[0]) snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Asleep", domId);
-    else          strlcpy(s.trackingLine, "Asleep", sizeof(s.trackingLine));
-  } else if (occupied && domId[0]) {
-    snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Present", domId);
-  } else if (domId[0]) {
-    snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Nobody home", domId);
+    if (presPresent && followRoom[0])
+      snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Asleep", followRoom);
+    else
+      strlcpy(s.trackingLine, "Asleep", sizeof(s.trackingLine));
+  } else if (presAnyReporting && presPresent) {
+    if (followRoom[0])
+      snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Present", followRoom);
+    else
+      strlcpy(s.trackingLine, "Present", sizeof(s.trackingLine));
+  } else if (presAnyReporting) {
+    strlcpy(s.trackingLine, "Nobody home", sizeof(s.trackingLine));
   } else {
     strlcpy(s.trackingLine, "No room sensor reporting", sizeof(s.trackingLine));
   }
@@ -2960,7 +2981,8 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 
   // ---- Persistence + outbound snapshot ----
   persistOnChange(nowS);
-  fillSnapshot(fused, oat, out, temperActive, changeReason, nowS);
+  fillSnapshot(fused, oat, out, temperActive, changeReason,
+               pres.anyReporting, pres.present, nowS);
 }
 
 void controlTask(void*) {
