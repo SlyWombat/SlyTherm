@@ -274,6 +274,15 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, "slytherm/cmd/ota_mirror") == 0) {
     // #129: fleet-wide LAN OTA mirror ("" or "clear" -> GitHub direct).
     ota::setMirror(strcmp(buf, "clear") == 0 ? "" : buf);
+  } else if (strcmp(topic, hm::topic::kCmdLockClear) == 0) {
+    // #45: forgotten-PIN recovery now releases THIS remote's screen lock too,
+    // not just the Controller's. clearUserPin() unlocks + wipes the PIN; the
+    // periodic lock-persist (main_remote #120) writes the cleared blob to NVS.
+    // Payload must be EXACTLY "clear_user_pin" (empty tombstone is ignored).
+    if (hm::parseLockClearCommand(buf).ok) {
+      L(); gModel->clearUserPin(); U();
+      Serial.println("[lock] user PIN cleared via slytherm/cmd/lock_clear");
+    }
   } else if (strcmp(topic, "slytherm/config/sensors") == 0) {  // #117 roster
     std::vector<hm::SensorRosterEntry> roster;
     if (!hm::parseSensorRosterJson(buf, roster)) return;
@@ -467,6 +476,7 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(gCamTopic);          // #150 camera privacy switch
 #endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
+    gMqtt.subscribe(hm::topic::kCmdLockClear);   // #45: forgotten-PIN recovery reaches remotes too
     // Resend any un-confirmed participation intents: an optimistic OFF pressed
     // while the (flaky camera) link was down must not be silently lost. The
     // Controller re-applies idempotently and re-echoes the retained truth.
