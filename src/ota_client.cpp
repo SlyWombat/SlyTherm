@@ -455,16 +455,29 @@ bool doApply() {
     return false;
   }
   if (ram) {
-    // Verified in RAM — now the flash phase, with the network idle. The
-    // small per-chunk yield lets housekeeping (MQTT keepalive, UI) breathe
-    // between cache-suspension windows.
+    // Verified in RAM — now the flash phase. The network is NOT actually idle:
+    // MQTT keepalive + the Controller's retained echo keep flowing in. On the
+    // P4 that matters, because the esp-hosted SDIO drainer (`sdio_read`) runs
+    // from flash — a large Update.write suspends the XIP cache long enough that
+    // that inbound exhausts the SDIO RX pool and asserts (sdio_drv.c:953,
+    // fix/sdio-rxpool). So on the P4 we bound each cache-suspend window to a
+    // single 4 KB sector-erase and yield generously, giving `sdio_read` a slot
+    // to drain the pool between erases. The S3 has native WiFi (no SDIO path),
+    // so it keeps the fast 16 KB chunking.
     if (!Update.begin(expect, U_FLASH)) {
       free(ram);
       fail("apply: Update.begin failed");
       return false;
     }
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    constexpr size_t kFlashChunk = 4096;
+    const TickType_t kFlashYield = pdMS_TO_TICKS(3);
+#else
+    constexpr size_t kFlashChunk = 16384;
+    const TickType_t kFlashYield = 1;
+#endif
     for (size_t off = 0; off < written;) {
-      const size_t chunk = written - off > 16384 ? 16384 : written - off;
+      const size_t chunk = written - off > kFlashChunk ? kFlashChunk : written - off;
       if (Update.write(ram + off, chunk) != chunk) {
         free(ram);
         Update.abort();
@@ -472,7 +485,7 @@ bool doApply() {
         return false;
       }
       off += chunk;
-      vTaskDelay(1);
+      vTaskDelay(kFlashYield);
     }
     free(ram);
   }
