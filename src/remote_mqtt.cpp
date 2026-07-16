@@ -89,6 +89,15 @@ uint32_t gIntentId = 0;
 // the PRE-edit state and would yank the value mid-adjust).
 constexpr uint32_t kEchoSuppressMs = 2000;
 uint32_t gLastIntentMs = 0;
+// #174: QoS0 intents are silently lost if the Controller is mid-reboot when we
+// publish. Track the last one and re-send it (same id -> the Controller dedupes)
+// until a controller echo confirms delivery or the retry budget is spent.
+constexpr uint32_t kIntentRetryMs   = 3000;
+constexpr uint8_t  kIntentMaxRetries = 4;
+std::string gOutstandingJson;
+uint32_t    gOutstandingSentMs = 0;
+uint8_t     gOutstandingRetries = 0;
+volatile bool gEchoSinceIntent = false;  // set by onMessage on any controller echo
 
 bool gControllerOnline = false;
 char gControllerCid[16] = {};
@@ -123,11 +132,25 @@ struct RowSrc {
   // flip). Un-confirmed intents are re-sent on reconnect (flaky-link recovery).
   bool pendingPart = false;
   bool pendingWant = false;
+  bool needsPublish = false;  // #165: UI task flagged a change; loop task (owns gMqtt) publishes it
 };
 RowSrc gRows[kMaxSensorRows] = {};
 uint8_t gRowCount = 0;
 bool gRowsDirty = false;      // rebuild + push into the model on the next loop
 bool gFusionOccupied = false;
+
+// #165: gRows[] is written by onMessage (loop task, inside gMqtt.loop()) AND by
+// the UI-task setters (toggleSensorParticipation etc.). Guard every access with
+// this dedicated mutex — kept separate from gModelMux so the row snapshot never
+// nests with the model lock. Fan-setter intents from the UI task ride the same
+// hand-off: the UI task records the wanted command here, the loop task (the only
+// one allowed to touch the non-thread-safe PubSubClient) publishes it.
+SemaphoreHandle_t gRowsMux = nullptr;
+inline void RL() { if (gRowsMux) xSemaphoreTake(gRowsMux, portMAX_DELAY); }
+inline void RU() { if (gRowsMux) xSemaphoreGive(gRowsMux); }
+
+bool     gPendingFanMode = false; uint8_t  gPendingFanModeVal = 0;
+bool     gPendingFanCirc = false; uint32_t gPendingFanCircMin = 0; uint8_t gPendingFanCircPct = 0;
 
 RowSrc* rowById(const char* id) {
   for (uint8_t i = 0; i < gRowCount; ++i)
@@ -144,7 +167,8 @@ void publishRowsToModel() {
   // Presence line: freshest last_seen across rows (mirrors the Controller).
   bool anyReporting = false, present = false;
   uint32_t bestAge = 0xFFFFFFFFu;
-  const char* bestRoom = "";
+  char bestRoom[24] = "";
+  RL();  // #165: snapshot gRows under the lock; rows[] copies out, so nothing dangles
   for (uint8_t i = 0; i < gRowCount && n < kMaxSensorRows; ++i) {
     const RowSrc& r = gRows[i];
     if (!r.used) continue;
@@ -163,8 +187,9 @@ void publishRowsToModel() {
     o.lastOccAgeS = occAge;
     if (r.lastSeenEpoch > 0 || r.occupied) anyReporting = true;
     if (r.occupied) present = true;
-    if (occAge < bestAge) { bestAge = occAge; bestRoom = r.name; }
+    if (occAge < bestAge) { bestAge = occAge; strlcpy(bestRoom, r.name, sizeof(bestRoom)); }
   }
+  RU();
   L();
   gModel->setSensorRows(rows, n);
   gModel->setPresence(anyReporting, present || (bestAge < 3u * 3600u), anyReporting,
@@ -252,6 +277,7 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   buf[len] = '\0';
 
   if (strcmp(topic, kRemoteState) == 0) {
+    gEchoSinceIntent = true;  // #174: a controller echo means our last intent landed
     if (gLastIntentMs != 0 && millis() - gLastIntentMs < kEchoSuppressMs) return;  // #103
     rl::ControllerEcho e;
     if (rl::parseRemoteStateJson(buf, e)) applyEcho(e);
@@ -294,6 +320,7 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     if (!hm::parseSensorRosterJson(buf, roster)) return;
     RowSrc fresh[kMaxSensorRows] = {};
     uint8_t n = 0;
+    RL();  // #165: rowById + the whole-array memcpy vs a UI-task toggle
     for (const auto& e : roster) {
       if (n >= kMaxSensorRows) break;
       RowSrc& r = fresh[n];
@@ -306,21 +333,25 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
         r.participating = prev->participating; r.occupied = prev->occupied;
         r.lastSeenEpoch = prev->lastSeenEpoch; r.dominant = prev->dominant;
         r.pendingPart = prev->pendingPart; r.pendingWant = prev->pendingWant;
+        r.needsPublish = prev->needsPublish;  // #165: don't drop an unsent flip on a roster refresh
       }
       ++n;
     }
     memcpy(gRows, fresh, sizeof(gRows));
     gRowCount = n;
     gRowsDirty = true;
+    RU();
     Serial.printf("[link] sensor roster: %u rooms\n", n);
   } else if (strcmp(topic, kFusionTopic) == 0) {  // #117 occupancy + dominant
     rl::FusionView f;
     if (!rl::parseFusionJson(buf, f)) return;
     gFusionOccupied = f.occupied;
+    RL();
     for (uint8_t i = 0; i < gRowCount; ++i)
       gRows[i].dominant = !f.dominant.empty() &&
                           strncmp(gRows[i].id, f.dominant.c_str(), sizeof(gRows[i].id)) == 0;
     gRowsDirty = true;
+    RU();
   } else if (strncmp(topic, "slytherm/state/sensor/", 22) == 0) {  // #117 age|participating
     char id[24];
     const char* rest = topic + 22;
@@ -329,8 +360,9 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     size_t n = static_cast<size_t>(slash - rest);
     if (n == 0 || n >= sizeof(id)) return;
     memcpy(id, rest, n); id[n] = '\0';
+    RL();  // #165: gRows row read/write vs a UI-task toggle
     RowSrc* r = rowById(id);
-    if (r == nullptr) return;
+    if (r == nullptr) { RU(); return; }
     if (strcmp(slash, "/age") == 0) {
       char* end = nullptr;
       const unsigned long v = strtoul(buf, &end, 10);
@@ -348,6 +380,7 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       }
       gRowsDirty = true;
     }
+    RU();
   } else if (strncmp(topic, "slytherm/sensors/", 17) == 0) {  // #117 state|presence
     char id[24];
     const char* rest = topic + 17;
@@ -356,8 +389,9 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     size_t n = static_cast<size_t>(slash - rest);
     if (n == 0 || n >= sizeof(id)) return;
     memcpy(id, rest, n); id[n] = '\0';
+    RL();  // #165: gRows row read/write vs a UI-task toggle
     RowSrc* r = rowById(id);
-    if (r == nullptr) return;
+    if (r == nullptr) { RU(); return; }
     if (strcmp(slash, "/state") == 0) {
       hm::SensorReading sr;
       if (hm::parseSensorJson(buf, sr) && sr.hasTemp) {
@@ -373,6 +407,7 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
         gRowsDirty = true;
       }
     }
+    RU();
   } else if (strcmp(topic, kOutdoorTemp) == 0) {
     // Controller-published outdoor temp (plain float): feeds the top-bar
     // "Outside" readout and lets the #92 splash gate on the live link.
@@ -486,17 +521,13 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
     gMqtt.subscribe(hm::topic::kCmdLockClear);   // #45: forgotten-PIN recovery reaches remotes too
     gMqtt.subscribe(hm::topic::kStateGraph);     // #156: SlyLog-published System-tab trend series
-    // Resend any un-confirmed participation intents: an optimistic OFF pressed
-    // while the (flaky camera) link was down must not be silently lost. The
-    // Controller re-applies idempotently and re-echoes the retained truth.
-    for (uint8_t i = 0; i < gRowCount; ++i) {
-      if (!gRows[i].pendingPart) continue;
-      char t[64];
-      snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", gRows[i].id);
-      gMqtt.publish(t, gRows[i].pendingWant ? "ON" : "OFF");
-      Serial.printf("[link] resend participation %s -> %s\n", gRows[i].id,
-                    gRows[i].pendingWant ? "ON" : "OFF");
-    }
+    // Re-arm any un-confirmed participation intents for the loop-task pump: an
+    // optimistic OFF pressed while the (flaky camera) link was down must not be
+    // silently lost. The Controller re-applies idempotently and re-echoes truth.
+    RL();
+    for (uint8_t i = 0; i < gRowCount; ++i)
+      if (gRows[i].pendingPart) gRows[i].needsPublish = true;
+    RU();
     { char t[48];  // #123/#145: retained boot/crash telemetry (republish=false
       // marks the boot announce; reconnect echoes carry republish=true)
       snprintf(t, sizeof(t), "slytherm/remote/%s/boot", gId);
@@ -521,6 +552,27 @@ void tryConnect(uint32_t nowMs) {
 // docs/11 "NO intent queuing" rule).
 void pumpIntents() {
   if (!gMqtt.connected() || gModel == nullptr) return;
+
+  // #174: service an outstanding intent first — confirm it (a controller echo
+  // arrived after we sent) or re-send it, before starting the next one.
+  if (!gOutstandingJson.empty()) {
+    if (gEchoSinceIntent) {                       // Controller echoed -> delivered
+      gOutstandingJson.clear();
+    } else if (millis() - gOutstandingSentMs >= kIntentRetryMs) {
+      if (gOutstandingRetries >= kIntentMaxRetries) {
+        Serial.println("[link] intent unconfirmed after retries — giving up");
+        gOutstandingJson.clear();
+      } else {
+        ++gOutstandingRetries;
+        gOutstandingSentMs = millis();
+        gLastIntentMs = millis();  // keep the #103 echo-apply suppression armed
+        gMqtt.publish(gIntentTopic, gOutstandingJson.c_str());
+        Serial.printf("[link] intent retry %u -> %s\n", gOutstandingRetries, gOutstandingJson.c_str());
+      }
+    }
+    return;  // one intent in flight at a time so retry can track it
+  }
+
   for (;;) {
     UiIntent it;
     bool have = false;
@@ -580,8 +632,56 @@ void pumpIntents() {
     ++gIntentId;
     gPrefs.putUInt("iid", gIntentId);  // survive reboot (Controller dedupes across our reboots)
     gLastIntentMs = millis();          // open the #103 echo-suppression window
+    gEchoSinceIntent = false;          // #174: arm delivery confirmation for this intent
+    gOutstandingJson = j;              // #174: retry until a controller echo confirms
+    gOutstandingSentMs = millis();
+    gOutstandingRetries = 0;
     gMqtt.publish(gIntentTopic, j.c_str());
     Serial.printf("[link] intent #%lu -> %s: %s\n", static_cast<unsigned long>(gIntentId), gIntentTopic, j.c_str());
+    return;  // #174: one intent in flight; the next loop confirms/retries, then pops the rest
+  }
+}
+
+// #165: the loop task publishes commands the UI task queued (participation flips
+// + fan settings). Snapshot under the lock, release, THEN publish — never hold
+// RL() across a PubSubClient call.
+void pumpPendingCmds() {
+  if (!gMqtt.connected()) return;
+  struct { char id[24]; bool want; } parts[kMaxSensorRows];
+  uint8_t nParts = 0;
+  bool fanMode = false, fanCirc = false;
+  uint8_t fanModeVal = 0, fanCircPct = 0;
+  uint32_t fanCircMin = 0;
+  RL();
+  for (uint8_t i = 0; i < gRowCount && nParts < kMaxSensorRows; ++i) {
+    if (!gRows[i].needsPublish) continue;
+    strlcpy(parts[nParts].id, gRows[i].id, sizeof(parts[nParts].id));
+    parts[nParts].want = gRows[i].pendingWant;
+    ++nParts;
+    gRows[i].needsPublish = false;
+  }
+  if (gPendingFanMode) { fanMode = true; fanModeVal = gPendingFanModeVal; gPendingFanMode = false; }
+  if (gPendingFanCirc) { fanCirc = true; fanCircMin = gPendingFanCircMin; fanCircPct = gPendingFanCircPct; gPendingFanCirc = false; }
+  RU();
+  for (uint8_t i = 0; i < nParts; ++i) {
+    char t[64];
+    snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", parts[i].id);
+    gMqtt.publish(t, parts[i].want ? "ON" : "OFF");
+    Serial.printf("[link] participation %s -> %s (sent)\n", parts[i].id, parts[i].want ? "ON" : "OFF");
+  }
+  if (fanMode) {
+    const hm::FanMode m = static_cast<hm::FanMode>(fanModeVal);
+    gMqtt.publish(hm::topic::kCmdFanMode, hm::toString(m));
+    Serial.printf("[link] fan mode -> %s\n", hm::toString(m));
+  }
+  if (fanCirc) {
+    char b[12];
+    snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(fanCircMin));
+    gMqtt.publish(hm::topic::kCmdFanCirculateMin, b);
+    snprintf(b, sizeof(b), "%u", static_cast<unsigned>(fanCircPct));
+    gMqtt.publish(hm::topic::kCmdFanCirculatePct, b);
+    Serial.printf("[link] fan circulate -> %lumin %u%%\n",
+                  static_cast<unsigned long>(fanCircMin), static_cast<unsigned>(fanCircPct));
   }
 }
 
@@ -594,6 +694,7 @@ void attachModel(UiModel* model, SemaphoreHandle_t mux) {
 
 void begin() {
   deriveIds();
+  if (!gRowsMux) gRowsMux = xSemaphoreCreateMutex();  // #165: guards gRows + fan pending
   Serial.printf("[mqtt] client id: %s\n", gClientId);
   gPrefs.begin("rlink", false);
   gIntentId = gPrefs.getUInt("iid", 0);
@@ -615,6 +716,7 @@ void loop() {
   if (gMqtt.connected()) {
     gMqtt.loop();
     pumpIntents();
+    pumpPendingCmds();  // #165: publish UI-queued participation/fan commands (loop task owns gMqtt)
     // #117: batch row updates into the model at 1 Hz max.
     static uint32_t sLastRowsMs = 0;
     if (gRowsDirty && nowMs - sLastRowsMs >= 1000) {
@@ -653,20 +755,21 @@ void toggleSensorParticipation(const char* displayName) {
   // Un-confirmed intents are re-sent on reconnect so a press on the flaky camera
   // link isn't silently lost.
   if (displayName == nullptr) return;
+  // #165: runs on the UI/LVGL task. It must NOT touch PubSubClient (owned by the
+  // loop task) — flip optimistically and flag needsPublish; the loop task sends.
+  RL();
   for (uint8_t i = 0; i < gRowCount; ++i) {
     if (strncmp(gRows[i].name, displayName, sizeof(gRows[i].name)) != 0) continue;
     const bool want = !gRows[i].participating;
     gRows[i].participating = want;   // visual flip now
     gRows[i].pendingPart = true;     // awaiting the Controller's confirming echo
     gRows[i].pendingWant = want;
+    gRows[i].needsPublish = true;    // loop task publishes the cmd
     gRowsDirty = true;
-    char t[64];
-    snprintf(t, sizeof(t), "slytherm/cmd/sensor/%s/participating", gRows[i].id);
-    const bool sent = gMqtt.connected() && gMqtt.publish(t, want ? "ON" : "OFF");
-    Serial.printf("[link] participation %s -> %s (%s)\n", gRows[i].id,
-                  want ? "ON" : "OFF", sent ? "sent" : "queued-for-reconnect");
-    return;
+    Serial.printf("[link] participation %s -> %s (queued)\n", gRows[i].id, want ? "ON" : "OFF");
+    break;
   }
+  RU();
 }
 uint32_t attempts() { return gAttempts; }
 
@@ -677,21 +780,15 @@ uint32_t attempts() { return gAttempts; }
 uint8_t fanMode() { return gFanMode; }
 uint32_t fanCircMin() { return gFanCircMin; }
 uint8_t fanCircPct() { return gFanCircPct; }
+// #165: UI-task setters record the wanted command; the loop task publishes it in
+// pumpPendingCmds() (never PubSubClient from the UI task). A lost publish still
+// self-corrects — the sheet re-seeds from the retained state on the next open.
 void setFanMode(uint8_t mode) {
-  if (!gMqtt.connected() || mode > 2) return;
-  const hm::FanMode m = static_cast<hm::FanMode>(mode);
-  gMqtt.publish(hm::topic::kCmdFanMode, hm::toString(m));
-  Serial.printf("[link] fan mode -> %s\n", hm::toString(m));
+  if (mode > 2) return;
+  RL(); gPendingFanMode = true; gPendingFanModeVal = mode; RU();
 }
 void setFanCirculate(uint32_t minPerHour, uint8_t pct) {
-  if (!gMqtt.connected()) return;
-  char b[12];
-  snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(minPerHour));
-  gMqtt.publish(hm::topic::kCmdFanCirculateMin, b);
-  snprintf(b, sizeof(b), "%u", static_cast<unsigned>(pct));
-  gMqtt.publish(hm::topic::kCmdFanCirculatePct, b);
-  Serial.printf("[link] fan circulate -> %lumin %u%%\n",
-                static_cast<unsigned long>(minPerHour), static_cast<unsigned>(pct));
+  RL(); gPendingFanCirc = true; gPendingFanCircMin = minPerHour; gPendingFanCircPct = pct; RU();
 }
 
 }  // namespace remote_mqtt
