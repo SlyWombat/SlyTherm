@@ -2134,6 +2134,12 @@ void consumeCommands(uint32_t nowS) {
     xSemaphoreTake(gCtMux, portMAX_DELAY);
     gCt->clearAlarms();
     xSemaphoreGive(gCtMux);
+    // #157: the demand-conflict invariant latches all channels to zero (no heat
+    // AND no cool) until a DELIBERATE clear. Without this an acknowledgement
+    // could not recover it short of a reboot. The glue no longer generates a
+    // conflicting request (family mutual-exclusion below), so this is a
+    // defense-in-depth recovery path for any residual upstream trip.
+    gArbiter->clearInvariantAlarm();
   }
   if (p.hasFan) gFanMode = p.fan;
   if (p.hasFanCircMin) gFanCircMin = p.fanCircMin;  // #128 (already clamped on ingest)
@@ -2661,14 +2667,26 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     // #141: a recovery that fell below the fallback ramp also picks gas
     // (advisory verdict from adviseRecovery, default OFF — winter task);
     // GasShaper timers/lockouts still gate downstream.
-    const HeatSource src = (call.gasOnly || gRecoveryGasAdvised)
-                               ? HeatSource::kGas : dfo.source;
+    HeatSource src = (call.gasOnly || gRecoveryGasAdvised)
+                         ? HeatSource::kGas : dfo.source;
+#ifdef SLYTHERM_ACTUATOR_CT485
+    // #159: the CT-485 actuator has no confirmed HP-heat bus command yet
+    // (Ct485Actuator drops hpHeatPct — docs/02 §5a), so an HP-heat selection
+    // would emit NOTHING and let the room droop until gas escalation slams in,
+    // a multi-degree sawtooth with multi-hour no-heat windows. Until the bus HP
+    // mapping is capture-confirmed, serve every heat call with gas.
+    const bool hpUnmapped = (src == HeatSource::kHeatPump);
+    if (hpUnmapped) src = HeatSource::kGas;
+#else
+    const bool hpUnmapped = false;
+#endif
     if (src == HeatSource::kGas) {
       gPid.selectMode(call.gasOnly ? 1 : 0);
       gasReq = gPid.update(gModeSm->heatSetpoint(), fused.value, fused.valid,
                            temperActive, nowS);
       if (fused.degraded) gasReq = fminf(gasReq, cfg::kDegradedGasCapPct);
-      changeReason = call.gasOnly ? "manual"
+      changeReason = hpUnmapped ? "hp_unmapped"
+                     : call.gasOnly ? "manual"
                      : gRecoveryGasAdvised ? "recovery_ramp"
                      : dfo.escalated ? "escalation"
                      : dfo.oatInvalidAlarm ? "fail_cold" : "balance_point";
@@ -2786,11 +2804,21 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     compressorSafetyStop(nowS);
     gActuator->goSilent();
   } else {
+    // #157: one compressor and one heat exchanger. A family shaper still
+    // serving its demand-level min-ON keeps EMITTING after the Call family
+    // flips (COOL->HEAT via a manual mode change, an HA write, or EM-HEAT) —
+    // the AUTO changeover dwell only gates AUTO-mode changeover, not an explicit
+    // one. A raw request would then carry BOTH families nonzero and the arbiter
+    // LATCHES no-heat AND no-cool until a manual clear. Hold the incoming family
+    // at the request level until the outgoing shaper has fully released,
+    // mirroring the arbiter's changeover dwell (which then keeps the compressor
+    // min-off between the families downstream).
+    if (gCoolShaper.on()) { gasReq = 0.0f; hpReq = 0.0f; }
+    if (gGasShaper.lit() || gHpShaper.on()) { coolReq = 0.0f; }
+
     req.gasHeatPct = gGasShaper.shape(gasReq, nowS);
-    // One compressor, two family shapers (#140): each owns its channel, so a
-    // min-on-held output can never flip heat<->cool mid-run. Simultaneous
-    // nonzero requests are unreachable (one Call type at a time and the AUTO
-    // changeover dwell of 30 min dwarfs every demand-level hold), and the
+    // Each shaper owns its channel; with the mutual-exclusion above a
+    // min-on-held output can never coincide with the opposite family, and the
     // shared guard gate + arbiter invariant back that up downstream.
     req.hpHeatPct = gHpShaper.shape(hpReq, nowS);
     req.coolPct = gCoolShaper.shape(coolReq, nowS);
