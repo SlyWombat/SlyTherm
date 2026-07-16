@@ -34,7 +34,7 @@ struct SensorRowUi{ lv_obj_t*row,*name,*temp,*pres,*btn,*btnlbl; }; SensorRowUi 
 #define SR_PRES_X   372
 #define SR_PRES_W   260
 char gRowName[7][16]={};
-lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOffMsg,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
+lv_obj_t *wFollow,*gHeatCard,*gCoolCard,*wOnline,*gPresetBtns[kMaxPresets]={};  // UI v2 Home/Presets
 lv_obj_t *wRssiBox=nullptr,*wRssiBar[4]={};  // #127 top-bar RSSI indicator
 lv_obj_t *gPresetName[kMaxPresets]={},*gPresetVal[kMaxPresets]={};  // #74: live-roster card labels
 lv_obj_t *gHoldBtn=nullptr,*gHoldLbl=nullptr;   // Home hold pill (#81): shows active hold, opens the chooser
@@ -117,8 +117,9 @@ void buildHome(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); lv_
   { lv_obj_t*l=lv_label_create(gCoolCard); lv_label_set_text(l,"COOL"); eyebrow(l); lv_obj_set_style_text_color(l,lv_color_hex(COL_CRYO),0); lv_obj_align(l,LV_ALIGN_TOP_MID,0,10); }
   wCoolSp=lv_label_create(gCoolCard); lv_obj_set_style_text_font(wCoolSp,&font_set48,0); lv_obj_align(wCoolSp,LV_ALIGN_TOP_MID,0,34);
   spBtn(gCoolCard,"-",-2,LV_ALIGN_BOTTOM_MID,-76,-8); spBtn(gCoolCard,"+",2,LV_ALIGN_BOTTOM_MID,76,-8);
-  wOffMsg=lv_label_create(tab); lv_label_set_text(wOffMsg,"System off\nset a mode in Settings \xE2\x80\xBA System Mode");
-  lv_obj_set_style_text_color(wOffMsg,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(wOffMsg,LV_TEXT_ALIGN_CENTER,0); lv_obj_align(wOffMsg,LV_ALIGN_TOP_RIGHT,-64,96);
+  // No on-Home "System off" hint: the action line under the temperature already
+  // reads "System off" when off, so the redundant (and tofu-prone "...Settings >
+  // System Mode") right-side label was removed.
   // Mode selector (Off/Heat/Cool/Auto) was here; moved off Home into
   // Settings > System Mode (set-once, not a daily control). modeBtns[] are now
   // created in buildModeSheet(); Home's bottom strip stays clean.
@@ -448,7 +449,6 @@ void renderMain(const DisplayState& s){ char b[128];
   { const bool sh=s.mode==UserMode::kHeat||s.mode==UserMode::kAuto, sc=s.mode==UserMode::kCool||s.mode==UserMode::kAuto, au=s.mode==UserMode::kAuto;
     if(sh){ layoutCard(gHeatCard,wHeatSp,!au,COL_EMBER); lv_obj_align(gHeatCard,LV_ALIGN_TOP_RIGHT,-16,au?6:84); lv_obj_clear_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);} else lv_obj_add_flag(gHeatCard,LV_OBJ_FLAG_HIDDEN);
     if(sc){ layoutCard(gCoolCard,wCoolSp,!au,COL_CRYO); lv_obj_align(gCoolCard,LV_ALIGN_TOP_RIGHT,-16,au?182:84); lv_obj_clear_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);} else lv_obj_add_flag(gCoolCard,LV_OBJ_FLAG_HIDDEN);
-    if(s.mode==UserMode::kOff) lv_obj_clear_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(wOffMsg,LV_OBJ_FLAG_HIDDEN);
     uint32_t tint=(sc?0x0D1720u:(s.mode==UserMode::kHeat?0x140D0Au:(uint32_t)COL_BG));  // #fix5 SOLID mode tint (no gradient — LVGL sw-gradient cache hangs the render task in our trimmed config)
     static uint32_t lastTint=0xFFFFFFFEu;  // only restyle on mode change
     if(gHomeTab && tint!=lastTint){ lastTint=tint;
