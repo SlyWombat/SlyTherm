@@ -149,6 +149,43 @@ sensor:
     start: "{{ today_at() }}"
     end: "{{ now() }}"
 
+# ---------------------------------------------------------------------------
+# Wall-screen wording, mirrored for HA (display parity).
+# The weighted-average temperature is already sensor.slytherm_fusion (state =
+# fused control temp; attributes: dominant, occupied, participants, tier). The
+# two template sensors below rebuild the Home screen's two text lines from that
+# + the climate entity, so a dashboard can show identical phrasing NOW.
+#
+# ⚠️ MIGRATION: firmware v1.0.10+ publishes slytherm/state/status_line +
+# tracking_line and auto-discovers sensor.slytherm_status_line /
+# sensor.slytherm_tracking_line VERBATIM (same entity_ids). When that firmware
+# reaches the Controller, DELETE these two template sensors — otherwise the
+# duplicate unique_id collides and HA drops one. Same entity_ids either way, so
+# your dashboard doesn't change.
+template:
+  - sensor:
+      - name: "SlyTherm status line"
+        unique_id: slytherm_status_line
+        icon: mdi:hvac
+        state: >-
+          {{ 'Heating to ' ~ (state_attr('climate.slytherm_hvac','target_temp_low') or state_attr('climate.slytherm_hvac','temperature')) ~ '°'
+             if state_attr('climate.slytherm_hvac','hvac_action') == 'heating'
+             else 'Cooling to ' ~ (state_attr('climate.slytherm_hvac','target_temp_high') or state_attr('climate.slytherm_hvac','temperature')) ~ '°'
+             if state_attr('climate.slytherm_hvac','hvac_action') == 'cooling'
+             else 'System off' if states('climate.slytherm_hvac') == 'off'
+             else 'Idle - holding ' ~ state_attr('climate.slytherm_hvac','target_temp_low') ~ '-' ~ state_attr('climate.slytherm_hvac','target_temp_high') ~ '°'
+             if states('climate.slytherm_hvac') == 'heat_cool'
+             else 'Idle' }}
+      - name: "SlyTherm tracking line"
+        unique_id: slytherm_tracking_line
+        icon: mdi:home-thermometer
+        state: >-
+          {{ 'Reading ' ~ state_attr('sensor.slytherm_fusion','dominant') ~ ' • Present'
+             if (state_attr('sensor.slytherm_fusion','occupied') and state_attr('sensor.slytherm_fusion','dominant'))
+             else 'Reading ' ~ state_attr('sensor.slytherm_fusion','dominant') ~ ' • Nobody home'
+             if state_attr('sensor.slytherm_fusion','dominant')
+             else 'No room sensor reporting' }}
+
 automation:
   # -------------------------------------------------------------------------
   # 2. Schedule -> preset
