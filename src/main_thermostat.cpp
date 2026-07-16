@@ -99,6 +99,7 @@
 #include "SafetySupervisor.h"
 #include "SensorFusion.h"
 #include "SensorParticipation.h"  // durable per-sensor participation (NVS), decoupled from roster
+#include "SensorCalibration.h"    // #164: durable per-sensor HA-set offset (NVS), decoupled from roster
 #include "SensorRoster.h"  // #155: resolve slots by wire id OR friendly name
 #include "SleepState.h"
 #include "TrendEstimator.h"
@@ -322,6 +323,11 @@ Preferences gPrefs;
 // (uiToggleSensor), read by handleSensorRoster. See lib/SensorParticipation.
 dettson::SensorParticipation gParticipation;
 using ParticipationBlob = dettson::SensorParticipation::PersistBlob;
+// #164: durable per-sensor HA-set temperature offset, keyed by wire id (NVS
+// "sofs"). Same clobber fix as participation: a retained-roster replay applies
+// the persisted offset instead of reverting it to the roster's 0.0 default.
+dettson::SensorCalibration gCalibration;
+using CalibrationBlob = dettson::SensorCalibration::PersistBlob;
 static_assert(kSensorNameLen == dettson::SensorParticipation::kIdLen,
               "participation store key length must match the sensor wire-id length");
 // gCmdMux held. Records the wire-id-keyed choice, mirrors it into the slot, and
@@ -801,7 +807,9 @@ void handleSensorRoster(const char* json) {
     dettson::applyRosterMember(s, e.id.c_str(), gParticipation);
     s.hasMaxAge = e.hasMaxAge;
     if (e.hasMaxAge) s.maxAgeS = e.maxAgeS;
-    s.offsetC = e.offsetC;
+    // #164: the user's persisted HA-set offset wins over the roster's default,
+    // so a retained-roster replay can't silently revert calibration to 0.
+    dettson::applyRosterOffset(s, e.id.c_str(), e.offsetC, gCalibration);
     strlcpy(s.disp, e.name.c_str(), sizeof(s.disp));  // #85: friendly label ("" when roster omits "name")
   }
   gPending.sensorRosterDirty = true;
@@ -997,6 +1005,14 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     uint8_t idx = findSensor(name);
     if (idx != 0xFF && gPending.offsetCount < 8) {
       gPending.offsets[gPending.offsetCount++] = {idx, p.value};
+      // #164: persist the offset by wire id so a later retained-roster replay
+      // restores it instead of clobbering it to 0. Write stays under gCmdMux
+      // (like setParticipationLocked); only on an actual change.
+      if (gCalibration.set(name, p.value)) {
+        CalibrationBlob blob;
+        gCalibration.toBlob(blob);
+        gPrefs.putBytes("sofs", &blob, sizeof(blob));
+      }
       gPending.anyInbound = true;
     }
     xSemaphoreGive(gCmdMux);
@@ -3300,6 +3316,11 @@ void setup() {
     ParticipationBlob blob;
     if (gPrefs.getBytes("part", &blob, sizeof(blob)) == sizeof(blob))
       gParticipation.fromBlob(blob);
+  }
+  {  // #164: restore persisted per-sensor offsets before the first roster replay
+    CalibrationBlob blob;
+    if (gPrefs.getBytes("sofs", &blob, sizeof(blob)) == sizeof(blob))
+      gCalibration.fromBlob(blob);
   }
 #ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
