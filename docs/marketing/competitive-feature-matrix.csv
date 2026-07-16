@@ -1,0 +1,70 @@
+Category,Feature,SlyTherm V1,SlyTherm Vnext,ecobee Premium,ecobee Enhanced,Nest Learning 4th gen,Nest Thermostat 2020,Honeywell T9,Honeywell T10/T10+ Pro,Honeywell X8S,Sensi Touch 2,Amazon Smart,Carrier Infinity,Carrier Cor (legacy),Notes
+HVAC Control,Staged heating & cooling (2+ stages),Yes*,,Yes,Yes,Yes,Partial,Yes,Yes,Yes,Yes,Partial,Yes,Yes,"Nest 2020 max 2H/1C or 1H/2C; T10+EIM up to 4H/2C HP; Sensi up to 4 total heat stages on HP; Amazon sources conflict on >2 stages"
+HVAC Control,Modulating equipment control (continuous capacity),Yes*,,No,No,No,No,No,No,No,No,No,Yes,No,"SlyTherm modulates Dettson Chinook 40-100% over CT-485; Carrier requires ~$914 dealer-only Infinity control for modulation"
+HVAC Control,Heat pump with aux/backup heat,Yes*,,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,ecobee Enhanced limited to 1 aux stage (Premium 2)
+HVAC Control,Dual fuel (heat pump + gas/oil furnace),Yes*,,Yes,Yes,Yes,Yes,No,Yes,—,—,No,Yes,Yes,"SlyTherm's core mission; Amazon explicitly excludes dual fuel; T9 not dual-fuel rated"
+HVAC Control,Balance point / aux lockout configuration,Yes*,,Yes,Yes,Yes,—,No,Yes,—,Yes,No,Yes,Yes,"Nest 4th: installer breakpoint 10-50F default 30F; ecobee: compressor min outdoor temp in 5F steps"
+HVAC Control,Economic fuel switchover (price + COP aware),No,Roadmap,No,No,No,No,No,No,No,No,No,No,No,"UNIQUE: switch fuels on electricity:gas price ratio + COP(OAT), not fixed temperature (docs/13)"
+HVAC Control,Defrost tempering (gas assist during HP defrost),Yes*,,No,No,No,No,No,No,No,No,No,Yes,Yes,Modeled structurally in SlyTherm's dual-fuel arbiter
+HVAC Control,Compressor anti-short-cycle protection,Yes,,Yes,Yes,Partial,—,—,—,—,—,—,Yes,—,"SlyTherm: min-on/min-off, max starts/hour, boot hold-off, NVS-persisted lockouts"
+HVAC Control,Communicating HVAC bus integration,Yes*,,No,No,No,No,No,No,No,No,No,Yes,No,"UNIQUE among third parties: SlyTherm speaks the OEM CT-485/ClimateTalk bus; Carrier's ABCD bus is dealer-locked"
+HVAC Control,Humidifier/dehumidifier control,Partial,Roadmap,Yes,Partial,Yes,No,No,Yes,Yes,—,No,Yes,Partial,"SlyTherm v1 via HA blueprints; native output planned on hardware rev; Enhanced 1-wire only & not with PEK; Cor one accessory only"
+HVAC Control,Ventilator/HRV/ERV control,Partial,Roadmap,Yes,Partial,Yes,No,No,—,Yes,—,No,Yes,Partial,"SlyTherm v1 via HA HRV blueprint; X8S one accessory (hum OR dehum OR vent)"
+HVAC Control,Fan modes (auto/on/circulate),Yes*,,Yes,Yes,Yes,Yes,Yes,Yes,—,Yes,Partial,Yes,Yes,SlyTherm circulate = blower 15 min/hour
+HVAC Control,Multi-speed fan control,No,Roadmap,No,No,Yes,No,No,No,No,No,No,Yes,No,"Nest 4th G1-G3; SlyTherm blower-first pre-circulation via CT-485 fan-low planned (docs/13)"
+HVAC Control,Multi-zone control,No,,No,No,No,No,No,No,No,No,No,Yes,No,Infinity up to 8 zones via damper modules; out of scope for single-zone Dettson systems
+HVAC Control,Physical outdoor temp sensor with failover,Yes,,Partial,Partial,Partial,Partial,Partial,—,—,—,Partial,Yes,Partial,"SlyTherm 3-rung ladder: CT-485 bus sensor -> wired DS18B20 -> HA weather with staleness demotion + fail-cold policy; most competitors use internet weather only"
+HVAC Control,Emergency heat mode,Yes,,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm on-device + HA switch; app EM-heat is roadmap
+Sensors,Wireless remote room sensors,Yes,Roadmap,Yes,Yes,Yes,No,Yes,Yes,Yes,Yes,Partial,Yes,No,"SlyTherm: ANY open MQTT/HA sensor (vendor-open, no per-sensor fee); own remote-node sensors planned; ecobee up to 32; X8S up to 20; Nest 2020 supports none; Amazon uses Echo devices"
+Sensors,Occupancy sensing at thermostat,No,Roadmap,Yes,Yes,Yes,Yes,Partial,Partial,Yes,—,No,Yes,Yes,"ecobee/Nest/X8S use radar; SlyTherm mmWave radar (Rd-03D) planned on remote node (docs/11)"
+Sensors,Occupancy in remote sensors,Yes,,Yes,Yes,No,N/A,Yes,Yes,Yes,No,Partial,No,N/A,"Nest Temperature Sensor is temp-only; Sensi Room Sensor temp/RH only; SlyTherm via any HA motion/occupancy entity"
+Sensors,Occupancy-weighted follow-me averaging,Yes,,Yes,Yes,Partial,No,Yes,Yes,—,Partial,No,Partial,No,"Nest sensor priority is time-of-day schedule, not live occupancy; SlyTherm follows dominant occupied room"
+Sensors,Sensor fault rejection (stale/stuck/outlier),Yes,,—,—,—,—,—,—,—,—,—,—,—,"UNIQUE documented capability: per-sensor staleness, range, stuck-value, outlier-vs-median health gates"
+Sensors,Humidity sensing,Partial,Roadmap,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm v1 via HA sensors; native SHT31-D/BME688 on remote node planned
+Sensors,Indoor air quality sensing,No,Roadmap,Yes,No,No,No,No,No,Yes,No,No,No,No,"ecobee Premium VOC/eCO2; X8S CO2+PM (display-only, not exposed via Matter); SlyTherm BME688 VOC planned"
+Sensors,Presence radar (mmWave),No,Roadmap,Yes,—,Yes,Yes,No,No,Yes,No,No,No,No,SlyTherm Rd-03D radar planned on remote node
+Scheduling & Comfort,Weekly scheduling,Partial,Roadmap,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm v1 schedules live in HA packages; on-device scheduling planned
+Scheduling & Comfort,Learning / auto-schedule,No,Proposed,Partial,Partial,Yes,No,No,No,Partial,No,Partial,No,No,"Nest 4th is the leader (aced CR automation lab tests); ecobee eco+ suggests only; PROPOSED for SlyTherm roadmap"
+Scheduling & Comfort,Geofencing,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,No,Partial,"SlyTherm v1 via HA person/presence; first-class geofencing PROPOSED; CR scores geofencing heavily"
+Scheduling & Comfort,Comfort presets (home/away/sleep),Yes,Roadmap,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm live MQTT-configurable roster; on-device preset editing + custom presets planned
+Scheduling & Comfort,Timed holds,Yes,,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm hold pill + chooser; persists across reboot
+Scheduling & Comfort,Vacation mode,Yes,,Yes,Yes,Partial,Partial,Yes,Yes,—,—,Yes,Yes,Yes,"SlyTherm on-device clock-anchored vacation with auto-resume (v0.5.x); Nest handles via Home/Away eco temps"
+Scheduling & Comfort,Smart recovery (pre-heat/cool to schedule),Partial,Roadmap,Yes,Yes,Yes,—,Yes,Yes,Yes,—,—,Yes,Yes,"SlyTherm learns ramp rates per fuel (advisory today); acting smart recovery planned"
+Scheduling & Comfort,Cheapest-fuel smart recovery,No,Roadmap,No,No,No,No,No,No,No,No,No,No,No,"UNIQUE: recover early on cheap HP ramp, gas only as fallback (docs/13)"
+Scheduling & Comfort,Presence-aware sleep detection,No,Roadmap,No,No,No,No,No,No,No,No,No,No,No,"UNIQUE: night presence-aware sleep model built (currently disabled pending fix, #90)"
+Scheduling & Comfort,Auto Home/Away via occupancy,Yes,,Yes,Yes,Yes,Yes,Partial,Partial,Yes,Partial,Partial,Yes,Yes,SlyTherm 3-hour no-presence threshold via sensor fusion
+Energy,Energy usage reports/history,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,"SlyTherm has 12h on-device trend only; PROPOSED: full history + per-fuel cost reporting (unique data: modulation %, fuel split)"
+Energy,Utility demand response programs,No,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,—,"ecobee CES pays up to $125/yr; Nest Rush Hour Rewards; PROPOSED for SlyTherm (needed for utility rebates)"
+Energy,Time-of-use price optimization,No,Roadmap,Yes,Yes,No,No,No,No,No,No,No,No,No,"Only ecobee eco+ has TOU today (claims up to 23% cooling savings); SlyTherm TOU pre-conditioning planned (docs/13)"
+Energy,Learned equipment efficiency (COP curves),No,Roadmap,No,No,Partial,No,No,No,No,No,No,No,No,"Nest Heat Pump Balance learns aux usage but is DISABLED on dual-fuel systems; SlyTherm plans COP-from-telemetry (docs/13)"
+Energy,Solar/battery-aware preconditioning,No,Roadmap,No,No,No,No,No,No,No,No,No,No,No,UNIQUE: grid/TOU + solar/battery price-responsive pre-conditioning (docs/13)
+Energy,ENERGY STAR certified,No,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,—,Yes,PROPOSED: pursue certification at commercialization; gates most utility rebate programs
+Smart Home,Home Assistant integration,Yes,,Partial,Partial,Partial,Partial,Partial,Partial,Partial,Partial,No,Partial,Partial,"UNIQUE: SlyTherm is native local MQTT auto-discovery; ecobee is cloud-polling (API keys closed 2024); Nest via cloud SDM or Matter; Infinity unofficial community proxy only"
+Smart Home,Fully local control (no cloud),Yes,,Partial,Partial,Partial,Partial,No,No,Partial,—,No,Partial,Partial,"UNIQUE as designed-in: all control local; competitors at best partial via HomeKit/Matter attribute subset"
+Smart Home,No vendor account required,Yes,,No,No,No,No,No,No,No,No,No,No,No,UNIQUE: no cloud account; X8S even requires First Alert account for Matter pairing code
+Smart Home,Apple Home / HomeKit,Partial,Proposed,Yes,Yes,Partial,Partial,Yes,Yes,Partial,—,No,No,Yes,"SlyTherm today via HA bridge; PROPOSED: native Matter; Nest/X8S reach Apple only via Matter"
+Smart Home,Amazon Alexa,Partial,Proposed,Yes,Yes,Partial,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,"ecobee Premium has Alexa built-in; Nest 4th reaches Alexa only via Matter; SlyTherm via HA bridge today"
+Smart Home,Google Home,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,No,—,Partial,SlyTherm via HA bridge today
+Smart Home,SmartThings,Partial,Proposed,Yes,Yes,Partial,Partial,Yes,—,Partial,Yes,No,No,No,SlyTherm via HA bridge today
+Smart Home,Matter,No,Proposed,—,—,Yes,Yes,No,No,Yes,No,No,No,No,"PROPOSED: one Matter implementation unlocks Apple+Alexa+Google+SmartThings; X8S Matter is minimal (temp/mode only)"
+Smart Home,Built-in voice assistant,No,,Yes,No,No,No,No,No,No,No,No,No,No,ecobee Premium only (Alexa or Siri; Siri needs HomePod)
+Smart Home,Remote access from anywhere,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,"SlyTherm today via WireGuard/Tailscale (power-user); PROPOSED: turnkey remote access that stays no-cloud-optional"
+Smart Home,Open source / documented local API,Partial,Roadmap,No,No,No,No,No,No,No,No,No,Partial,No,"MQTT contract documented; repo goes public with OTA testing (docs/10); Infinity has unofficial reverse-engineered proxy only"
+UI & Hardware,Color touchscreen,Yes,,Yes,Yes,No,No,Yes,Yes,Yes,Yes,No,Yes,Yes,"SlyTherm 4.3in 800x480 + 480x800 IPS remote; Nest 4th is dial-controlled (no touch); Nest 2020 touch strip; Amazon segment display"
+UI & Hardware,Additional wall displays (remote panels),Partial,Roadmap,No,No,No,No,No,No,No,No,No,Partial,No,"UNIQUE: dedicated Remote panel landed (P4); multi-remote fleet planned (#110); Infinity zone sensors have small displays"
+UI & Hardware,Ambient screensaver / night display,Yes,,—,—,Yes,—,—,—,Yes,—,No,—,—,"SlyTherm hero screensaver + night deep-blank 00:00-06:00; Nest 4th Dynamic Farsight"
+UI & Hardware,Doorbell camera view on thermostat,No,Proposed,No,No,No,No,No,No,Yes,No,No,No,No,"X8S differentiator (First Alert VX1/Ring); PROPOSED: feasible on SlyTherm P4 remote hardware"
+UI & Hardware,Screen lock / PIN,Yes,,Yes,Yes,Yes,Yes,Yes,Yes,—,Yes,—,Yes,—,SlyTherm settings-only or full lock levels + HA lock-clear
+UI & Hardware,Installable without C-wire,N/A,,Yes,Yes,Yes,Partial,Yes,No,No,No,No,N/A,Partial,"SlyTherm uses dedicated supply (not 24VAC parasitic); ecobee PEK & T9 adapter in box; Nest 4th claims <1% need C-wire; X8S/Amazon adapters sold separately"
+UI & Hardware,DIY installation,Partial,Roadmap,Yes,Yes,Yes,Yes,Yes,Partial,Yes,Yes,Yes,No,Yes,"SlyTherm ships install manual; v1 targets capable DIY; Infinity is dealer-install-only; T10 is pro-channel"
+UI & Hardware,Street price (USD),TBD,,~$250,~$190,$280,$130,"$210 list, ~$150 street",~$250+ pro install,$220,~$170,$80,~$914 + dealer install,~$229,"SlyTherm pricing TBD (BOM-based); Infinity price is control head only, requires Infinity-rated equipment"
+UI & Hardware,No subscription required,Yes,,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,No competitor charges a thermostat subscription
+Alerts & Maintenance,Filter change reminders,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,—,Yes,Yes,"SlyTherm v1 via HA package; PROPOSED native runtime-based reminders; Infinity has pressure-based TrueSense dirty-filter DETECTION"
+Alerts & Maintenance,Extreme temp / freeze alerts,Partial,Proposed,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Partial,Yes,Yes,"SlyTherm v1 via HA; PROPOSED native (burst-pipe protection is a top marketing claim for ecobee/Sensi)"
+Alerts & Maintenance,HVAC failure detection,Yes,,—,—,Yes,Yes,—,—,—,Yes,No,Yes,Yes,"SlyTherm safety supervisor + comms deadman + plain-language alarms; Nest Furnace Heads-Up; Sensi loss-of-heat/cool alerts"
+Alerts & Maintenance,Equipment-level diagnostics (bus telemetry),Yes*,,No,No,No,No,No,No,No,No,No,Yes,Partial,"UNIQUE vs retail: CT-485 bus monitor with friendly decode; only Infinity (dealer bus) compares"
+Alerts & Maintenance,Dealer/contractor remote alerts,No,,Partial,Partial,No,No,No,Partial,No,No,No,Yes,Yes,"ecobee Pro PIN; Resideo Pro-IQ; Carrier notifies servicing dealer directly; not a SlyTherm v1 target"
+Reliability & Updates,OTA firmware updates,Yes,,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,SlyTherm auto-updates fleet from GitHub releases
+Reliability & Updates,Signed A/B updates with auto-rollback & idle-gated apply,Yes,,—,—,—,—,—,—,—,—,—,—,—,"UNIQUE documented: sha256+ECDSA verify, A/B slots, boot self-test rollback, reboot only when HVAC idle"
+Reliability & Updates,Crash-loop guard / safe mode / watchdog supervision,Yes,,—,—,—,—,—,—,—,—,—,—,—,"UNIQUE documented: reset-loop latch to safe UI, boot guard, external watchdog line, coredump-over-LAN"
+Reliability & Updates,Full function without internet,Yes,,Partial,Partial,Partial,Partial,Partial,Partial,Partial,Partial,Partial,Partial,Partial,All competitors keep basic control offline but lose smart features; SlyTherm control plane is entirely local

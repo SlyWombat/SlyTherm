@@ -39,3 +39,6 @@ manual/build/
 
 # Release artifacts (tools/release.py) — published as GitHub release assets
 web/installer/firmware/
+
+# Local flash staging (esptool scratch)
+.flashtmp/
