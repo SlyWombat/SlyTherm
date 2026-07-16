@@ -269,6 +269,8 @@ struct Snapshot {
   float modulationPct = 0;
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
   char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
+  char statusLine[40] = "Idle";      // composed action wording (wall-screen parity)
+  char trackingLine[56] = {};        // composed presence/tracking wording
   uint32_t compMinOffRemainS = 0;
   bool compLockedOut = false;
   char changeReason[24] = "none";
@@ -1216,6 +1218,8 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("sensor", "outdoor_source"), outdoorSourceDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "fusion"), fusionDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "changeover_reason"), changeoverReasonDiscoveryJson());
+  pubRetained(discoveryTopic("sensor", "status_line"), statusLineDiscoveryJson());
+  pubRetained(discoveryTopic("sensor", "tracking_line"), trackingLineDiscoveryJson());
 #ifdef SLYTHERM_LOCAL_SENSOR
   pubRetained(discoveryTopic("number", std::string("sensor_") + kLocalSensorId + "_offset"),
               sensorOffsetDiscoveryJson(kLocalSensorId));
@@ -1263,7 +1267,7 @@ enum PubIdx : uint8_t {
   PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
-  PUB_LASTERR, PUB_SLEEP,
+  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1364,6 +1368,8 @@ void publishSnapshot(bool force) {
   }
   pubState(PUB_OATSRC, topic::kStateOutdoorSource, oatRungName(s.oatRung), force);
   pubState(PUB_FUSION, topic::kStateFusion, s.fusionJson, force);
+  pubState(PUB_STATUSLINE, topic::kStateStatusLine, s.statusLine, force);
+  pubState(PUB_TRACKLINE, topic::kStateTrackingLine, s.trackingLine, force);
   snprintf(b, sizeof(b), "%lu", static_cast<unsigned long>(s.compMinOffRemainS));
   pubState(PUB_CMOR, topic::kStateCompressorMinOffRemaining, b, force);
   pubState(PUB_CLO, topic::kStateCompressorLockedOut,
@@ -2434,6 +2440,37 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   // Compressor diagnostics (glue estimate; the guard owns the real timers).
   // Shared helper: the UI "cooling/heating soon" ack reuses the SAME value.
   s.compMinOffRemainS = compGuardMinOffRemainS(nowS);
+
+  // Composed wall-screen wording for HA display parity — mirrors ui_main.cpp
+  // renderMain (status) and fillPresenceLine (tracking). Published on
+  // slytherm/state/status_line + tracking_line so a dashboard shows the same
+  // text the screen does. Rich edge cases (last-entered ages) stay screen-only.
+  if (strcmp(s.action, "heating") == 0 || strcmp(s.action, "defrosting") == 0)
+    snprintf(s.statusLine, sizeof(s.statusLine), "Heating to %.1f\xC2\xB0", (double)s.heatSp);
+  else if (strcmp(s.action, "cooling") == 0)
+    snprintf(s.statusLine, sizeof(s.statusLine), "Cooling to %.1f\xC2\xB0", (double)s.coolSp);
+  else if (s.compMinOffRemainS > 0)
+    snprintf(s.statusLine, sizeof(s.statusLine), "%s soon \xE2\x80\xA2 %lu min",
+             gModeSm->mode() == UserMode::kCool ? "Cooling" : "Heating",
+             (unsigned long)((s.compMinOffRemainS + 59u) / 60u));
+  else if (gModeSm->mode() == UserMode::kOff)
+    strlcpy(s.statusLine, "System off", sizeof(s.statusLine));
+  else if (gModeSm->mode() == UserMode::kAuto)
+    snprintf(s.statusLine, sizeof(s.statusLine), "Idle - holding %.0f-%.0f\xC2\xB0",
+             (double)s.heatSp, (double)s.coolSp);
+  else
+    strlcpy(s.statusLine, "Idle", sizeof(s.statusLine));
+
+  if (s.asleep) {
+    if (domId[0]) snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Asleep", domId);
+    else          strlcpy(s.trackingLine, "Asleep", sizeof(s.trackingLine));
+  } else if (occupied && domId[0]) {
+    snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Present", domId);
+  } else if (domId[0]) {
+    snprintf(s.trackingLine, sizeof(s.trackingLine), "Reading %s \xE2\x80\xA2 Nobody home", domId);
+  } else {
+    strlcpy(s.trackingLine, "No room sensor reporting", sizeof(s.trackingLine));
+  }
   s.compLockedOut = gGuard.lockedOut() || !oat.valid ||
                     oat.valueC < gDualFuel->config().compressorMinOatC;
 

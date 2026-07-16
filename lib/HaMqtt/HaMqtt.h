@@ -86,6 +86,11 @@ constexpr const char* kStateCompressorMinOffRemaining =
 constexpr const char* kStateCompressorLockedOut = SLYTHERM_TOPIC_PREFIX "state/compressor_locked_out";
 constexpr const char* kStateEmHeat              = SLYTHERM_TOPIC_PREFIX "state/em_heat";  // "ON"/"OFF"
 constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/changeover_reason";
+// Composed wall-screen wording, published for HA display parity: the action line
+// ("Cooling to 21.0°", "Idle - holding 18-21°") and the presence/tracking line
+// ("Reading Living Room • Present"). Mirror ui_main.cpp renderMain/fillPresenceLine.
+constexpr const char* kStateStatusLine          = SLYTHERM_TOPIC_PREFIX "state/status_line";
+constexpr const char* kStateTrackingLine        = SLYTHERM_TOPIC_PREFIX "state/tracking_line";
 constexpr const char* kStateLock                = SLYTHERM_TOPIC_PREFIX "state/lock";  // JSON, see lockStateJson()
 constexpr const char* kStateFault               = SLYTHERM_TOPIC_PREFIX "state/fault";
 // #143: retained record-only COP-proxy telemetry (CopLearner::proxyJson()).
@@ -510,6 +515,8 @@ std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wire
 // full payload exposed as attributes (tier, participants, occupied).
 std::string fusionDiscoveryJson();               // sensor, °C, diagnostic, JSON attrs
 std::string changeoverReasonDiscoveryJson();     // sensor, diagnostic
+std::string statusLineDiscoveryJson();           // sensor, diagnostic — composed action wording
+std::string trackingLineDiscoveryJson();         // sensor, diagnostic — composed presence wording
 std::string sensorAgeDiscoveryJson(const std::string& sensorId);            // diagnostic
 std::string sensorParticipatingDiscoveryJson(const std::string& sensorId);  // diagnostic
 // number entity, entity_category config, ±kSensorOffsetMaxC, 0.1 step (G6);

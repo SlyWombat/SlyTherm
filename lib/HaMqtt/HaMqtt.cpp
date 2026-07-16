@@ -1005,6 +1005,24 @@ std::string changeoverReasonDiscoveryJson() {
   return entityDiscoveryJson(e);
 }
 
+std::string statusLineDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Status Line";
+  e.uniqueId = "slytherm_status_line";
+  e.stateTopic = topic::kStateStatusLine;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string trackingLineDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Tracking Line";
+  e.uniqueId = "slytherm_tracking_line";
+  e.stateTopic = topic::kStateTrackingLine;
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
 std::string sensorAgeDiscoveryJson(const std::string& sensorId) {
   EntitySpec e;
   e.name = "SlyTherm Sensor " + sensorId + " Age";
