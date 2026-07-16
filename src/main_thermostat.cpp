@@ -1116,7 +1116,16 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 }
 
 bool pubRetained(const std::string& topic, const std::string& payload) {
-  return gMqtt.publish(topic.c_str(), payload.c_str(), true);
+  const bool ok = gMqtt.publish(topic.c_str(), payload.c_str(), true);
+  // #WDT: publishDiscovery() fires ~40 retained configs back-to-back on every
+  // reconnect, and each PubSubClient::publish can socket-spin up to the 2 s
+  // setSocketTimeout on a marginal link. Run un-yielded (the mqttTask's only
+  // vTaskDelay is at the top of its outer loop) the burst exceeds the 5 s task
+  // WDT in a single pass, starving IDLE0 on core 0 -> reason:"wdt" reboot.
+  // A 1-tick yield lets IDLE0 run (and feed the WDT) between publishes; across a
+  // full discovery burst this adds only tens of ms. mqttTask-only, no lock held.
+  vTaskDelay(1);
+  return ok;
 }
 
 // ---- Wall-UI hooks (called from the LVGL UI task) --------------------------
