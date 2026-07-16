@@ -456,13 +456,14 @@ automation:
           notification_id: slytherm_hold_placed
           title: "SlyTherm: hold placed ({{ hold_label }})"
           message: "{{ msg }}"
-      # 3) MOBILE PUSH — EDIT ME: replace <your_device> with your phone's notify
-      #    service, then uncomment these lines. Find the exact name in the HA
-      #    Companion App (Settings > Companion App) or Developer Tools > Actions
-      #    (search "notify.mobile_app_"). continue_on_error guards a bad name.
-      # - service: notify.mobile_app_<your_device>
-      #   continue_on_error: true
-      #   data:
-      #     title: "SlyTherm: hold placed ({{ hold_label }})"
-      #     message: "{{ msg }}"
+      # 3) push through Home Assistant's notify service. notify.notify routes to
+      #    your configured notifiers / companion app without hard-coding a device.
+      #    continue_on_error so a HA that hasn't set up notify.notify still gets
+      #    the logbook + persistent notification above. To target one phone,
+      #    swap in notify.mobile_app_<your_device> (HA > Settings > Companion App).
+      - service: notify.notify
+        continue_on_error: true
+        data:
+          title: "SlyTherm: hold placed ({{ hold_label }})"
+          message: "{{ msg }}"
     mode: single
