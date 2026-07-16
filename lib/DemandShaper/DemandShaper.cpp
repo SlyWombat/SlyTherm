@@ -51,10 +51,23 @@ float GasShaper::shape(float requestPct, uint32_t nowS) {
   const float offThresh = cfg_.floorPct - cfg_.extinguishMarginPct;
 
   if (runtimeTripped_) {
-    // Held at 0 until the upstream call actually ends; a fresh call may
-    // then start a new timed run. Alarm stays latched until clearAlarms().
-    if (requestPct <= offThresh) runtimeTripped_ = false;
-    return 0.0f;
+    // A modulating furnace can legitimately run past maxRuntimeS on a
+    // design-cold day; permanently withholding heat while the call persists is
+    // the greater hazard (docs/04 §1 prime directive, issue #158). So once the
+    // call ends the trip clears as before, but while it persists we relight for
+    // another timed run after the normal min-off rest instead of latching at 0.
+    // The runtime ALARM stays latched for operator visibility (clearAlarms());
+    // the furnace's own IFC owns true combustion-runaway protection.
+    if (requestPct <= offThresh) {  // call ended: clear the trip, normal restart path
+      runtimeTripped_ = false;
+      return 0.0f;
+    }
+    if (!(requestPct >= onThresh && minOffServed(nowS))) return 0.0f;  // resting out min-off
+    runtimeTripped_ = false;  // min-off served: relight for a fresh timed run
+    lit_ = true;
+    minOffWaived_ = false;
+    runStartS_ = nowS;
+    // fall through and emit this cycle; the new run has its own maxRuntime window
   }
 
   if (lit_) {

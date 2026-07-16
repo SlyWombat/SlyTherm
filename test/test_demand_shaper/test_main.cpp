@@ -100,21 +100,39 @@ static void test_gas_invalid_input_drops_demand_and_alarms() {
   TEST_ASSERT_TRUE(g2.inputAlarm());
 }
 
-static void test_gas_max_runtime_trips_and_recovers_only_after_call_ends() {
+static void test_gas_max_runtime_trips_then_auto_relights_while_call_persists() {
+  // #158: a legit long call must not lose heat permanently. With no timers the
+  // min-off rest is zero, so the cycle after the trip relights for a fresh run.
   GasShaper g(gasNoTimers());
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));
-  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS / 2));
   TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS));      // exactly at cap: still ok
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 1));   // exceeds -> trip
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 1));   // exceeds -> trip + drop
   TEST_ASSERT_TRUE(g.runtimeAlarm());
-  // Still requesting: held at zero (no auto-relight into the same stuck call).
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 100));
-  // Call ends, fresh call later: a new timed run is allowed, alarm stays latched.
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, kGasMaxRuntimeS + 200));
-  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS + 300));
+  TEST_ASSERT_FALSE(g.lit());
+  // Call still up: relight for another timed run rather than latching at 0.
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS + 2));
+  TEST_ASSERT_TRUE(g.lit());
+  TEST_ASSERT_TRUE(g.runtimeAlarm());                                   // alarm stays latched
+  // The relit run gets its own maxRuntime window, measured from the relight.
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 2 * kGasMaxRuntimeS + 2));
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, 2 * kGasMaxRuntimeS + 3)); // relit run exceeds -> trip
+  // Call ends: the trip clears; the alarm remains latched until acknowledged.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(0.0f, 2 * kGasMaxRuntimeS + 10));
   TEST_ASSERT_TRUE(g.runtimeAlarm());
   g.clearAlarms();
   TEST_ASSERT_FALSE(g.alarm());
+}
+
+static void test_gas_max_runtime_relight_waits_for_min_off() {
+  // #158: the relight after a trip still owes the normal min-off rest.
+  GasShaper g;                          // default (nonzero) timers
+  g.bootRestore(0, /*minOffServed=*/true);
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, 0));                        // lights
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + 1));       // trip -> min-off starts
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, g.shape(60.0f, kGasMaxRuntimeS + kGasMinOffS)); // 1 s short: no relight
+  TEST_ASSERT_FALSE(g.lit());
+  TEST_ASSERT_EQUAL_FLOAT(60.0f, g.shape(60.0f, kGasMaxRuntimeS + 1 + kGasMinOffS)); // served -> relight
+  TEST_ASSERT_TRUE(g.lit());
 }
 
 static void test_gas_extinguish_resets_runtime_clock() {
@@ -659,7 +677,8 @@ int main() {
   RUN_TEST(test_gas_no_dither_at_floor_either_direction);
   RUN_TEST(test_gas_relight_requires_full_on_threshold);
   RUN_TEST(test_gas_invalid_input_drops_demand_and_alarms);
-  RUN_TEST(test_gas_max_runtime_trips_and_recovers_only_after_call_ends);
+  RUN_TEST(test_gas_max_runtime_trips_then_auto_relights_while_call_persists);
+  RUN_TEST(test_gas_max_runtime_relight_waits_for_min_off);
   RUN_TEST(test_gas_extinguish_resets_runtime_clock);
   RUN_TEST(test_gas_boot_starts_off_timer_fresh);
   RUN_TEST(test_gas_boot_restore_served_lights_immediately);
