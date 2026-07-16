@@ -403,3 +403,66 @@ automation:
     action:
       - service: script.slytherm_apply_scheduled_preset
     mode: single
+
+  # -------------------------------------------------------------------------
+  # 6. Hold placed -> log + notify
+  # -------------------------------------------------------------------------
+  # sensor.slytherm_hold is the firmware's auto-discovered hold state; its value
+  # is the hold TYPE (none / until_next_preset / two_hours / four_hours /
+  # indefinite). A manual setpoint or preset change on the wall unit, a remote,
+  # or from HA engages a hold (default: until_next_preset) so the schedule can't
+  # stomp the override until the next preset arrives. This fires ONLY on the
+  # engage edge (none -> active). The logbook entry is the durable record;
+  # persistent_notification is the in-app alert; the commented mobile-push line
+  # is your phone notification (fill in your device, see below).
+  - id: slytherm_hold_placed
+    alias: "SlyTherm: hold placed -> log + notify"
+    trigger:
+      - platform: state
+        entity_id: sensor.slytherm_hold
+    condition:
+      # engage edge only: new value is a real hold, previous was none/unknown
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.state not in ['none', 'unknown', 'unavailable']
+             and trigger.from_state is not none
+             and trigger.from_state.state in ['none', 'unknown', 'unavailable', ''] }}
+    action:
+      - variables:
+          hold_label: >-
+            {{ {'until_next_preset': 'until next schedule',
+                'two_hours': '2 hours', 'four_hours': '4 hours',
+                'indefinite': 'indefinite'}.get(trigger.to_state.state,
+                                                 trigger.to_state.state) }}
+          preset: "{{ state_attr('climate.slytherm_hvac', 'preset_mode') }}"
+          indoor: "{{ state_attr('climate.slytherm_hvac', 'current_temperature') }}"
+          setpoints: >-
+            {% set t = state_attr('climate.slytherm_hvac', 'temperature') %}
+            {% if t is not none %}setpoint {{ t }} °C{% else %}heat
+            {{ state_attr('climate.slytherm_hvac', 'target_temp_low') }} / cool
+            {{ state_attr('climate.slytherm_hvac', 'target_temp_high') }} °C{% endif %}
+          msg: >-
+            Hold placed ({{ hold_label }}), overriding the '{{ preset }}'
+            schedule. Now {{ setpoints }} (indoor {{ indoor }} °C).
+      # 1) durable log entry — shows in Logbook against the thermostat
+      - service: logbook.log
+        data:
+          name: SlyTherm
+          entity_id: climate.slytherm_hvac
+          message: "{{ msg }}"
+      # 2) in-app Home Assistant notification
+      - service: persistent_notification.create
+        data:
+          notification_id: slytherm_hold_placed
+          title: "SlyTherm: hold placed ({{ hold_label }})"
+          message: "{{ msg }}"
+      # 3) MOBILE PUSH — EDIT ME: replace <your_device> with your phone's notify
+      #    service, then uncomment these lines. Find the exact name in the HA
+      #    Companion App (Settings > Companion App) or Developer Tools > Actions
+      #    (search "notify.mobile_app_"). continue_on_error guards a bad name.
+      # - service: notify.mobile_app_<your_device>
+      #   continue_on_error: true
+      #   data:
+      #     title: "SlyTherm: hold placed ({{ hold_label }})"
+      #     message: "{{ msg }}"
+    mode: single
