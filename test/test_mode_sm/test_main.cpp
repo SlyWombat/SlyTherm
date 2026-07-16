@@ -443,13 +443,20 @@ static void test_unknown_preset_does_not_end_hold() {
   TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
 }
 
-static void test_mode_change_creates_hold() {
+static void test_mode_change_does_not_create_hold() {
   ModeStateMachine sm = makeRosterSm();
   sm.applyPreset("home", 50);
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());  // preset arrival: no hold
+  // A bare mode change must NOT announce a schedule hold: mode is orthogonal to
+  // the preset schedule (presets carry setpoints, not mode). Only a setpoint
+  // override starts a hold (see onManualChange).
   sm.setMode(UserMode::kHeat, 100);
-  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
-  sm.setMode(UserMode::kHeat, 200);  // no-op: same mode keeps state
-  TEST_ASSERT_EQUAL(HoldType::kUntilNextPreset, sm.activeHoldType());
+  TEST_ASSERT_EQUAL(HoldType::kNone, sm.activeHoldType());
+  // A pre-existing hold survives a mode change untouched.
+  sm.setHeatSetpoint(19.0f, 150);  // manual override -> 4 h hold (#91)
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
+  sm.setMode(UserMode::kCool, 200);
+  TEST_ASSERT_EQUAL(HoldType::kFourHours, sm.activeHoldType());
 }
 
 static void test_two_hour_hold_blocks_presets_then_expires_mid_tick() {
@@ -708,7 +715,7 @@ int main() {
   RUN_TEST(test_roster_replace_clears_missing_active_preset);
   RUN_TEST(test_manual_setpoint_creates_four_hour_hold);
   RUN_TEST(test_unknown_preset_does_not_end_hold);
-  RUN_TEST(test_mode_change_creates_hold);
+  RUN_TEST(test_mode_change_does_not_create_hold);
   RUN_TEST(test_two_hour_hold_blocks_presets_then_expires_mid_tick);
   RUN_TEST(test_four_hour_hold_expires_inside_apply_preset);
   RUN_TEST(test_indefinite_hold_ends_only_on_clear);

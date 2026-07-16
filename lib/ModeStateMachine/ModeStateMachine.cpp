@@ -28,7 +28,11 @@ void ModeStateMachine::setMode(UserMode mode, uint32_t nowS) {
   endActiveCall(nowS);
   resetTriggers();
   mode_ = mode;
-  startHold(cfg_.defaultHoldType, nowS);  // manual change (G4 hold semantics)
+  // No auto-hold on a bare mode change: mode is orthogonal to the preset
+  // schedule (presets carry setpoints, not mode), so selecting Off/Heat/Cool/
+  // Auto should not announce an "until next schedule" override. Only an actual
+  // setpoint edit starts a hold (see onManualChange). Any pre-existing hold is
+  // left untouched.
 }
 
 void ModeStateMachine::setEmergencyHeat(bool on, uint32_t nowS) {
