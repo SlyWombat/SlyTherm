@@ -1,5 +1,11 @@
 # OPNsense changes for the SlyTherm Remote WireGuard uplink (#148)
 
+> **RETIRED (#161).** This off-LAN uplink is no longer used, and the WireGuard
+> keys and preshared key that were originally listed here have been **rotated and
+> decommissioned** — the values below are placeholders. Kept only as a historical
+> runbook; regenerate fresh keys if the uplink is ever revived (never paste real
+> key material back into a tracked file).
+
 **For:** the firewall manager. **Requested:** 2026-07-10.
 **Goal:** let one SlyTherm wall Remote (`dc25b0`, an ESP32-P4 panel) operate
 from a WiFi network outside our LAN (currently the "media" SSID on the Bell
@@ -31,10 +37,10 @@ keepalive every 25 s.
 
 | What | Value |
 |---|---|
-| Device **public** key (paste into the Peer) | `s+mlHLjSwfJz5YgJc9nnde+lKcqqnaflrJkgidW212U=` |
-| Server **private** key (paste into the Instance) | `eOsGIZSX3QsHYK7C6JUzYqi8TUX45zJJUKwWwsnZl1s=` |
-| Server public key (baked into the device firmware) | `BhgJxCQjJe9g9tSgB0OfZy7NoENyyO9xV7jzi+Kav3c=` |
-| Preshared key (paste into the Peer) | `hKe5MCC92SB82pDQTfaW2hIXlwH/DuMmShatIkutkss=` |
+| Device **public** key (paste into the Peer) | `<device-public-key — ROTATED/RETIRED, regenerate>` |
+| Server **private** key (paste into the Instance) | `<server-private-key - ROTATED/RETIRED, regenerate>` |
+| Server public key (baked into the device firmware) | `<server-public-key - ROTATED/RETIRED, regenerate>` |
+| Preshared key (paste into the Peer) | `<preshared-key - ROTATED/RETIRED, regenerate>` |
 
 Both keypairs were pre-generated so the device firmware could be baked in one
 pass. If policy says the server key must be born on the firewall: generate a
@@ -48,7 +54,7 @@ side).
    - Name: `slytherm-remote`
    - Listen port: **51820**
    - Private key: (server private key above), public key auto-derives —
-     confirm it shows `BhgJxCQjJe9g9tSgB0OfZy7NoENyyO9xV7jzi+Kav3c=`
+     confirm it shows `<server-public-key - ROTATED/RETIRED, regenerate>`
    - Tunnel address: **10.20.30.1/24**
    - Save. Enable WireGuard (checkbox on the Instances tab) if not already
      enabled for another instance.
