@@ -20,10 +20,17 @@ thermostat's own MQTT entities — no SlyLog and no custom integration required.
 
 ### Add the Setpoint sensor (one time)
 
-The active setpoint is published retained on `slytherm/state/setpoint`, but it's
-consumed by the `climate.slytherm_hvac` entity, not exposed as its own sensor. Add
-this to your MQTT sensors (e.g. in `configuration.yaml` under `mqtt:` → `sensor:`,
-or drop it into a package):
+The active setpoint is published on `slytherm/state/setpoint`, but it's consumed by
+the `climate.slytherm_hvac` entity, not exposed as its own sensor. Add this to your
+MQTT sensors (e.g. in `configuration.yaml` under `mqtt:` → `sensor:`, or drop it
+into a package):
+
+> **Firmware note:** `slytherm/state/setpoint` (and `.../target_temp_low` /
+> `.../target_temp_high`) are published **retained** as of Controller firmware
+> **≥ 1.2.8**. On earlier firmware they were transient (non-retained), so the MQTT
+> sensor below would sit `unavailable` until the next setpoint change and
+> `mosquitto_sub -W 3` would see nothing — that was expected, not a broker problem.
+> On ≥ 1.2.8 the sensor populates immediately on (re)connect.
 
 ```yaml
 mqtt:

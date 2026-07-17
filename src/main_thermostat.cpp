@@ -1333,7 +1333,7 @@ enum PubIdx : uint8_t {
   PUB_TEMP, PUB_SP, PUB_LOW, PUB_HIGH, PUB_MODE, PUB_FAN,
   PUB_FANMIN, PUB_FANPCT,  // #128 retained circulate config
   PUB_PRESET, PUB_HOLD,
-  PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
+  PUB_ACTION, PUB_BLOWER, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
   PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
 #ifdef SLYTHERM_ACTUATOR_RELAY
@@ -1407,14 +1407,17 @@ void publishSnapshot(bool force) {
     pubState(PUB_TEMP, topic::kStateCurrentTemp, b, force);
   }
   const bool heatish = s.mode == Mode::kHeat || s.emHeat;
+  // Setpoint + target pair RETAINED (like fan state, #128): the active setpoint
+  // is slow-changing and a reconnecting HA/chart must read it immediately rather
+  // than wait for the next change (else the HA sensor sits `unavailable`).
   if (heatish || s.mode == Mode::kCool) {
     snprintf(b, sizeof(b), "%.1f", static_cast<double>(heatish ? s.heatSp : s.coolSp));
-    pubState(PUB_SP, topic::kStateSetpoint, b, force);
+    pubState(PUB_SP, topic::kStateSetpoint, b, force, /*retain=*/true);
   }
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.heatSp));
-  pubState(PUB_LOW, topic::kStateTargetTempLow, b, force);
+  pubState(PUB_LOW, topic::kStateTargetTempLow, b, force, /*retain=*/true);
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.coolSp));
-  pubState(PUB_HIGH, topic::kStateTargetTempHigh, b, force);
+  pubState(PUB_HIGH, topic::kStateTargetTempHigh, b, force, /*retain=*/true);
   // EMERGENCY_HEAT reports "heat"; the em_heat switch carries the truth (docs/06).
   pubState(PUB_MODE, topic::kStateMode, s.emHeat ? "heat" : toString(s.mode), force);
   // #128: fan mode + circulate config RETAINED — a reconnecting Remote/HA reads
@@ -1426,7 +1429,18 @@ void publishSnapshot(bool force) {
   pubState(PUB_FANPCT, topic::kStateFanCirculatePct, b, force, /*retain=*/true);
   pubState(PUB_PRESET, topic::kStatePreset, s.preset[0] ? s.preset : "none", force);
   pubState(PUB_HOLD, topic::kStateHold, holdStateJson(s.holdType, s.holdRemainS).c_str(), force);
-  pubState(PUB_ACTION, topic::kStateAction, s.action, force);
+  // action RETAINED so a reconnecting HA restores hvac_action (incl. "fan")
+  // without waiting for the next state change.
+  pubState(PUB_ACTION, topic::kStateAction, s.action, force, /*retain=*/true);
+  // Blower-running signal (HA asked for one — the discovered slytherm_blower
+  // sensor otherwise never gets a value). The blower spins for any air-moving
+  // action: heating/cooling/fan (fan covers circulate, which sets action=fan)
+  // and the defrost cycle. Retained so HA can shade a fan/blower band reliably.
+  const bool blowerOn = strcmp(s.action, "heating") == 0 ||
+                        strcmp(s.action, "cooling") == 0 ||
+                        strcmp(s.action, "fan") == 0 ||
+                        strcmp(s.action, "defrosting") == 0;
+  pubState(PUB_BLOWER, topic::kStateBlower, blowerOn ? "on" : "off", force, /*retain=*/true);
   pubState(PUB_EQUIP, topic::kStateActiveEquipment, s.equipment, force);
   snprintf(b, sizeof(b), "%.0f", static_cast<double>(s.modulationPct));
   pubState(PUB_MOD, topic::kStateModulation, b, force);
