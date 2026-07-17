@@ -798,6 +798,17 @@ std::string energySensorDiscoveryJson(const char* name, const char* uniqueId,
       .close();
 }
 
+std::string suggestedScheduleDiscoveryJson() {  // #177
+  EntitySpec e;
+  e.name = "SlyTherm Suggested Schedule";
+  e.uniqueId = "slytherm_suggested_schedule";
+  e.stateTopic = topic::kStateSuggestedSchedule;
+  e.valueTemplate = "{{ 'Learning your routine...' if not value_json.confident else value_json.weekday }}";
+  e.jsonAttributesTopic = topic::kStateSuggestedSchedule;  // weekday/weekend/confident
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
 std::string modulationDiscoveryJson() {
   EntitySpec e;
   e.name = "SlyTherm Gas Modulation";

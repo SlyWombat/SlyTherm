@@ -82,6 +82,7 @@
 #include "Ct485Core.h"
 #include "Ct485Frame.h"
 #include "CopLearner.h"
+#include "OccupancyLearner.h"  // #177 learned occupancy -> suggested schedule
 #include "Ct485Thermostat.h"
 #include "DemandArbiter.h"
 #include "DemandShaper.h"
@@ -270,6 +271,7 @@ struct Snapshot {
   float modulationPct = 0;
   float filterLifePct = 0;  // #175 % of filter life consumed
   char  energyJson[144] = "{}";  // #176 {gas_m3,hp_kwh,cool_kwh,cost_gas,cost_elec}
+  char  suggestedJson[192] = "{}";  // #177 {confident,weekday,weekend}
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
   char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
   char statusLine[40] = "Idle";      // composed action wording (wall-screen parity)
@@ -384,6 +386,9 @@ PidShaper           gPid;
 GasShaper           gGasShaper;
 RecoveryEstimator   gRecovery;
 CopLearner          gCopLearner;  // #143: record-only COP proxy (docs/13 §5)
+dettson::OccupancyLearner gOccLearner;  // #177: learns the occupancy pattern
+using OccBlob = dettson::OccupancyLearner::PersistBlob;
+char gSuggestedScheduleJson[192] = "{}";  // published for review; never auto-applied
 TrendEstimator      gTrend;  // fused-temp slope for crossing prediction (#141)
 PreCirculator       gPreCirc;  // blower-first pre-circulation (#142, docs/13 §3+§8)
 ui::UiModel         gUi;
@@ -1259,6 +1264,7 @@ void publishDiscovery() {
               energySensorDiscoveryJson("SlyTherm Gas Cost", "slytherm_cost_gas", "cost_gas", "CAD", "monetary"));
   pubRetained(discoveryTopic("sensor", "cost_elec"),
               energySensorDiscoveryJson("SlyTherm Electric Cost", "slytherm_cost_elec", "cost_elec", "CAD", "monetary"));
+  pubRetained(discoveryTopic("sensor", "suggested_schedule"), suggestedScheduleDiscoveryJson());  // #177
   pubRetained(discoveryTopic("sensor", "fault"), faultDiscoveryJson());
   pubRetained(discoveryTopic("binary_sensor", "health"), healthDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "last_error"), lastErrorDiscoveryJson());
@@ -1329,7 +1335,7 @@ enum PubIdx : uint8_t {
   PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
-  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY,
+  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1427,6 +1433,7 @@ void publishSnapshot(bool force) {
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.filterLifePct));  // #175
   pubState(PUB_FILTER, topic::kStateFilterLife, b, force);
   pubState(PUB_ENERGY, topic::kStateEnergy, s.energyJson, force, /*retain=*/true);  // #176
+  pubState(PUB_SUGGEST, topic::kStateSuggestedSchedule, s.suggestedJson, force, /*retain=*/true);  // #177
   if (s.oatValid) {
     snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.oatC));
     pubState(PUB_OAT, topic::kStateOutdoorTemp, b, force);
@@ -2353,6 +2360,24 @@ void persistOnChange(uint32_t nowS) {
   }
 }
 
+// #177 render the learned pattern into the published suggestion (review-only).
+void buildSuggestedSchedule() {
+  auto render = [](bool wknd, char* out, size_t n) {
+    const auto s = gOccLearner.suggestSchedule(wknd);
+    size_t p = 0;
+    for (uint8_t i = 0; i < s.count && p + 16 < n; ++i)
+      p += snprintf(out + p, n - p, "%s%s %u:00", i ? ", " : "",
+                    s.t[i].occupied ? "Home" : "Away", s.t[i].hour);
+    if (p == 0 && n) out[0] = '\0';
+  };
+  char wd[80] = {}, we[80] = {};
+  render(false, wd, sizeof(wd));
+  render(true, we, sizeof(we));
+  snprintf(gSuggestedScheduleJson, sizeof(gSuggestedScheduleJson),
+           "{\"confident\":%s,\"weekday\":\"%s\",\"weekend\":\"%s\"}",
+           gOccLearner.suggestSchedule(false).confident ? "true" : "false", wd, we);
+}
+
 void updateRunSegments(const DemandSet& out, const FusedTemp& fused, uint32_t nowS) {
   Serving now = Serving::kNone;
   if (out.gasHeatPct > 0) now = Serving::kGas;
@@ -2456,6 +2481,7 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
            "{\"gas_m3\":%.3f,\"hp_kwh\":%.3f,\"cool_kwh\":%.3f,"
            "\"cost_gas\":%.2f,\"cost_elec\":%.2f}",
            gEnergyGasM3, gEnergyHpKwh, gEnergyCoolKwh, gCostGas, gCostElec);
+  strlcpy(s.suggestedJson, gSuggestedScheduleJson, sizeof(s.suggestedJson));  // #177
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
   s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 
@@ -2693,6 +2719,26 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       gSleepLink.onEdge(asleep, *gModeSm, nowS);  // apply/restore the sleep preset
       Serial.printf("[sleep] %s (hour=%d present=%d)\n",
                     asleep ? "asleep" : "awake", hour, (int)pres.present);
+    }
+    // #177 occupancy learning: aggregate presence per hour, feed one daily
+    // sample per (day-type, hour) at each boundary, persist, refresh suggestion.
+    static int sHour = -1, sWday = 0;
+    static uint32_t sOccS = 0, sTotS = 0, sLast = 0;
+    if (clockOk) {
+      const uint32_t dt = (sLast != 0 && nowS > sLast) ? nowS - sLast : 0;
+      sLast = nowS;
+      if (ti.tm_hour == sHour) {
+        sTotS += dt; if (pres.present) sOccS += dt;
+      } else {
+        if (sHour >= 0 && sTotS > 0) {
+          gOccLearner.observe(sWday == 0 || sWday == 6,
+                              static_cast<uint8_t>(sHour), sOccS * 2 > sTotS);
+          OccBlob blob; gOccLearner.toBlob(blob);
+          gPrefs.putBytes("occ", &blob, sizeof(blob));
+          buildSuggestedSchedule();
+        }
+        sHour = ti.tm_hour; sWday = ti.tm_wday; sOccS = 0; sTotS = 0;
+      }
     }
   }
 
@@ -3439,6 +3485,12 @@ void setup() {
   gCostElec      = gPrefs.getDouble("coe", 0.0);
   gElecPrice     = gPrefs.getFloat("epk", kElecPricePerKwhDefault);
   gGasPrice      = gPrefs.getFloat("gpm", kGasPricePerM3Default);
+  {  // #177 restore the learned occupancy pattern + seed the suggestion
+    OccBlob blob;
+    if (gPrefs.getBytes("occ", &blob, sizeof(blob)) == sizeof(blob))
+      gOccLearner.fromBlob(blob);
+    buildSuggestedSchedule();
+  }
 #ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;

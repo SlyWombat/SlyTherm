@@ -106,6 +106,7 @@ constexpr const char* kAvailability             = SLYTHERM_TOPIC_PREFIX "availab
 constexpr const char* kStateBlower    = SLYTHERM_TOPIC_PREFIX "state/blower";
 constexpr const char* kStateFilterLife = SLYTHERM_TOPIC_PREFIX "state/filter_life";  // #175 % consumed
 constexpr const char* kStateEnergy     = SLYTHERM_TOPIC_PREFIX "state/energy";        // #176 per-fuel energy+cost JSON
+constexpr const char* kStateSuggestedSchedule = SLYTHERM_TOPIC_PREFIX "state/suggested_schedule";  // #177 review-only
 constexpr const char* kStateHealth    = SLYTHERM_TOPIC_PREFIX "state/health";
 constexpr const char* kStateLastError = SLYTHERM_TOPIC_PREFIX "state/last_error";
 
@@ -523,6 +524,7 @@ std::string filterResetButtonDiscoveryJson();    // #175 button: "filter replace
 std::string energySensorDiscoveryJson(const char* name, const char* uniqueId,
                                       const char* jsonKey, const char* unit,
                                       const char* deviceClass);
+std::string suggestedScheduleDiscoveryJson();    // #177 sensor: learned routine (review-only)
 std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
 std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wired/ha/none
 // slytherm/state/fusion JSON (docs/06 topic map): state = value_json.temp,
