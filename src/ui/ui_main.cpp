@@ -250,21 +250,33 @@ void buildModeSheet(lv_obj_t*scr){ gModeSheet=sheetShell(scr,480,270,"System Mod
 void catCardEvt(lv_event_t*e){ switch((int)(intptr_t)lv_event_get_user_data(e)){
   case 0: openMode(e); break;     case 1: openNet(e); break;      case 2: openFan(e); break;
   case 3: openDisplay(e); break;  case 4: openSecurity(e); break; case 5: openSystem(e); break; } }
-void buildSettings(lv_obj_t*tab){ lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLLABLE); header(tab,"Settings");
+void buildSettings(lv_obj_t*tab){
+  // The 6 category cards are taller than the tab viewport, so allow VERTICAL
+  // scroll (the last card, System, was clipped). Momentum + elastic stay OFF —
+  // the throw animation re-entering the RGB flush is the tabview-scroll panic
+  // (coredump-debugged). scroll_dir VER so it never fights the tabview's
+  // horizontal tab-swipe.
+  lv_obj_add_flag(tab,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(tab,LV_DIR_VER);
+  lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLL_MOMENTUM);
+  lv_obj_clear_flag(tab,LV_OBJ_FLAG_SCROLL_ELASTIC);
+  lv_obj_set_scrollbar_mode(tab,LV_SCROLLBAR_MODE_AUTO);
+  lv_obj_set_style_pad_bottom(tab,18,0);  // breathing room so the last card scrolls fully clear
+  header(tab,"Settings");
   // One tap-through card per category: title + live summary + chevron. Sensors
   // deliberately stays its own top tab; Fan reuses the #128 sheet. The whole
   // card is the tap target; index (user-data) selects the sub-sheet.
   struct Cat{const char*title; lv_obj_t**sum;};
   Cat cats[6]={{"System Mode",&wCatMode},{"Networking",&wCatNet},{"Fan",&wCatFan},
                {"Display",&wCatDisp},{"Security",&wCatSec},{"System",&wCatSys}};
-  for(int i=0;i<6;i++){ lv_obj_t*c=lv_btn_create(tab); lv_obj_set_size(c,748,58); lv_obj_align(c,LV_ALIGN_TOP_LEFT,6,46+i*64);
+  for(int i=0;i<6;i++){ lv_obj_t*c=lv_btn_create(tab); lv_obj_set_size(c,748,66); lv_obj_align(c,LV_ALIGN_TOP_LEFT,6,46+i*74);
     lv_obj_set_style_bg_color(c,lv_color_hex(COL_CARD),0); lv_obj_set_style_bg_color(c,lv_color_hex(COL_RAISED),LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(c,0,0); lv_obj_set_style_radius(c,10,0); lv_obj_set_style_pad_all(c,0,0);
     lv_obj_add_event_cb(c,catCardEvt,LV_EVENT_CLICKED,(void*)(intptr_t)i);
-    lv_obj_t*t=lv_label_create(c); lv_label_set_text(t,cats[i].title); lv_obj_set_style_text_font(t,&lv_font_montserrat_20,0);
-    lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,16,9);
-    lv_obj_t*sm=lv_label_create(c); lv_obj_set_style_text_font(sm,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(sm,lv_color_hex(COL_MUTED),0);
-    lv_obj_set_width(sm,600); lv_label_set_long_mode(sm,LV_LABEL_LONG_DOT); lv_obj_align(sm,LV_ALIGN_TOP_LEFT,16,34); lv_label_set_text(sm,"");
+    lv_obj_t*t=lv_label_create(c); lv_label_set_text(t,cats[i].title); lv_obj_set_style_text_font(t,&lv_font_montserrat_24,0);
+    lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0); lv_obj_align(t,LV_ALIGN_TOP_LEFT,16,10);
+    lv_obj_t*sm=lv_label_create(c); lv_obj_set_style_text_font(sm,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(sm,lv_color_hex(COL_MUTED),0);
+    lv_obj_set_width(sm,600); lv_label_set_long_mode(sm,LV_LABEL_LONG_DOT); lv_obj_align(sm,LV_ALIGN_TOP_LEFT,16,40); lv_label_set_text(sm,"");
     *cats[i].sum=sm;
     lv_obj_t*ch=lv_label_create(c); lv_label_set_text(ch,LV_SYMBOL_RIGHT); lv_obj_set_style_text_color(ch,lv_color_hex(COL_TEXT3),0); lv_obj_align(ch,LV_ALIGN_RIGHT_MID,-16,0); } }
 
@@ -551,7 +563,12 @@ void renderMain(const DisplayState& s){ char b[128];
   if(wCatSec){ bool unlocked=false,pin=false; L(); unlocked=gM->lockState()==LockState::kUnlocked; pin=gM->userPinSet(); U();
     snprintf(b,sizeof(b),"%s    PIN %s",unlocked?"Unlocked":"Locked",pin?"set":"none");
     setTxt(wCatSec,b); lv_obj_set_style_text_color(wCatSec,lv_color_hex(unlocked?COL_MUTED:COL_WARN),0); }
-  if(wCatSys) setTxt(wCatSys,"Firmware " SLYTHERM_FW_BUILD);
+  if(wCatSys){ using O=DisplayState::OtaUi;
+    const char*hint = s.otaState==O::kUpdateAvailable?"  \xE2\x80\xA2 update available":
+                      s.otaState==O::kDownloading?"  \xE2\x80\xA2 downloading":
+                      s.otaState==O::kStaged?"  \xE2\x80\xA2 update ready":"";
+    snprintf(b,sizeof(b),"Firmware " SLYTHERM_FW_BUILD "%s",hint); setTxt(wCatSys,b); }
+  renderSysOta(s);
   }
 
 // #76: push one 12 h-graph sample (~5 min cadence). Rings shift left so the

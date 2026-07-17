@@ -622,6 +622,16 @@ void pumpIntents() {
         break;
       case IntentType::kClearVacation: j = rl::intentClearVacationJson(gIntentId + 1); break;  // #118
       case IntentType::kAckAlarms: j = rl::intentAckAlarmsJson(gIntentId + 1); break;          // #118
+      case IntentType::kOtaCheck:   // firmware upgrade is LOCAL to this Remote — not forwarded
+#ifdef SLYTHERM_OTA
+        ota::requestCheck();
+#endif
+        continue;
+      case IntentType::kOtaApply:
+#ifdef SLYTHERM_OTA
+        ota::requestApply();
+#endif
+        continue;
       default:
         // Every user-visible intent must round-trip or not exist (#118) —
         // reaching this is a bug in whoever added a new IntentType.

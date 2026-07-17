@@ -197,6 +197,17 @@ struct DisplayState {
   // banner. active=true while `now` is inside the range.
   bool vacationActive = false;
   char vacationBanner[32] = "";          // "Vacation until Jul 12" ("" when inactive)
+
+  // Firmware Upgrade (System settings sheet). UI-isolated mirror of ota::State,
+  // mapped from ota::status() in the main each tick. The System sheet button
+  // reads this to show "Check for updates / Checking… / Up to date / Upgrade
+  // now / Downloading N% / Staged — applies when idle / Update failed" and to
+  // decide whether a tap means check vs apply.
+  enum class OtaUi : uint8_t { kIdle, kChecking, kUpToDate, kUpdateAvailable,
+                               kDownloading, kVerifying, kStaged, kRebooting, kFailed };
+  OtaUi    otaState    = OtaUi::kIdle;
+  uint8_t  otaProgress = 0;              // 0-100 during download
+  char     otaAvail[16] = {};            // version offered ("" if none)
 };
 
 // ---------- Intents: the only thing the UI hands to control ----------
@@ -206,6 +217,8 @@ enum class IntentType : uint8_t {
   kClearHold,  // "Resume schedule" -> clearHold()
   kSetVacation,   // on-device vacation (#78): heatC/coolC = eco setpoints, vacStartDays/vacNights = window
   kClearVacation, // cancel/resume from vacation
+  kOtaCheck,      // System sheet: check for a firmware update now
+  kOtaApply,      // System sheet: download+stage the offered update (reboot stays furnace-idle-gated)
 };
 
 struct UiIntent {
@@ -284,6 +297,8 @@ class UiCommands {
   virtual void setMode(UserMode mode) = 0;
   virtual void setPreset(Preset preset) = 0;
   virtual void ackAlarms() = 0;  // acknowledgement only — visibility is never gated
+  virtual void otaCheck() = 0;   // System sheet: check for a firmware update now
+  virtual void otaApply() = 0;   // System sheet: download+stage the offered update
 };
 
 // ---------- Config ----------
@@ -357,6 +372,14 @@ class UiModel : public UiCommands {
     state_.compressorHeldSide = side;
     state_.compressorHeldRemainS = remainS;
   }
+  // Firmware-upgrade echo (System sheet button); rendered every tick, no dirty bit.
+  void setOta(DisplayState::OtaUi st, uint8_t progress, const char* avail) {
+    state_.otaState = st;
+    state_.otaProgress = progress;
+    size_t i = 0;
+    if (avail) while (avail[i] && i < sizeof(state_.otaAvail) - 1) { state_.otaAvail[i] = avail[i]; ++i; }
+    state_.otaAvail[i] = 0;
+  }
   // Vacation banner echo (#78); control fills it from the date compare. No dirty bit.
   void setVacation(bool active, const char* banner) {
     state_.vacationActive = active;
@@ -381,6 +404,8 @@ class UiModel : public UiCommands {
   void setMode(UserMode mode) override;
   void setPreset(Preset preset) override;
   void ackAlarms() override;
+  void otaCheck() override;
+  void otaApply() override;
   // Hold duration chooser (issue #81): comfort-class change intents (gated like
   // setpoints/presets). requestHold picks a duration; resumeSchedule clears it.
   void requestHold(HoldType t);

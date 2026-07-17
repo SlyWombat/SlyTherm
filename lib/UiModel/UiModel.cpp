@@ -291,6 +291,20 @@ void UiModel::ackAlarms() {
   enqueue(intent);
 }
 
+void UiModel::otaCheck() {
+  if (!settingsChangeAllowed()) { ++lockBlockedCommands_; setDirty(kDirtyLock); return; }
+  UiIntent intent;
+  intent.type = IntentType::kOtaCheck;
+  enqueue(intent);
+}
+
+void UiModel::otaApply() {
+  if (!settingsChangeAllowed()) { ++lockBlockedCommands_; setDirty(kDirtyLock); return; }
+  UiIntent intent;
+  intent.type = IntentType::kOtaApply;
+  enqueue(intent);
+}
+
 // ---------- screen lock (issue #45) ----------
 
 void UiModel::setUserPin(const uint8_t digits[kPinLen], uint32_t salt) {

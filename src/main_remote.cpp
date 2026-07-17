@@ -240,6 +240,24 @@ void loop() {
       strftime(c, sizeof(c), gClock24 ? "%a  %H:%M" : "%a  %I:%M %p", &ti);
       gUi.setClock(c);
     }
+#ifdef SLYTHERM_OTA
+    { const ota::Status os = ota::status();  // System-sheet firmware-upgrade button
+      using U = ui::DisplayState::OtaUi;
+      U u = U::kIdle;
+      switch (os.state) {
+        case ota::State::kChecking:        u = U::kChecking; break;
+        case ota::State::kUpToDate:        u = U::kUpToDate; break;
+        case ota::State::kUpdateAvailable: u = U::kUpdateAvailable; break;
+        case ota::State::kDownloading:     u = U::kDownloading; break;
+        case ota::State::kVerifying:       u = U::kVerifying; break;
+        case ota::State::kStaged:          u = U::kStaged; break;
+        case ota::State::kRebooting:       u = U::kRebooting; break;
+        case ota::State::kFailed:
+        case ota::State::kRolledBack:      u = U::kFailed; break;
+        default: break;
+      }
+      gUi.setOta(u, os.progressPct, os.available); }
+#endif
     gUi.tick(nowMs / 1000);
     // #120: persist the lock on change (same shadow-compare discipline as the
     // Controller's saveLockBlob; human-rate writes, NVS wear negligible).

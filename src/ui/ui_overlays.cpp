@@ -200,7 +200,7 @@ void buildFanSheet(lv_obj_t*scr){ gFanSheet=lv_obj_create(scr); lv_obj_set_size(
 lv_obj_t *gNetSheet=nullptr,*wNetFacts=nullptr;
 lv_obj_t *gDispSheet=nullptr,*gClkLbl=nullptr;   // gClkLbl: Display sheet 12/24h label
 lv_obj_t *gSecSheet=nullptr,*wSecState=nullptr;
-lv_obj_t *gSysSheet=nullptr;
+lv_obj_t *gSysSheet=nullptr,*gSysOtaBtn=nullptr,*gSysOtaLbl=nullptr;
 #ifdef SLYTHERM_WG
 lv_obj_t *wSetVpn=nullptr;   // #148 VPN status word — now inside the Networking sheet
 #endif
@@ -228,7 +228,30 @@ void clkEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } uiToggleCloc
 void setPinEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; } kpadOpen(KpMode::Set,"Set a 4-digit PIN"); }   // Security
 void lockEvt(lv_event_t*){ L(); bool set=gM->userPinSet(); if(set) gM->lockNow(nowS()); U(); }
 void unlockEvt(lv_event_t*){ kpadOpen(KpMode::Unlock,"Enter PIN to unlock"); }
-void sysOtaStub(lv_event_t*){ telnet_log::logf("[ui] OTA/firmware screen not built yet (#65)"); }   // honest labeled stub
+// System sheet firmware button: tap means CHECK from idle/up-to-date/failed,
+// and APPLY when an update is offered. Mid-flight states (checking/downloading/
+// verifying/staged/rebooting) ignore taps. The apply's reboot stays gated on the
+// furnace-idle window (main's otaSafeToReboot), so it never slams a live cycle.
+void sysOtaEvt(lv_event_t*){ if(uiLocked()){ promptUnlock(); return; }
+  using O=DisplayState::OtaUi; const O st=gM->state().otaState;
+  if(st==O::kUpdateAvailable) gM->otaApply();
+  else if(st==O::kIdle||st==O::kUpToDate||st==O::kFailed) gM->otaCheck(); }
+
+// Refresh the firmware button from the live OTA state (called each renderMain).
+void renderSysOta(const DisplayState& s){ if(!gSysOtaLbl) return;
+  using O=DisplayState::OtaUi; char b[56]; uint32_t col=COL_TEXT3;
+  switch(s.otaState){
+    case O::kChecking:        strcpy(b,"Checking\xE2\x80\xA6"); break;
+    case O::kUpToDate:        strcpy(b,LV_SYMBOL_OK "  Up to date"); col=COL_MUTED; break;
+    case O::kUpdateAvailable: snprintf(b,sizeof(b),LV_SYMBOL_DOWNLOAD "  Upgrade now%s%s",s.otaAvail[0]?"  ":"",s.otaAvail); col=COL_CRYO; break;
+    case O::kDownloading:     snprintf(b,sizeof(b),"Downloading %u%%\xE2\x80\xA6",(unsigned)s.otaProgress); break;
+    case O::kVerifying:       strcpy(b,"Verifying\xE2\x80\xA6"); break;
+    case O::kStaged:          strcpy(b,"Ready \xE2\x80\xA2 reboots when idle"); col=COL_CRYO; break;
+    case O::kRebooting:       strcpy(b,"Rebooting\xE2\x80\xA6"); break;
+    case O::kFailed:          strcpy(b,LV_SYMBOL_WARNING "  Update failed \xE2\x80\xA2 retry"); col=COL_WARN; break;
+    default:                  strcpy(b,LV_SYMBOL_DOWNLOAD "  Check for updates"); break;  // kIdle
+  }
+  lv_label_set_text(gSysOtaLbl,b); lv_obj_set_style_text_color(gSysOtaLbl,lv_color_hex(col),0); }
 void sysRestore(lv_event_t*){ uiClearReducedMode(); }   // #80: clear safe-UI latch + reboot into full UI
 #ifdef SLYTHERM_WG
 void vpnRetryEvt(lv_event_t*){ remote_vpn::requestRetry(); }   // #148: posts; the radio task executes
@@ -306,9 +329,9 @@ void openSystem(lv_event_t*){ if(!gSysSheet) return; lv_obj_clear_flag(gSysSheet
 void buildSystemSheet(lv_obj_t*scr){ gSysSheet=sheetShell(scr,480,340,"System","Firmware and recovery");
   lv_obj_t*fw=lv_label_create(gSysSheet); lv_label_set_text(fw,"Firmware " SLYTHERM_FW_BUILD);
   lv_obj_set_style_text_font(fw,&lv_font_montserrat_20,0); lv_obj_set_style_text_color(fw,lv_color_hex(COL_INK),0); lv_obj_align(fw,LV_ALIGN_TOP_LEFT,18,96);
-  lv_obj_t*ob=lv_btn_create(gSysSheet); lv_obj_set_size(ob,300,50); lv_obj_align(ob,LV_ALIGN_TOP_LEFT,18,140);
-  lv_obj_set_style_bg_color(ob,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(ob,sysOtaStub,LV_EVENT_CLICKED,nullptr);
-  { lv_obj_t*l=lv_label_create(ob); lv_label_set_text(l,LV_SYMBOL_DOWNLOAD "  Firmware update  (soon)"); lv_obj_set_style_text_color(l,lv_color_hex(COL_TEXT3),0); lv_obj_center(l); }
+  gSysOtaBtn=lv_btn_create(gSysSheet); lv_obj_set_size(gSysOtaBtn,300,50); lv_obj_align(gSysOtaBtn,LV_ALIGN_TOP_LEFT,18,140);
+  lv_obj_set_style_bg_color(gSysOtaBtn,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(gSysOtaBtn,sysOtaEvt,LV_EVENT_CLICKED,nullptr);
+  gSysOtaLbl=lv_label_create(gSysOtaBtn); lv_label_set_text(gSysOtaLbl,LV_SYMBOL_DOWNLOAD "  Check for updates"); lv_obj_center(gSysOtaLbl);
   lv_obj_t*rb=lv_btn_create(gSysSheet); lv_obj_set_size(rb,300,50); lv_obj_align(rb,LV_ALIGN_TOP_LEFT,18,204);
   lv_obj_set_style_bg_color(rb,lv_color_hex(COL_RAISED),0); lv_obj_set_style_border_color(rb,lv_color_hex(COL_WARN),0); lv_obj_set_style_border_width(rb,1,0);
   lv_obj_add_event_cb(rb,sysRestore,LV_EVENT_CLICKED,nullptr);

@@ -2292,6 +2292,16 @@ void consumeCommands(uint32_t nowS) {
       case ui::IntentType::kAckAlarms:
         gSup->alarms().ackAll();
         break;
+      case ui::IntentType::kOtaCheck:  // System sheet: check for a firmware update
+#ifdef SLYTHERM_OTA
+        ota::requestCheck();
+#endif
+        break;
+      case ui::IntentType::kOtaApply:  // System sheet: download+stage (reboot stays idle-gated)
+#ifdef SLYTHERM_OTA
+        ota::requestApply();
+#endif
+        break;
       case ui::IntentType::kSetHold:  // hold-duration chooser (#81)
         gModeSm->startHold(intent.hold, nowS);
         break;
@@ -3158,6 +3168,24 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
                  : oat.rung == OatRung::kHaWeather ? ui::OutdoorSource::kHaWeather
                                                    : ui::OutdoorSource::kNone);
   gUi.setGasModulationPct(out.gasHeatPct);
+#ifdef SLYTHERM_OTA
+  { const ota::Status os = ota::status();  // System-sheet firmware-upgrade button
+    using U = ui::DisplayState::OtaUi;
+    U u = U::kIdle;
+    switch (os.state) {
+      case ota::State::kChecking:        u = U::kChecking; break;
+      case ota::State::kUpToDate:        u = U::kUpToDate; break;
+      case ota::State::kUpdateAvailable: u = U::kUpdateAvailable; break;
+      case ota::State::kDownloading:     u = U::kDownloading; break;
+      case ota::State::kVerifying:       u = U::kVerifying; break;
+      case ota::State::kStaged:          u = U::kStaged; break;
+      case ota::State::kRebooting:       u = U::kRebooting; break;
+      case ota::State::kFailed:
+      case ota::State::kRolledBack:      u = U::kFailed; break;
+      default: break;
+    }
+    gUi.setOta(u, os.progressPct, os.available); }
+#endif
   gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive,
                     gWifiConnected ? static_cast<int8_t>(WiFi.RSSI()) : 0);  // #127
   { struct tm ti; char cb[24] = "";  // top-bar clock (#69); blank until NTP syncs
