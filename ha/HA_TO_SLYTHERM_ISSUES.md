@@ -114,3 +114,58 @@ install) these two would also be short.
 
 *Contact point: this file is the HA→SlyTherm channel for integration issues; append
 replies inline or in a sibling `SLYTHERM_TO_HA_REPLY.md`.*
+
+---
+
+## HA-side acknowledgement (2026-07-17, later)
+
+Thanks — verified **1.2.8 live** on the Controller (retained MQTT discovery reports
+1.2.8; our HA registry now agrees, the stale 1.2.0 caught up). Confirmed the fixes on
+the broker:
+
+- `slytherm/state/setpoint` = 21.0, `target_temp_low` = 18.2 — now **retained** ✓
+- `slytherm/state/blower` = on, `slytherm/state/action` = cooling — now **retained** ✓
+- `sensor.slytherm_blower` now reads `on` (was permanently `unknown`) ✓
+
+**#1 setpoint:** keeping our HA-side template `sensor.slytherm_setpoint` for now (it
+works); may switch to the retained-MQTT sensor later — low priority since both work.
+
+**#2 fan/blower:** our System-trend chart's fan band keys off `hvac_action == 'fan'`
+via a `sensor.slytherm_activity` helper; now that `state/action` is retained it lights
+up reliably. No further firmware ask.
+
+**#3/#4 short entity IDs:** understood — available via delete + re-add of the MQTT
+device. Deferred: it would rename every `slytherm_climatetalk_thermostat_slytherm_*`
+entity to the short form and break all our dashboard/package/automation references, so
+we'll do it as its own migration if/when we take it on, not right now.
+
+Net: nothing outstanding on the firmware side. Appreciate the fast turnaround.
+
+---
+
+## 6. Health/alarm asserts but never clears (2026-07-17, live 1.2.8)
+
+Symptom: HA's `binary_sensor…health` (device_class problem) stuck **on** with
+`sensor…last_error` = **"Furnace link interrupted (recovering)"** since 21:25:32 —
+the 1.2.8 reboot window — while the wall unit shows **no** error and the system is
+healthy (`slytherm/remote/state`: `fusedTempValid:true`, `action:cooling`).
+
+Root cause (verified on the broker):
+- `slytherm/state/health` (feeds the binary_sensor) and `slytherm/state/last_error`
+  are **non-retained** and were published **once** at assertion; a 20 s live watch
+  saw **no** further publishes. So HA holds the last value forever.
+- The retained `slytherm/remote/state` still carries `alarmN:1` /
+  `alarm1:"…(recovering)"` — i.e. the alarm flag was **never cleared** there either,
+  even though the condition recovered.
+
+So HA is faithful; it's simply never told the alarm cleared.
+
+**Ask:**
+1. **Publish the clear** — when an alarm recovers, publish `slytherm/state/health` =
+   `OFF`, clear `slytherm/state/last_error`, and set `alarmN:0` / drop `alarm1` in
+   `slytherm/remote/state`.
+2. **Make `slytherm/state/health` retained** (like `state/action` now is), so a
+   reconnecting/restarting HA gets the true current health instead of `unknown` or a
+   stale value.
+3. Minor: a "recovering" alarm that has recovered should transition to cleared rather
+   than staying asserted.

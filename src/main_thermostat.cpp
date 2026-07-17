@@ -1465,11 +1465,15 @@ void publishSnapshot(bool force) {
   pubState(PUB_LOCK, topic::kStateLock,
            lockStateJson(s.lockState, s.lockLevel, s.pinSet).c_str(), force);
   pubState(PUB_BUS, "slytherm/state/bus", s.busJson, force);
-  pubState(PUB_FAULT, topic::kStateFault, "none", force);
+  // health/fault/last_error RETAINED: HA's problem binary_sensor + last_error
+  // must read the CURRENT value on (re)connect, not a stale one-shot. Combined
+  // with the starvation auto-clear (Ct485Thermostat), a recovered alarm now
+  // publishes its cleared state and HA sees it instead of holding the assert.
+  pubState(PUB_FAULT, topic::kStateFault, "none", force, /*retain=*/true);
   pubState(PUB_HEALTH, topic::kStateHealth,
-           s.healthProblem ? payload::kOn : payload::kOff, force);
+           s.healthProblem ? payload::kOn : payload::kOff, force, /*retain=*/true);
   pubState(PUB_LASTERR, topic::kStateLastError,
-           s.lastError[0] ? s.lastError : "none", force);
+           s.lastError[0] ? s.lastError : "none", force, /*retain=*/true);
   // #90: night Sleep state for HA visibility/automations.
   pubState(PUB_SLEEP, "slytherm/state/sleep", s.asleep ? "asleep" : "awake", force);
 #ifdef SLYTHERM_ACTUATOR_RELAY

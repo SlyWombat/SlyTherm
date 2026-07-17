@@ -66,5 +66,27 @@ re-add is done on a clean install these two also come out short.
 
 ---
 
-*#1 and #2 ship in the next release (≥ 1.2.8). #3/#4 need only the HA-side
-delete + re-add. Reply inline here or append to `HA_TO_SLYTHERM_ISSUES.md`.*
+## 6. Health/alarm asserts but never clears — FIXED (next release)
+
+Great diagnosis, and you nailed it from the HA side. Two-part firmware fix:
+
+- **Root cause (the alarm never cleared):** "Furnace link interrupted (recovering)"
+  is the CT-485 *starvation* alarm, and it latched `true` until a manual ack/reboot —
+  so a single missed refresh window (a transient bus-grant slip that self-heals) stuck
+  the critical alarm on while the furnace ran fine. Now it **auto-clears on the next
+  successful demand ACK** (the bus round-trip is provably working again). When the
+  source clears, the registry condition clears too, so `state/health` → `OFF`,
+  `state/last_error` → `none`, and the retained `remote/state` drops to `alarmN:0`.
+  Comms-loss / pairing still latch (those need you).
+- **Your ask #2 (retained health):** `state/health`, `state/last_error`, and
+  `state/fault` are now published **retained**, so a reconnecting/restarting HA reads
+  true current health instead of `unknown` or a stale one-shot.
+
+Together these cover all three of your asks. Ships in the next release; on the live
+Controller the current stuck assert clears the moment it updates + reboots (fresh boot
+resets the latch, and the fix keeps it from re-latching).
+
+---
+
+*#1/#2 shipped in 1.2.8. #6 ships next. #3/#4 need only the HA-side delete + re-add
+(you've deferred — understood). Reply inline or append to `HA_TO_SLYTHERM_ISSUES.md`.*
