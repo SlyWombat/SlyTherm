@@ -2578,12 +2578,16 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
     snprintf(s.statusLine, sizeof(s.statusLine), "Heating to %.1f\xC2\xB0", (double)s.heatSp);
   else if (strcmp(s.action, "cooling") == 0)
     snprintf(s.statusLine, sizeof(s.statusLine), "Cooling to %.1f\xC2\xB0", (double)s.coolSp);
+  else if (gModeSm->mode() == UserMode::kOff)
+    // OFF wins over the compressor min-off timer: after turning the system off
+    // the guard's min-off is still counting down, but the user set it off, so
+    // "System off" — never a "Heating/Cooling soon" (which also mis-labels
+    // "Heating" in cooling season since mode is no longer kCool).
+    strlcpy(s.statusLine, "System off", sizeof(s.statusLine));
   else if (s.compMinOffRemainS > 0)
     snprintf(s.statusLine, sizeof(s.statusLine), "%s soon \xE2\x80\xA2 %lu min",
              gModeSm->mode() == UserMode::kCool ? "Cooling" : "Heating",
              (unsigned long)((s.compMinOffRemainS + 59u) / 60u));
-  else if (gModeSm->mode() == UserMode::kOff)
-    strlcpy(s.statusLine, "System off", sizeof(s.statusLine));
   else if (gModeSm->mode() == UserMode::kAuto)
     snprintf(s.statusLine, sizeof(s.statusLine), "Idle - holding %.0f-%.0f\xC2\xB0",
              (double)s.heatSp, (double)s.coolSp);
