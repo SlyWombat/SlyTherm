@@ -780,6 +780,24 @@ std::string filterResetButtonDiscoveryJson() {  // #175 (button: entityDiscovery
       .close();
 }
 
+std::string energySensorDiscoveryJson(const char* name, const char* uniqueId,
+                                      const char* jsonKey, const char* unit,
+                                      const char* deviceClass) {  // #176
+  const std::string vt = std::string("{{ value_json.") + jsonKey + " }}";
+  return Obj()
+      .str("name", name).str("unique_id", uniqueId).str("object_id", uniqueId)
+      .str("state_topic", topic::kStateEnergy)
+      .str("value_template", vt)
+      .str("unit_of_measurement", unit)
+      .str("device_class", deviceClass)
+      .str("state_class", "total_increasing")  // HA Energy dashboard consumes this
+      .str("availability_topic", topic::kAvailability)
+      .str("payload_available", payload::kOnline)
+      .str("payload_not_available", payload::kOffline)
+      .raw("device", deviceJson())
+      .close();
+}
+
 std::string modulationDiscoveryJson() {
   EntitySpec e;
   e.name = "SlyTherm Gas Modulation";

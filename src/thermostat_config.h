@@ -113,4 +113,13 @@ constexpr float    kExtremeHeatCeilC       = 35.0f;  // ~95 F: dangerously hot i
 constexpr float    kExtremeTempHystC       = 1.0f;   // clear the alarm only 1 C back inside the band
 constexpr uint32_t kFilterSaveMinS         = 1800;   // persist filter runtime at most every 30 min
 
+// #176 energy accounting — rated equipment inputs (set from the install
+// submittal; these are defaults). Gas energy integrates the modulation %; HP and
+// cool integrate runtime at the rated electrical draw. Cost accumulates using
+// the live prices (DualFuelConfig epk/gpk) so a price change stays accurate.
+constexpr float    kGasInputM3PerHDefault  = 2.8f;   // NG m3/h at full fire (~100 kBTU/h)
+constexpr float    kHpInputKwDefault       = 3.0f;   // heat-pump rated electrical kW
+constexpr float    kCoolInputKwDefault     = 3.0f;   // AC compressor rated electrical kW
+constexpr uint32_t kEnergySaveMinS         = 1800;   // persist energy counters every 30 min
+
 }  // namespace thermostat

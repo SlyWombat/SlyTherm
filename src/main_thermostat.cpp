@@ -269,6 +269,7 @@ struct Snapshot {
   char equipment[12] = "idle";
   float modulationPct = 0;
   float filterLifePct = 0;  // #175 % of filter life consumed
+  char  energyJson[144] = "{}";  // #176 {gas_m3,hp_kwh,cool_kwh,cost_gas,cost_elec}
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
   char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
   char statusLine[40] = "Idle";      // composed action wording (wall-screen parity)
@@ -336,6 +337,12 @@ using CalibrationBlob = dettson::SensorCalibration::PersistBlob;
 uint32_t gFilterRuntimeS = 0;
 uint32_t gFilterLifeHours = cfg::kFilterLifeHoursDefault;
 volatile bool gFilterResetReq = false;  // set by the cmd handler, consumed by the control task
+// #176 energy accounting: cumulative per-fuel energy (never reset -> HA
+// total_increasing) + cost accumulated at the live price. Persisted in NVS
+// ("egm"/"ehk"/"eck"/"cog"/"coe"); prices cached from the DualFuel config.
+double gEnergyGasM3 = 0, gEnergyHpKwh = 0, gEnergyCoolKwh = 0;
+double gCostGas = 0, gCostElec = 0;
+float  gElecPrice = kElecPricePerKwhDefault, gGasPrice = kGasPricePerM3Default;
 static_assert(kSensorNameLen == dettson::SensorParticipation::kIdLen,
               "participation store key length must match the sensor wire-id length");
 // gCmdMux held. Records the wire-id-keyed choice, mirrors it into the slot, and
@@ -1241,6 +1248,17 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("sensor", "blower"), blowerDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "filter_life"), filterLifeDiscoveryJson());          // #175
   pubRetained(discoveryTopic("button", "filter_reset"), filterResetButtonDiscoveryJson());  // #175
+  // #176 per-fuel energy (HA Energy dashboard) + cost, all reading state/energy.
+  pubRetained(discoveryTopic("sensor", "energy_gas"),
+              energySensorDiscoveryJson("SlyTherm Gas Used", "slytherm_energy_gas", "gas_m3", "m\xC2\xB3", "gas"));
+  pubRetained(discoveryTopic("sensor", "energy_hp"),
+              energySensorDiscoveryJson("SlyTherm Heat-Pump Energy", "slytherm_energy_hp", "hp_kwh", "kWh", "energy"));
+  pubRetained(discoveryTopic("sensor", "energy_cool"),
+              energySensorDiscoveryJson("SlyTherm Cooling Energy", "slytherm_energy_cool", "cool_kwh", "kWh", "energy"));
+  pubRetained(discoveryTopic("sensor", "cost_gas"),
+              energySensorDiscoveryJson("SlyTherm Gas Cost", "slytherm_cost_gas", "cost_gas", "CAD", "monetary"));
+  pubRetained(discoveryTopic("sensor", "cost_elec"),
+              energySensorDiscoveryJson("SlyTherm Electric Cost", "slytherm_cost_elec", "cost_elec", "CAD", "monetary"));
   pubRetained(discoveryTopic("sensor", "fault"), faultDiscoveryJson());
   pubRetained(discoveryTopic("binary_sensor", "health"), healthDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "last_error"), lastErrorDiscoveryJson());
@@ -1311,7 +1329,7 @@ enum PubIdx : uint8_t {
   PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
-  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER,
+  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1408,6 +1426,7 @@ void publishSnapshot(bool force) {
   pubState(PUB_MOD, topic::kStateModulation, b, force);
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.filterLifePct));  // #175
   pubState(PUB_FILTER, topic::kStateFilterLife, b, force);
+  pubState(PUB_ENERGY, topic::kStateEnergy, s.energyJson, force, /*retain=*/true);  // #176
   if (s.oatValid) {
     snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.oatC));
     pubState(PUB_OAT, topic::kStateOutdoorTemp, b, force);
@@ -2433,6 +2452,10 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
       ? fminf(100.0f, 100.0f * static_cast<float>(gFilterRuntimeS) /
                           (static_cast<float>(gFilterLifeHours) * 3600.0f))
       : 0.0f;
+  snprintf(s.energyJson, sizeof(s.energyJson),  // #176 per-fuel energy + cost
+           "{\"gas_m3\":%.3f,\"hp_kwh\":%.3f,\"cool_kwh\":%.3f,"
+           "\"cost_gas\":%.2f,\"cost_elec\":%.2f}",
+           gEnergyGasM3, gEnergyHpKwh, gEnergyCoolKwh, gCostGas, gCostElec);
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
   s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 
@@ -2938,6 +2961,34 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   glueAlarm(gFilterRuntimeS >= gFilterLifeHours * 3600u, cfg::kAlarmFilterDue,
             safety::Severity::kAdvisory, "Replace furnace filter", nowS,
             /*autoClear=*/false);  // acknowledged by resetting the counter
+
+  // ---- #176 energy: integrate per-fuel energy + cost at the live price ----
+  {
+    static uint32_t sLastE = 0, sLastESave = 0;
+    const uint32_t dt = (sLastE != 0 && nowS > sLastE) ? nowS - sLastE : 0;
+    sLastE = nowS;
+    if (dt > 0 && dt < 60) {  // skip boot gaps / clock jumps
+      const double dth = static_cast<double>(dt) / 3600.0;
+      if (out.gasHeatPct > 0) {  // gas m3 = modulation fraction x rated input
+        const double m3 = (out.gasHeatPct / 100.0) * cfg::kGasInputM3PerHDefault * dth;
+        gEnergyGasM3 += m3; gCostGas += m3 * gGasPrice;
+      }
+      if (out.hpHeatPct > 0) {   // HP electrical kWh at the rated draw
+        const double kwh = cfg::kHpInputKwDefault * dth;
+        gEnergyHpKwh += kwh; gCostElec += kwh * gElecPrice;
+      }
+      if (out.coolPct > 0) {     // AC electrical kWh at the rated draw
+        const double kwh = cfg::kCoolInputKwDefault * dth;
+        gEnergyCoolKwh += kwh; gCostElec += kwh * gElecPrice;
+      }
+    }
+    if (nowS - sLastESave >= cfg::kEnergySaveMinS) {
+      gPrefs.putDouble("egm", gEnergyGasM3); gPrefs.putDouble("ehk", gEnergyHpKwh);
+      gPrefs.putDouble("eck", gEnergyCoolKwh); gPrefs.putDouble("cog", gCostGas);
+      gPrefs.putDouble("coe", gCostElec);
+      sLastESave = nowS;
+    }
+  }
   adviseRecovery(fused, oat, nowS);
 
   // ---- #143 record-only COP proxy (docs/13 §5) ----
@@ -3381,6 +3432,13 @@ void setup() {
   }
   gFilterRuntimeS  = gPrefs.getUInt("filt", 0u);                          // #175 filter life
   gFilterLifeHours = gPrefs.getUInt("filh", cfg::kFilterLifeHoursDefault);
+  gEnergyGasM3   = gPrefs.getDouble("egm", 0.0);   // #176 energy counters + cached prices
+  gEnergyHpKwh   = gPrefs.getDouble("ehk", 0.0);
+  gEnergyCoolKwh = gPrefs.getDouble("eck", 0.0);
+  gCostGas       = gPrefs.getDouble("cog", 0.0);
+  gCostElec      = gPrefs.getDouble("coe", 0.0);
+  gElecPrice     = gPrefs.getFloat("epk", kElecPricePerKwhDefault);
+  gGasPrice      = gPrefs.getFloat("gpm", kGasPricePerM3Default);
 #ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;

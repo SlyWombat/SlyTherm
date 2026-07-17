@@ -105,6 +105,7 @@ constexpr const char* kAvailability             = SLYTHERM_TOPIC_PREFIX "availab
 // row; they follow the same slytherm/state/ pattern.
 constexpr const char* kStateBlower    = SLYTHERM_TOPIC_PREFIX "state/blower";
 constexpr const char* kStateFilterLife = SLYTHERM_TOPIC_PREFIX "state/filter_life";  // #175 % consumed
+constexpr const char* kStateEnergy     = SLYTHERM_TOPIC_PREFIX "state/energy";        // #176 per-fuel energy+cost JSON
 constexpr const char* kStateHealth    = SLYTHERM_TOPIC_PREFIX "state/health";
 constexpr const char* kStateLastError = SLYTHERM_TOPIC_PREFIX "state/last_error";
 
@@ -516,6 +517,12 @@ std::string emHeatDiscoveryJson();                     // switch component (G15)
 std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
 std::string filterLifeDiscoveryJson();           // #175 sensor, % consumed, diagnostic
 std::string filterResetButtonDiscoveryJson();    // #175 button: "filter replaced"
+// #176 one energy sensor reading value_json.<jsonKey> from kStateEnergy, as an
+// HA total_increasing sensor (feeds the Energy dashboard). unit e.g. "kWh"/"m³"/
+// "CAD"; deviceClass "energy"/"gas"/"monetary".
+std::string energySensorDiscoveryJson(const char* name, const char* uniqueId,
+                                      const char* jsonKey, const char* unit,
+                                      const char* deviceClass);
 std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
 std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wired/ha/none
 // slytherm/state/fusion JSON (docs/06 topic map): state = value_json.temp,
