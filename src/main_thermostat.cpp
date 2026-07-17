@@ -1472,8 +1472,12 @@ void publishSnapshot(bool force) {
   pubState(PUB_FAULT, topic::kStateFault, "none", force, /*retain=*/true);
   pubState(PUB_HEALTH, topic::kStateHealth,
            s.healthProblem ? payload::kOn : payload::kOff, force, /*retain=*/true);
+  // Clear the last_error text once health clears — it's the CURRENT problem, not
+  // a permanent history line, so a recovered system reads "none" (not the stale
+  // "…(recovering)" that stuck around).
   pubState(PUB_LASTERR, topic::kStateLastError,
-           s.lastError[0] ? s.lastError : "none", force, /*retain=*/true);
+           (s.healthProblem && s.lastError[0]) ? s.lastError : "none",
+           force, /*retain=*/true);
   // #90: night Sleep state for HA visibility/automations.
   pubState(PUB_SLEEP, "slytherm/state/sleep", s.asleep ? "asleep" : "awake", force);
 #ifdef SLYTHERM_ACTUATOR_RELAY
@@ -2595,6 +2599,16 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   else if (gModeSm->mode() == UserMode::kAuto)
     snprintf(s.statusLine, sizeof(s.statusLine), "Idle - holding %.0f-%.0f\xC2\xB0",
              (double)s.heatSp, (double)s.coolSp);
+  // In a heat/cool deadband the room is past setpoint but hasn't reached the
+  // hysteresis ON threshold, so the system is holding for the next call, not
+  // truly idle — say "Waiting to cool/heat" so it doesn't read as "nothing to do".
+  else if (fused.valid && gModeSm->mode() == UserMode::kCool && fused.value > s.coolSp)
+    strlcpy(s.statusLine, "Waiting to cool", sizeof(s.statusLine));
+  else if (fused.valid &&
+           (gModeSm->mode() == UserMode::kHeat ||
+            gModeSm->mode() == UserMode::kEmergencyHeat) &&
+           fused.value < s.heatSp)
+    strlcpy(s.statusLine, "Waiting to heat", sizeof(s.statusLine));
   else
     strlcpy(s.statusLine, "Idle", sizeof(s.statusLine));
 

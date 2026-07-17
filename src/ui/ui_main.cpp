@@ -409,6 +409,9 @@ void renderMain(const DisplayState& s){ char b[128];
     else if(!s.fusedTempValid){ strcpy(b,"Connecting to controller..."); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }   // no controller link yet -> never falsely read "off"
     else if(s.mode==UserMode::kOff){ strcpy(b,"System off"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     else if(s.mode==UserMode::kAuto){ snprintf(b,sizeof(b),"Idle - holding %.0f-%.0f\xC2\xB0",(double)s.heatSetpointC,(double)s.coolSetpointC); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
+    // #Deadband: room past setpoint but below the hysteresis ON threshold -> holding for the next call, not idle
+    else if(s.mode==UserMode::kCool && s.fusedTempC>s.coolSetpointC){ strcpy(b,"Waiting to cool"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_CRYO),0); }
+    else if((s.mode==UserMode::kHeat||s.mode==UserMode::kEmergencyHeat) && s.fusedTempC<s.heatSetpointC){ strcpy(b,"Waiting to heat"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_EMBER),0); }
     else { strcpy(b,"Idle"); lv_obj_set_style_text_color(wAction,lv_color_hex(COL_MUTED),0); }
     setTxt(wAction,b); }
   fillPresenceLine(s,b,sizeof(b)); setTxt(wFollow,b);   // #88: sticky HA-last-seen presence
