@@ -25,6 +25,15 @@ bool enabled();
 bool clientActive();       // a stream/snapshot client is being served now
 uint32_t frames();         // captured frame count (diagnostics)
 
+// #180: pause the CSI capture for the duration of an OTA download. The camera's
+// DMA + framebuffers starve the esp-hosted SDIO RX pool and a download
+// crash-loops (sdio_drv.c:953) unless we free that bandwidth. Call
+// suspendForOta() before starting the download; resumeAfterOta() restores
+// capture if the download FAILED (on success the node reboots into the new
+// image, so resume is only the fallback path). No-ops before begin().
+void suspendForOta();
+void resumeAfterOta();
+
 // AE follow-up: the OV02C10 has no working internal AEC (0x3503 accepts
 // writes but exposure never adapts — bench-verified), so a slow (2 Hz)
 // host-side AE task writes the sensor's exposure/gain registers over the

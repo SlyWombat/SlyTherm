@@ -58,6 +58,13 @@
 
 extern "C" bool otaSafeToReboot();
 
+// #180: optional camera-pause hooks. Provided (weak-overridden) by the camera
+// Remote build so the CSI capture is halted for the duration of a download —
+// otherwise the camera DMA starves the esp-hosted SDIO RX pool and the download
+// crash-loops (sdio_drv.c:953). Undefined (null) on every other build.
+extern "C" void otaCameraSuspend() __attribute__((weak));
+extern "C" void otaCameraResume() __attribute__((weak));
+
 namespace ota {
 namespace {
 
@@ -284,7 +291,7 @@ bool doCheck() {
 }
 
 // ---- download + verify + stage ----
-bool doApply() {
+bool doApplyInner() {
   if (gAvailable.appUrl.empty()) {
     fail("apply: no update resolved (check first)");
     return false;
@@ -506,6 +513,16 @@ bool doApply() {
                 gAvailable.version.c_str(), next->label);
   setStatus(State::kStaged, 100, gAvailable.version.c_str(), "");
   return true;
+}
+
+// #180: bracket the whole download with the camera pause. On success the node
+// stays paused until the (imminent) reboot into the new image; on any failure
+// path we resume capture so the camera keeps working until the next attempt.
+bool doApply() {
+  if (otaCameraSuspend) otaCameraSuspend();
+  const bool ok = doApplyInner();
+  if (!ok && otaCameraResume) otaCameraResume();
+  return ok;
 }
 
 void otaTask(void*) {

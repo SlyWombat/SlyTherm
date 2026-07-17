@@ -157,6 +157,12 @@ isp_proc_handle_t gIsp = nullptr;      // kept for runtime CCM (AWB) updates
 float gWbR = 0.77f, gWbB = 0.78f;      // live CCM diagonal (seed = round-2 bench fit)
 volatile bool gEnabled = true;   // privacy switch — default ON (pilot device)
 volatile bool gClientActive = false;
+// #180: halt the camera during an OTA download. The CSI DMA + framebuffers
+// starve the esp-hosted SDIO RX pool, so a download crash-loops
+// (sdio_drv.c:953) before it can finish. Stopping the CSI controller frees the
+// DMA/CPU bandwidth so the download completes. Independent of gEnabled (the
+// privacy switch) — resume restores whatever the user's setting is.
+volatile bool gCamPaused = false;
 volatile uint32_t gFrames = 0;   // every frame the CSI DMA finished
 volatile uint32_t gSeq = 0;      // published (completed) frames
 volatile int gLatest = 0;        // index of the last completed buffer
@@ -512,6 +518,7 @@ void aeTask(void*) {
   uint32_t tick = 0;
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(kAePeriodMs));
+    if (gCamPaused) continue;  // #180: no SCCB/AE work while suspended for OTA
     if (gSeq == 0) continue;
     if (++tick % kAwbEveryNthTick == 0 &&
         millis() - gAeLastAdjMs > kAwbAeSettleMs) {
@@ -569,6 +576,7 @@ void captureTask(void*) {
   uint32_t lastF = f0;
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5000));
+    if (gCamPaused) { lastF = gFrames; continue; }  // #180: no stall spam during OTA
     const uint32_t f = gFrames;
     if (!fpsLogged && f > f0) {
       fpsLogged = true;
@@ -808,6 +816,9 @@ void handleClient(WiFiClient& c) {
                    wantSnap ? "snapshot" : wantStream ? "stream" : "index");
   if (wantSnap || wantStream) {
     if (!gEnabled) { send403(c); return; }
+    // #180: refuse to serve while suspended for an OTA download — the CSI
+    // controller is stopped and streaming would fight the download for SDIO.
+    if (gCamPaused) { send503(c, "camera paused for firmware update"); return; }
     // Round-4 hard concurrency bound: one serve at a time. httpTask is
     // single-threaded so this normally can't already be set, but if it is
     // (belt-and-braces), reject fast instead of letting the client hold RAM.
@@ -876,6 +887,26 @@ void setEnabled(bool on) {
   if (gEnabled == on) return;
   gEnabled = on;
   telnet_log::logf("[cam] %s via privacy switch", on ? "ENABLED" : "DISABLED");
+}
+
+// #180: pause/resume the CSI capture around an OTA download. The camera's DMA +
+// framebuffers starve the esp-hosted SDIO RX pool, so a download crash-loops
+// (sdio_drv.c:953) unless we free that bandwidth first. suspendForOta() stops the
+// CSI controller and parks the http/ae tasks; resumeAfterOta() restores capture
+// if the download failed (on success the node reboots, so resume is the fallback
+// path only). Independent of gEnabled — resume leaves the privacy switch as-is.
+void suspendForOta() {
+  if (!gInitOk || gCamPaused) return;
+  gCamPaused = true;              // http/ae tasks back off before we stop the DMA
+  vTaskDelay(pdMS_TO_TICKS(50));  // let an in-flight frame drain
+  esp_cam_ctlr_stop(gCam);
+  telnet_log::logf("[cam] suspended for OTA download");
+}
+void resumeAfterOta() {
+  if (!gInitOk || !gCamPaused) return;
+  esp_cam_ctlr_start(gCam);
+  gCamPaused = false;
+  telnet_log::logf("[cam] resumed after OTA download");
 }
 
 bool enabled() { return gEnabled && gInitOk; }

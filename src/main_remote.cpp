@@ -55,6 +55,15 @@ using namespace dettson::ui;
 // applies the moment it is verified (docs/10 §7: remote-p4 is ungated).
 extern "C" bool otaSafeToReboot() { return true; }
 
+#ifdef SLYTHERM_CAM
+// #180: the camera Remote halts CSI capture for the duration of a download so
+// the camera DMA doesn't starve the esp-hosted SDIO RX pool (sdio_drv.c:953).
+// These weak-override the null hooks in ota_client.cpp; only this build defines
+// them.
+extern "C" void otaCameraSuspend() { remote_camera::suspendForOta(); }
+extern "C" void otaCameraResume() { remote_camera::resumeAfterOta(); }
+#endif
+
 namespace {
 
 UiModel gUi;
