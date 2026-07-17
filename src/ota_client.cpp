@@ -28,6 +28,8 @@
 #include <esp_heap_caps.h>  // largest-free-block in failHttp diagnostics
 #include <esp_ota_ops.h>
 
+#include <lwip/sockets.h>  // #180: SO_RCVBUF before the GET (see openMirrorGet)
+
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
@@ -58,12 +60,6 @@
 
 extern "C" bool otaSafeToReboot();
 
-// #180: optional camera-pause hooks. Provided (weak-overridden) by the camera
-// Remote build so the CSI capture is halted for the duration of a download —
-// otherwise the camera DMA starves the esp-hosted SDIO RX pool and the download
-// crash-loops (sdio_drv.c:953). Undefined (null) on every other build.
-extern "C" void otaCameraSuspend() __attribute__((weak));
-extern "C" void otaCameraResume() __attribute__((weak));
 
 namespace ota {
 namespace {
@@ -82,6 +78,11 @@ constexpr uint8_t kMaxBootAttempts = 3;
 constexpr uint8_t kMaxApplyAttempts = 3;  // mid-apply resets before going manual-only
 constexpr size_t kCatalogMaxBytes = 16 * 1024;
 constexpr uint32_t kStreamTimeoutMs = 30 * 1000;  // stall watchdog per read
+// #180: small TCP receive window for the tunnelled mirror download — see
+// openMirrorGet(). Set BEFORE the GET so the request advertises it and the
+// server can't flood past the esp-hosted SDIO RX pool (sdio_drv.c:953). MSS is
+// 1436; ~4 KB keeps it well under the pool.
+constexpr int kOtaRcvBufBytes = 4096;
 
 // NVS namespace "ota": pend = version being validated ("" = none),
 // tries = boot attempts while pending, last = last outcome (for the UI).
@@ -290,8 +291,54 @@ bool doCheck() {
   return true;
 }
 
+// #180: manual http:// GET that shrinks the TCP receive window BEFORE sending
+// the request. On the P4/WireGuard path the 64 KB default window
+// (CONFIG_LWIP_TCP_WND_DEFAULT) lets the server flood the esp-hosted SDIO RX
+// pool (sdio_drv.c:953) before we can drain it. HTTPClient connects inside
+// GET(), too late to set the window; connecting here, setting SO_RCVBUF while
+// the socket is idle, then sending GET makes the request segment itself
+// advertise the small window. Together with the fast full-buffer read (below)
+// and pre-allocated PSRAM, the tunnelled download completes — bench-validated.
+// Parses host[:port]/path (no redirects — the LAN mirror serves directly),
+// consumes the response headers, and leaves the socket at the body with
+// contentLen filled. HTTPS keeps HTTPClient (GitHub-direct isn't tunnelled).
+bool openMirrorGet(const char* url, WiFiClient& c, int& contentLen) {
+  const char* p = url + 7;  // past "http://"
+  const char* slash = strchr(p, '/');
+  const char* path = slash ? slash : "/";
+  char host[96];
+  const size_t hl = slash ? static_cast<size_t>(slash - p) : strlen(p);
+  if (hl == 0 || hl >= sizeof(host)) return false;
+  memcpy(host, p, hl);
+  host[hl] = 0;
+  uint16_t port = 80;
+  if (char* colon = strchr(host, ':')) { *colon = 0; port = atoi(colon + 1); }
+  if (!c.connect(host, port, 15000)) return false;
+  int rb = kOtaRcvBufBytes;  // shrink the window while the socket is idle
+  c.setSocketOption(SOL_SOCKET, SO_RCVBUF, &rb, sizeof(rb));
+  int got = 0; socklen_t gl = sizeof(got);
+  const int fd = c.fd();
+  if (fd >= 0 && lwip_getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0)
+    Serial.printf("[ota] rcvbuf window %d -> %d\n", rb, got);
+  c.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: SlyTherm-OTA\r\n"
+           "Connection: close\r\n\r\n", path, host);
+  const String status = c.readStringUntil('\n');  // "HTTP/1.1 200 OK\r"
+  if (status.indexOf(" 200") < 0) {
+    Serial.printf("[ota] mirror GET status: %s\n", status.c_str());
+    return false;
+  }
+  contentLen = -1;
+  for (;;) {
+    String h = c.readStringUntil('\n');
+    if (h.length() == 0 || h == "\r") break;  // blank line ends the headers
+    h.toLowerCase();
+    if (h.startsWith("content-length:")) contentLen = atoi(h.c_str() + 15);
+  }
+  return true;
+}
+
 // ---- download + verify + stage ----
-bool doApplyInner() {
+bool doApply() {
   if (gAvailable.appUrl.empty()) {
     fail("apply: no update resolved (check first)");
     return false;
@@ -330,49 +377,71 @@ bool doApplyInner() {
   char url[192];
   assetUrl(url, sizeof(url), gAvailable.appUrl);
   const bool secure = strncmp(url, "http://", 7) != 0;
-  WiFiClient plain;
-  WiFiClientSecure tls;
-  if (secure) tls.setCACert(ota_certs::kOtaCaBundle);
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  http.setConnectTimeout(15000);
-  http.setTimeout(15000);
-  if (!http.begin(secure ? static_cast<WiFiClient&>(tls) : plain, url)) {
-    fail("apply: http.begin failed");
-    return false;
-  }
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    http.end();
-    failHttp("apply", code, secure ? &tls : nullptr);
-    return false;
-  }
-  const int total = http.getSize();  // -1 = chunked/unknown
-  if (gAvailable.appSize && total > 0 &&
-      static_cast<uint32_t>(total) != gAvailable.appSize) {
-    http.end();
-    fail("apply: content-length != catalog appSize");
-    return false;
-  }
-  const size_t expect = gAvailable.appSize ? gAvailable.appSize
-                        : (total > 0 ? static_cast<size_t>(total)
-                                     : UPDATE_SIZE_UNKNOWN);
 
-  // PSRAM-buffered download (preferred): network and flash writes must NOT
-  // interleave. Every flash write suspends the XIP cache and stalls tasks
-  // running from flash — on the P4 that includes the esp-hosted SDIO
-  // drainer, whose RX pool then overflows and ASSERTS (sdio_drv.c:953 ->
-  // reboot mid-download, found on the bench). Buffering the whole image in
-  // PSRAM first also means sha256+signature verify BEFORE the first flash
-  // touch. Fallback (no PSRAM headroom / unknown size): direct streaming.
+  // #180: allocate the PSRAM buffer BEFORE connecting, so the very first socket
+  // read happens the instant the body arrives — no ps_malloc(≈2 MB) gap in which
+  // the tunnelled response floods the SDIO RX pool unread. appSize is known from
+  // the catalog. Fallback (no PSRAM / unknown size): direct streaming to flash.
+  const size_t expect = gAvailable.appSize ? gAvailable.appSize : UPDATE_SIZE_UNKNOWN;
   uint8_t* ram = nullptr;
   if (expect != UPDATE_SIZE_UNKNOWN && psramFound() &&
       ESP.getFreePsram() > expect + (2u << 20)) {
     ram = static_cast<uint8_t*>(ps_malloc(expect));
   }
+
+  WiFiClient plain;
+  WiFiClientSecure tls;
+  HTTPClient http;
+  WiFiClient* stream = nullptr;
+  int total = -1;
+  // Close whichever transport we actually opened.
+  auto closeDl = [&]() { if (secure) http.end(); else plain.stop(); };
+  if (!secure) {
+    // #180: LAN mirror (http, tunnelled) — small-window GET so the response
+    // can't flood the SDIO RX pool. This is the path the P4 Remotes use.
+    if (!openMirrorGet(url, plain, total)) {
+      if (ram) free(ram);
+      plain.stop();
+      fail("apply: mirror GET failed");
+      return false;
+    }
+    stream = &plain;
+  } else {
+    tls.setCACert(ota_certs::kOtaCaBundle);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
+    if (!http.begin(tls, url)) {
+      if (ram) free(ram);
+      fail("apply: http.begin failed");
+      return false;
+    }
+    const int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+      if (ram) free(ram);
+      http.end();
+      failHttp("apply", code, &tls);
+      return false;
+    }
+    stream = http.getStreamPtr();
+    total = http.getSize();  // -1 = chunked/unknown
+  }
+  if (stream == nullptr) {
+    if (ram) free(ram);
+    closeDl();
+    fail("apply: no stream");
+    return false;
+  }
+  if (gAvailable.appSize && total > 0 &&
+      static_cast<uint32_t>(total) != gAvailable.appSize) {
+    if (ram) free(ram);
+    closeDl();
+    fail("apply: content-length != catalog appSize");
+    return false;
+  }
   if (ram == nullptr) {
     if (!Update.begin(expect, U_FLASH)) {
-      http.end();
+      closeDl();
       fail("apply: Update.begin failed");
       return false;
     }
@@ -383,16 +452,15 @@ bool doApplyInner() {
   }
 
   Sha256 sha;
-  WiFiClient* stream = http.getStreamPtr();
   static uint8_t buf[4096];
   size_t written = 0;
   uint32_t lastDataMs = millis();
-  while (http.connected() && (total < 0 || written < static_cast<size_t>(total))) {
+  while (stream->connected() && (total < 0 || written < static_cast<size_t>(total))) {
     const size_t avail = stream->available();
     if (avail == 0) {
       if (millis() - lastDataMs > kStreamTimeoutMs) {
         if (ram) free(ram); else Update.abort();
-        http.end();
+        closeDl();
         fail("apply: stream stalled");
         return false;
       }
@@ -407,14 +475,15 @@ bool doApplyInner() {
     // asserts (sdio_drv.c:953) when inbound data outruns the sdio_read task —
     // cap the per-iteration read and yield between reads.
 #ifdef SLYTHERM_WG
-    // Over the WireGuard tunnel (off-LAN) the inbound path also carries
-    // per-packet chacha20 decrypt AND, on the camera build, the MJPEG SDIO
-    // traffic — so #129's pacing isn't enough and the sdio_read task falls
-    // behind and asserts mid-download (observed off-LAN on dc25b0). Throttle
-    // harder: 1 KB reads + a 10 ms yield (~85 KB/s). A ~1.9 MB image takes
-    // ~22 s but the tunnel + camera survive. Slow beats a reboot loop.
-    if (chunk > 1024) chunk = 1024;
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // #180: over the WireGuard tunnel the 64 KB default TCP window (SO_RCVBUF
+    // does NOT shrink it in this lwIP) lets the server outrun a throttled
+    // reader — the socket buffer backs up, lwIP stops draining the esp-hosted
+    // SDIO RX pool, and it overflows (sdio_drv.c:953). So do the OPPOSITE of
+    // throttling: read the full buffer every iteration so consumption keeps
+    // pace with arrival, with only a modest 1-tick yield to hand the RX /
+    // WG-decrypt tasks CPU to drain the pool. (The camera is paused via #180,
+    // so it isn't competing.)
+    vTaskDelay(1);
 #else
     // #129 LAN pacing (~500 KB/s ceiling; a 2 MB image gains a few seconds).
     if (chunk > 2048) chunk = 2048;
@@ -431,7 +500,7 @@ bool doApplyInner() {
     if (!ram &&
         Update.write(buf, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
       Update.abort();
-      http.end();
+      closeDl();
       fail("apply: flash write failed");
       return false;
     }
@@ -441,7 +510,7 @@ bool doApplyInner() {
                 static_cast<uint8_t>((written * 100u) / total),
                 gAvailable.version.c_str(), "");
   }
-  http.end();
+  closeDl();
   if (total > 0 && written != static_cast<size_t>(total)) {
     if (ram) free(ram); else Update.abort();
     fail("apply: truncated download");
@@ -513,16 +582,6 @@ bool doApplyInner() {
                 gAvailable.version.c_str(), next->label);
   setStatus(State::kStaged, 100, gAvailable.version.c_str(), "");
   return true;
-}
-
-// #180: bracket the whole download with the camera pause. On success the node
-// stays paused until the (imminent) reboot into the new image; on any failure
-// path we resume capture so the camera keeps working until the next attempt.
-bool doApply() {
-  if (otaCameraSuspend) otaCameraSuspend();
-  const bool ok = doApplyInner();
-  if (!ok && otaCameraResume) otaCameraResume();
-  return ok;
 }
 
 void otaTask(void*) {
