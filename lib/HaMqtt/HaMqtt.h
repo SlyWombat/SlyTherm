@@ -104,6 +104,7 @@ constexpr const char* kAvailability             = SLYTHERM_TOPIC_PREFIX "availab
 // Diagnostic entities listed in docs/06 "Entities" without an explicit topic-map
 // row; they follow the same slytherm/state/ pattern.
 constexpr const char* kStateBlower    = SLYTHERM_TOPIC_PREFIX "state/blower";
+constexpr const char* kStateFilterLife = SLYTHERM_TOPIC_PREFIX "state/filter_life";  // #175 % consumed
 constexpr const char* kStateHealth    = SLYTHERM_TOPIC_PREFIX "state/health";
 constexpr const char* kStateLastError = SLYTHERM_TOPIC_PREFIX "state/last_error";
 
@@ -513,6 +514,8 @@ std::string holdDiscoveryJson();                       // sensor, diagnostic (ty
 std::string holdSelectDiscoveryJson();                 // select: HA sets/reads the hold duration (#81)
 std::string emHeatDiscoveryJson();                     // switch component (G15)
 std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
+std::string filterLifeDiscoveryJson();           // #175 sensor, % consumed, diagnostic
+std::string filterResetButtonDiscoveryJson();    // #175 button: "filter replaced"
 std::string outdoorTempDiscoveryJson();          // sensor, °C, device_class temperature
 std::string outdoorSourceDiscoveryJson();        // sensor, diagnostic: bus/wired/ha/none
 // slytherm/state/fusion JSON (docs/06 topic map): state = value_json.temp,

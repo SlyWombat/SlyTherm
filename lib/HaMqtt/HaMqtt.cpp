@@ -754,6 +754,32 @@ std::string activeEquipmentDiscoveryJson() {
   return entityDiscoveryJson(e);
 }
 
+std::string filterLifeDiscoveryJson() {  // #175
+  EntitySpec e;
+  e.name = "SlyTherm Filter Life Used";
+  e.uniqueId = "slytherm_filter_life";
+  e.stateTopic = topic::kStateFilterLife;
+  e.unit = "%";
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string filterResetButtonDiscoveryJson() {  // #175 (button: entityDiscoveryJson is
+  // state-topic-centric, so build the command-only button directly)
+  return Obj()
+      .str("name", "SlyTherm Reset Filter")
+      .str("unique_id", "slytherm_filter_reset")
+      .str("object_id", "slytherm_filter_reset")
+      .str("command_topic", SLYTHERM_TOPIC_PREFIX "cmd/filter_reset")
+      .str("payload_press", "reset")
+      .str("entity_category", "config")
+      .str("availability_topic", topic::kAvailability)
+      .str("payload_available", payload::kOnline)
+      .str("payload_not_available", payload::kOffline)
+      .raw("device", deviceJson())
+      .close();
+}
+
 std::string modulationDiscoveryJson() {
   EntitySpec e;
   e.name = "SlyTherm Gas Modulation";

@@ -99,5 +99,18 @@ constexpr uint16_t kAlarmDemandConflict  = 0x4D03;  // DemandArbiter invariant l
 constexpr uint16_t kAlarmGasRuntime      = 0x4D04;  // gas 4 h max-runtime trip
 constexpr uint16_t kAlarmMqttFallback    = 0x4D05;  // stale-MQTT fallback profile applied
 constexpr uint16_t kAlarmBusTxStack      = 0x4D06;  // Ct485Thermostat pairing/comms/starvation
+constexpr uint16_t kAlarmFilterDue       = 0x4D07;  // #175: blower runtime past the filter-life threshold
+constexpr uint16_t kAlarmFreeze          = 0x4D08;  // #175: indoor below the freeze/burst-pipe floor
+constexpr uint16_t kAlarmExtremeHeat     = 0x4D09;  // #175: indoor above the extreme-heat ceiling
+
+// #175 native alerts (table-stakes; competitors market freeze/burst-pipe).
+// Filter life is measured in BLOWER-on hours (F300 is in the airstream);
+// default matches the HA reminder's retuned 600 h. Freeze/extreme use a
+// hysteresis band so the alarm doesn't chatter around the threshold.
+constexpr uint32_t kFilterLifeHoursDefault = 600;    // blower-hours before "replace filter"
+constexpr float    kFreezeAlarmFloorC      = 4.4f;   // ~40 F: below this = freeze/burst-pipe risk
+constexpr float    kExtremeHeatCeilC       = 35.0f;  // ~95 F: dangerously hot indoors
+constexpr float    kExtremeTempHystC       = 1.0f;   // clear the alarm only 1 C back inside the band
+constexpr uint32_t kFilterSaveMinS         = 1800;   // persist filter runtime at most every 30 min
 
 }  // namespace thermostat

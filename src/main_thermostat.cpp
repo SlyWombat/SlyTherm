@@ -268,6 +268,7 @@ struct Snapshot {
   char action[16] = "off";
   char equipment[12] = "idle";
   float modulationPct = 0;
+  float filterLifePct = 0;  // #175 % of filter life consumed
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
   char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
   char statusLine[40] = "Idle";      // composed action wording (wall-screen parity)
@@ -328,6 +329,13 @@ using ParticipationBlob = dettson::SensorParticipation::PersistBlob;
 // the persisted offset instead of reverting it to the roster's 0.0 default.
 dettson::SensorCalibration gCalibration;
 using CalibrationBlob = dettson::SensorCalibration::PersistBlob;
+// #175 filter life: blower-on seconds toward the filter-replacement threshold
+// (F300 is in the airstream, so any blower run consumes life). Persisted in NVS
+// ("filt"); the threshold ("filh") is runtime-configurable, default 600 h.
+// Declared here (before onMqttMessage) so the cmd handler can set the reset flag.
+uint32_t gFilterRuntimeS = 0;
+uint32_t gFilterLifeHours = cfg::kFilterLifeHoursDefault;
+volatile bool gFilterResetReq = false;  // set by the cmd handler, consumed by the control task
 static_assert(kSensorNameLen == dettson::SensorParticipation::kIdLen,
               "participation store key length must match the sensor wire-id length");
 // gCmdMux held. Records the wire-id-keyed choice, mirrors it into the slot, and
@@ -1031,6 +1039,8 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (strcmp(topic, hm::topic::kCmdOtaApply) == 0) { ota::requestApply(); return; }
 #endif
 
+  if (strcmp(topic, "slytherm/cmd/filter_reset") == 0) { gFilterResetReq = true; return; }  // #175
+
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   bool accepted = true;
   if (strcmp(topic, hm::topic::kCmdSetpoint) == 0) {
@@ -1229,6 +1239,8 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("sensor", "active_equipment"), activeEquipmentDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "modulation"), modulationDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "blower"), blowerDiscoveryJson());
+  pubRetained(discoveryTopic("sensor", "filter_life"), filterLifeDiscoveryJson());          // #175
+  pubRetained(discoveryTopic("button", "filter_reset"), filterResetButtonDiscoveryJson());  // #175
   pubRetained(discoveryTopic("sensor", "fault"), faultDiscoveryJson());
   pubRetained(discoveryTopic("binary_sensor", "health"), healthDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "last_error"), lastErrorDiscoveryJson());
@@ -1286,6 +1298,7 @@ void subscribeAll() {
   gMqtt.subscribe(hm::topic::kCmdOtaCheck);  // #61
   gMqtt.subscribe(hm::topic::kCmdOtaApply);
 #endif
+  gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
 #ifdef SLYTHERM_UI
   gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series (UI targets only)
 #endif
@@ -1298,7 +1311,7 @@ enum PubIdx : uint8_t {
   PUB_PRESET, PUB_HOLD,
   PUB_ACTION, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
-  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE,
+  PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER,
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1393,6 +1406,8 @@ void publishSnapshot(bool force) {
   pubState(PUB_EQUIP, topic::kStateActiveEquipment, s.equipment, force);
   snprintf(b, sizeof(b), "%.0f", static_cast<double>(s.modulationPct));
   pubState(PUB_MOD, topic::kStateModulation, b, force);
+  snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.filterLifePct));  // #175
+  pubState(PUB_FILTER, topic::kStateFilterLife, b, force);
   if (s.oatValid) {
     snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.oatC));
     pubState(PUB_OAT, topic::kStateOutdoorTemp, b, force);
@@ -2414,6 +2429,10 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   else strlcpy(s.equipment, "idle", sizeof(s.equipment));
 
   s.modulationPct = out.gasHeatPct;
+  s.filterLifePct = gFilterLifeHours > 0  // #175 % of filter life consumed
+      ? fminf(100.0f, 100.0f * static_cast<float>(gFilterRuntimeS) /
+                          (static_cast<float>(gFilterLifeHours) * 3600.0f))
+      : 0.0f;
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
   s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 
@@ -2666,6 +2685,21 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   glueAlarm(fused.degraded, cfg::kAlarmDegradedMode, safety::Severity::kCritical,
             "DS18B20-only degraded mode", nowS, /*autoClear=*/true);
 
+  // ---- #175 freeze / extreme-heat alerts (table-stakes; burst-pipe headline).
+  // Hysteresis latch so the alarm doesn't chatter around the threshold; only
+  // evaluated on a valid fused temp (an invalid sensor can't assert either).
+  static bool sFreezeLatch = false, sHeatLatch = false;
+  if (fused.valid) {
+    if (fused.value < cfg::kFreezeAlarmFloorC) sFreezeLatch = true;
+    else if (fused.value > cfg::kFreezeAlarmFloorC + cfg::kExtremeTempHystC) sFreezeLatch = false;
+    if (fused.value > cfg::kExtremeHeatCeilC) sHeatLatch = true;
+    else if (fused.value < cfg::kExtremeHeatCeilC - cfg::kExtremeTempHystC) sHeatLatch = false;
+  }
+  glueAlarm(fused.valid && sFreezeLatch, cfg::kAlarmFreeze, safety::Severity::kCritical,
+            "Freeze risk: indoor below 40\xC2\xB0""F", nowS, /*autoClear=*/true);
+  glueAlarm(fused.valid && sHeatLatch, cfg::kAlarmExtremeHeat, safety::Severity::kCritical,
+            "Extreme heat: indoor above 95\xC2\xB0""F", nowS, /*autoClear=*/true);
+
   // ---- Dual fuel ----
   DualFuelInputs dfi;
   dfi.heatCall = call.type == CallType::kHeat;
@@ -2881,6 +2915,29 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
 
   // ---- Advisory recovery + learning ----
   updateRunSegments(out, fused, nowS);
+
+  // ---- #175 filter life: accumulate blower-on seconds, alarm at threshold ----
+  {
+    static uint32_t sLastTickS = 0, sLastSaveS = 0;
+    if (gFilterResetReq) {  // HA/panel "filter replaced": zero the counter
+      gFilterResetReq = false;
+      gFilterRuntimeS = 0;
+      gPrefs.putUInt("filt", 0u);
+      Serial.println("[filter] runtime reset (filter replaced)");
+    }
+    const bool blowerOn = out.fanPct > 0 || out.gasHeatPct > 0 ||
+                          out.hpHeatPct > 0 || out.coolPct > 0;
+    if (blowerOn && sLastTickS != 0 && nowS > sLastTickS)
+      gFilterRuntimeS += nowS - sLastTickS;
+    sLastTickS = nowS;
+    if (nowS - sLastSaveS >= cfg::kFilterSaveMinS && gFilterRuntimeS > 0) {
+      gPrefs.putUInt("filt", gFilterRuntimeS);  // bounded NVS wear (~48 writes/day)
+      sLastSaveS = nowS;
+    }
+  }
+  glueAlarm(gFilterRuntimeS >= gFilterLifeHours * 3600u, cfg::kAlarmFilterDue,
+            safety::Severity::kAdvisory, "Replace furnace filter", nowS,
+            /*autoClear=*/false);  // acknowledged by resetting the counter
   adviseRecovery(fused, oat, nowS);
 
   // ---- #143 record-only COP proxy (docs/13 §5) ----
@@ -3322,6 +3379,8 @@ void setup() {
     if (gPrefs.getBytes("sofs", &blob, sizeof(blob)) == sizeof(blob))
       gCalibration.fromBlob(blob);
   }
+  gFilterRuntimeS  = gPrefs.getUInt("filt", 0u);                          // #175 filter life
+  gFilterLifeHours = gPrefs.getUInt("filh", cfg::kFilterLifeHoursDefault);
 #ifdef SLYTHERM_LOCAL_SENSOR
   gFusion.registerSensor(0, /*isLocal=*/true);  // id 0 = "local" DS18B20 slot
   gSensorTable[0].used = true;
