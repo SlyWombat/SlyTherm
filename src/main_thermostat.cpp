@@ -2970,11 +2970,22 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   gActuator->apply(out, nowS, nowMs);
 
   // CT-485 TX-stack alarms surface through the registry (docs/06 bus entity).
+  // Plain-language, sub-alarm-specific text — the old "CT-485 TX stack alarm
+  // (see slytherm/state/bus)" was jargon and got truncated to junk at the 40-char
+  // alarm-text limit. Comms-loss is the most severe (furnace silent), so it wins
+  // when more than one is latched; every string here is < 40 chars.
   xSemaphoreTake(gCtMux, portMAX_DELAY);
-  const bool busAlarm = gCt->pairingAlarm() || gCt->commsLossAlarm() || gCt->starvationAlarm();
+  const bool bComms = gCt->commsLossAlarm();
+  const bool bPair  = gCt->pairingAlarm();
+  const bool bStarv = gCt->starvationAlarm();
   xSemaphoreGive(gCtMux);
-  glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical,
-            "CT-485 TX stack alarm (see slytherm/state/bus)", nowS);
+  const bool busAlarm = bComms || bPair || bStarv;
+  const char* busMsg =
+      bComms ? "Furnace not responding on the bus" :
+      bPair  ? "Furnace bus conflict (2nd thermostat?)" :
+      bStarv ? "Furnace link interrupted (recovering)" :
+               "Furnace control bus fault";
+  glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical, busMsg, nowS);
 
   // ---- External hardware watchdog pet (docs/04 §3 pet-gating) ----
   if (gSup->petExternalWdt() && cfg::kWdtPetPin >= 0) {
