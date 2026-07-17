@@ -1,0 +1,120 @@
+# SlyTherm learned schedule — one-tap "accept" for the firmware's suggested
+# schedule (#177 competitive P4, the auto-apply UX).
+#
+# The thermostat learns your occupancy pattern and publishes a SUGGESTION
+# (sensor.slytherm_suggested_schedule, attributes .weekday/.weekend/.confident).
+# This package lets you APPLY it: a button parses the weekday suggestion into a
+# leave/return window, and an opt-in automation drops to Away during that window.
+#
+# SAFE BY DESIGN: it does NOT touch the working schedule in slytherm_starter.yaml.
+# The "learned away" automation ships DISABLED (initial_state: false) — enable it
+# only when you're happy with the applied window, so nothing changes silently and
+# the two schedules never fight. Turn the starter's day-time Away off (or leave it)
+# once you switch over.
+
+input_datetime:
+  slytherm_learned_leave:
+    name: SlyTherm learned leave time
+    has_date: false
+    has_time: true
+    icon: mdi:home-export-outline
+  slytherm_learned_return:
+    name: SlyTherm learned return time
+    has_date: false
+    has_time: true
+    icon: mdi:home-import-outline
+
+input_button:
+  slytherm_apply_suggested_schedule:
+    name: SlyTherm apply suggested schedule
+    icon: mdi:calendar-check
+
+script:
+  slytherm_apply_suggested_schedule:
+    alias: SlyTherm apply suggested schedule
+    icon: mdi:calendar-check
+    sequence:
+      # Parse the weekday suggestion text ("Home 0:00, Away 8:00, Home 17:00")
+      # into the first Away hour (leave) and the following Home hour (return).
+      - variables:
+          wd: "{{ state_attr('sensor.slytherm_suggested_schedule','weekday') | default('') }}"
+          confident: "{{ state_attr('sensor.slytherm_suggested_schedule','confident') | default(false) }}"
+          leave_h: >-
+            {% set ns = namespace(h=none) %}
+            {% for part in wd.split(',') %}
+              {% set p = part.strip() %}
+              {% if ns.h is none and p.startswith('Away') %}
+                {% set ns.h = p.split(' ')[1].split(':')[0] | int %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.h }}
+          return_h: >-
+            {% set ns = namespace(h=none, seen_away=false) %}
+            {% for part in wd.split(',') %}
+              {% set p = part.strip() %}
+              {% if p.startswith('Away') %}{% set ns.seen_away = true %}{% endif %}
+              {% if ns.seen_away and ns.h is none and p.startswith('Home') %}
+                {% set ns.h = p.split(' ')[1].split(':')[0] | int %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.h }}
+      - choose:
+          - conditions: "{{ not confident }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: SlyTherm suggested schedule
+                  message: "Still learning your routine — not enough history yet to apply."
+          - conditions: "{{ leave_h in ['None',''] or return_h in ['None',''] }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: SlyTherm suggested schedule
+                  message: "No daytime-away window learned (home most of the day) — nothing to apply."
+        default:
+          - service: input_datetime.set_datetime
+            target: { entity_id: input_datetime.slytherm_learned_leave }
+            data: { time: "{{ '%02d:00:00' | format(leave_h | int) }}" }
+          - service: input_datetime.set_datetime
+            target: { entity_id: input_datetime.slytherm_learned_return }
+            data: { time: "{{ '%02d:00:00' | format(return_h | int) }}" }
+          - service: persistent_notification.create
+            data:
+              title: SlyTherm suggested schedule applied
+              message: >-
+                Learned weekday away window set to {{ '%02d:00'|format(leave_h|int) }}–{{ '%02d:00'|format(return_h|int) }}.
+                Enable the "SlyTherm learned Away" automation to use it.
+
+automation:
+  - id: slytherm_apply_suggested_schedule_button
+    alias: "SlyTherm: suggested schedule -> apply on button"
+    trigger:
+      - platform: state
+        entity_id: input_button.slytherm_apply_suggested_schedule
+    action:
+      - service: script.slytherm_apply_suggested_schedule
+
+  # OPT-IN: drops to Away during the learned weekday window; hands back to the
+  # normal schedule outside it. Ships DISABLED — enable in Settings once happy.
+  - id: slytherm_learned_away
+    alias: "SlyTherm: learned Away window (opt-in)"
+    initial_state: false
+    trigger:
+      - platform: time
+        at: input_datetime.slytherm_learned_leave
+        id: leave
+      - platform: time
+        at: input_datetime.slytherm_learned_return
+        id: return
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - choose:
+          - conditions: "{{ trigger.id == 'leave' }}"
+            sequence:
+              - service: climate.set_preset_mode
+                target: { entity_id: climate.slytherm_hvac }
+                data: { preset_mode: away }
+        default:
+          - service: script.slytherm_apply_scheduled_preset  # return -> normal schedule
