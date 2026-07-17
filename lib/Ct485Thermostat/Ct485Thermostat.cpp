@@ -335,6 +335,14 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
     case kAck1:
     case kAck2:  // delivered, param flagged — diagnostics via lastResponseCode()
     case kAck3:
+      // A successful demand ACK proves the bus round-trip is working again, so
+      // auto-clear a latched starvation alarm. Starvation is a "recovering"
+      // condition (a refresh window slipped, the equipment briefly reverted);
+      // leaving it latched until a manual ack/reboot left "Furnace link
+      // interrupted" stuck on the screen/HA while the furnace was in fact
+      // running normally. Comms-loss / pairing stay latched (they need
+      // operator attention); starvation self-heals.
+      if (out_.isDemand) starvationAlarm_ = false;
       out_ = Outstanding{};
       return;
     case kNak1:  // bad CRC: retransmit, bounded by the attempt budget
