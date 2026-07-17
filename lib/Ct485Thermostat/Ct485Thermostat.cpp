@@ -10,6 +10,11 @@ namespace {
 
 constexpr size_t kDiscoveryRespPayloadLen = 17;  // PROVISIONAL, see header
 constexpr size_t kSetAddressPayloadLen    = 18;
+// #178: a channel that has never been granted yet is still establishing after a
+// (re)join (a reboot re-join can briefly exceed the 60 s refresh window). Give
+// it this much longer grace before crying starvation; a genuinely never-granted
+// node still alarms, just not on a normal reboot.
+constexpr uint32_t kJoinStarvationGraceMs = 300000;  // 5 min
 
 inline bool timeReached(uint32_t nowMs, uint32_t deadlineMs) {
   // Wrap-safe: valid while |now - deadline| < 2^31 ms (~24 days).
@@ -505,7 +510,11 @@ void Ct485Thermostat::tick(uint32_t nowMs) {
     ChannelState& cs = chan_[i];
     if (!cs.active) continue;
     const uint32_t refMs = cs.everSent ? cs.lastSentMs : cs.activatedMs;
-    if (timeReached(nowMs, refMs + windowMs)) {
+    // #178: tight refresh window once we've been granted at least once; a long
+    // join grace while still waiting for the first grant after a (re)join, so a
+    // normal reboot re-join doesn't false-positive.
+    const uint32_t limitMs = cs.everSent ? windowMs : kJoinStarvationGraceMs;
+    if (timeReached(nowMs, refMs + limitMs)) {
       // A full window elapsed with no successful (re)send: the equipment is
       // reverting (or never started). Alarm and GO SILENT — the failsafe is
       // quiet, not a retry storm (docs/04 §1).

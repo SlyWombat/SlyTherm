@@ -537,17 +537,36 @@ static void test_starvation_alarm_goes_silent() {
   TEST_ASSERT_EQUAL(0, drain(t));
 }
 
-static void test_starvation_when_demand_never_sent() {
+static void test_starvation_grace_while_never_granted_then_alarms() {
+  // #178: a channel active but never granted (a post-reboot bus re-join) must
+  // NOT false-alarm at the 60 s refresh window — only after the longer join
+  // grace, which a genuinely never-granted node still hits.
   Ct485Thermostat t(baseCfg());
   uint32_t now = 1000;
   join(t, now);
   TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
-  // No grant ever arrives — the system would believe it is heating.
-  t.tick(now + 59999);
+  t.tick(now + 60000);       // past the old 60 s window — no longer a false positive
   TEST_ASSERT_FALSE(t.starvationAlarm());
-  t.tick(now + 60000);
+  t.tick(now + 299999);      // still inside the 5 min join grace
+  TEST_ASSERT_FALSE(t.starvationAlarm());
+  t.tick(now + 300000);      // grace exhausted -> genuinely never granted
   TEST_ASSERT_TRUE(t.starvationAlarm());
   TEST_ASSERT_TRUE(t.silent());
+}
+
+static void test_late_grant_within_grace_no_false_starvation() {
+  // #178: the reboot-recovery case — the first grant arrives after the old 60 s
+  // window but within grace, so the node establishes cleanly with no alarm.
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  t.tick(now + 90000);       // 90 s: past old window, within grace, no alarm
+  TEST_ASSERT_FALSE(t.starvationAlarm());
+  grant1(t, now + 90000);    // first grant finally arrives -> established
+  ackOutstanding(t, 0x65, now + 90100);
+  t.tick(now + 90200);
+  TEST_ASSERT_FALSE(t.starvationAlarm());
 }
 
 static void test_zero_demand_sends_one_cancel_frame() {
@@ -793,7 +812,8 @@ int main() {
   RUN_TEST(test_refresh_timer_byte_decoding);
   RUN_TEST(test_refresh_reemitted_at_fraction_of_window);
   RUN_TEST(test_starvation_alarm_goes_silent);
-  RUN_TEST(test_starvation_when_demand_never_sent);
+  RUN_TEST(test_starvation_grace_while_never_granted_then_alarms);
+  RUN_TEST(test_late_grant_within_grace_no_false_starvation);
   RUN_TEST(test_zero_demand_sends_one_cancel_frame);
   RUN_TEST(test_zero_demand_never_sent_sends_nothing);
   RUN_TEST(test_ack_clears_outstanding);
