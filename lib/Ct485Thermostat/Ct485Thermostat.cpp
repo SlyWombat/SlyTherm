@@ -358,7 +358,30 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
       cmdCount_ = 0;
       cmdHead_  = 0;
       return;
-    default:  // unknown code: treat as delivered, surface for diagnostics
+    default:
+      // #162: a real Dettson demand/command response is the 0x83 ECHO of our
+      // request — payload[0] is the command code WE sent (not an ack/nak code),
+      // and the actual ack/nak rides in a SEPARATE 17-byte dataflow frame
+      // (docs/02 "Response contract"), which is not routed here. So an echo whose
+      // payload[0] matches the outstanding command IS the delivery ack. This is
+      // what really clears the round-trip on the live bus (the kAck* cases above
+      // only fire if a dataflow ack/nak frame ever routes here).
+      // DELIBERATELY NOT reading ack/nak from payload[2]: that byte is the
+      // refresh-timer echo (docs/02 §5a), whose legal values include 0x15/0x1B —
+      // the exact NAK1/NAK2 codes — so treating it as ack/nak would misfire
+      // kNak2 -> clearDemands()/pairing-latch -> furnace shutdown on a normal
+      // demand refresh. A genuine rejection (NAK2 0x1B) arrives as a dataflow
+      // frame that never reaches this handler; wiring that up needs a real
+      // captured rejection and is tracked in #162 (we are the accepted paired
+      // controller now, so rejection is unlikely to occur in practice).
+      if (f.payloadLen >= 1 && code == out_.cmdCode) {
+        if (out_.isDemand) starvationAlarm_ = false;  // echo proves the round-trip
+        out_ = Outstanding{};
+        return;
+      }
+      // Genuinely unrecognized response to an outstanding request: surface it
+      // (counter + lastResponseCode_) rather than silently assuming delivery.
+      unexpected_++;
       out_ = Outstanding{};
       return;
   }

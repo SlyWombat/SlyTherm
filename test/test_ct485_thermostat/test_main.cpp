@@ -88,6 +88,27 @@ static Frame coCtrlResp(uint8_t code, uint8_t cmd, uint8_t dst = kAddrThermostat
   return f;
 }
 
+// #162: the REAL Dettson 0x83 response ECHOES our request — payload[0] is the
+// command code we sent, payload[2] is the refresh-timer byte (docs/02 §5a), and
+// there is no distinct ack/nak code (delivery IS the echo). coCtrlResp above
+// (code at payload[0]) models the separate dataflow ack/nak frame; this models
+// the echo that actually arrives on the live bus.
+static Frame coCtrlEcho(uint8_t cmd, uint8_t timerByte, uint8_t demand = 0x78,
+                        uint8_t dst = kAddrThermostat) {
+  Frame f;
+  f.dst = dst;
+  f.src = 0x02;  // furnace node
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kGasFurnace);
+  f.sendParamHi = cmd;
+  f.msgType = static_cast<uint8_t>(MsgType::kSetControlCmd) | kResponseFlag;
+  f.payload[0] = cmd;         // command-code echo
+  f.payload[1] = 0x00;
+  f.payload[2] = timerByte;   // refresh-timer echo (0x60 = 6 min)
+  f.payload[3] = demand;      // demand byte (percent*2)
+  f.payloadLen = 4;
+  return f;
+}
+
 static Frame coVersion(uint8_t ver, uint8_t rev) {
   Frame f;
   f.dst = kAddrBroadcast;
@@ -630,6 +651,39 @@ static void test_nak2_pairing_alarm_stops_demands() {
   TEST_ASSERT_FALSE(t.starvationAlarm());
 }
 
+// #162: a real 0x83 echo whose refresh-timer byte (payload[2]) happens to equal
+// the NAK2 code 0x1B must be treated as DELIVERED, not a pairing rejection.
+// Reading ack/nak from payload[2] (the issue's proposed fix) would misfire
+// kNak2 -> clearDemands()/pairing-latch -> furnace shutdown on a normal refresh.
+static void test_echo_delivers_not_nak2_on_timer_collision() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  Frame f = grant1(t, now);
+  t.onFrame(coCtrlEcho(f.sendParamHi, /*timer=*/kNak2), now + 50);
+  TEST_ASSERT_FALSE(t.pairingAlarm());                       // NOT stopped
+  TEST_ASSERT_TRUE(t.channelActive(DemandChannel::kHeat));   // demand still held
+  Frame g = grant1(t, now + 100);                            // outstanding cleared: no resend
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), g.msgType);
+}
+
+// #162: the echo IS the delivery ack on the live bus (the kAck* switch cases only
+// fire for a dataflow ack frame that never routes here). A normal echo (timer
+// byte 0x60 = 6 min) clears the outstanding and re-arms the refresh cadence —
+// exactly like an explicit ACK, with no spurious "unexpected" bookkeeping.
+static void test_echo_recognized_as_delivery() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  Frame f = grant1(t, now);
+  t.onFrame(coCtrlEcho(f.sendParamHi, /*timer=*/0x60), now + 50);
+  TEST_ASSERT_TRUE(t.channelActive(DemandChannel::kHeat));    // demand held
+  Frame g = grant1(t, now + 100);                             // outstanding cleared: no resend
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), g.msgType);
+}
+
 static void test_response_timeout_retries_then_comms_loss_silence() {
   Ct485Thermostat t(baseCfg());
   uint32_t now = 1000;
@@ -818,6 +872,8 @@ int main() {
   RUN_TEST(test_zero_demand_never_sent_sends_nothing);
   RUN_TEST(test_ack_clears_outstanding);
   RUN_TEST(test_nak2_pairing_alarm_stops_demands);
+  RUN_TEST(test_echo_delivers_not_nak2_on_timer_collision);  // #162
+  RUN_TEST(test_echo_recognized_as_delivery);                // #162
   RUN_TEST(test_response_timeout_retries_then_comms_loss_silence);
   RUN_TEST(test_nak1_counts_against_attempt_budget);
   RUN_TEST(test_go_silent_flushes_everything);
