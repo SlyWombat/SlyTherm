@@ -3098,7 +3098,13 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       bPair  ? "Furnace bus conflict (2nd thermostat?)" :
       bStarv ? "Furnace link interrupted (recovering)" :
                "Furnace control bus fault";
-  glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical, busMsg, nowS);
+  // autoClear=true: a recovered bus condition drops off the panels the moment it
+  // clears, matching HA's health sensor (anyActive()) instead of latching until a
+  // manual ack. The three underlying conditions (comms-loss/pairing/starvation)
+  // each keep their own latch/severity in Ct485Thermostat; this UI-facing mirror
+  // shouldn't outlive the condition (the event history lives in SlyLog/telnet).
+  glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical, busMsg, nowS,
+            /*autoClear=*/true);
 
   // ---- External hardware watchdog pet (docs/04 §3 pet-gating) ----
   if (gSup->petExternalWdt() && cfg::kWdtPetPin >= 0) {
