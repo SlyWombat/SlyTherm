@@ -27,6 +27,10 @@ static Ct485Thermostat::Config baseCfg(OffsetVariant v = OffsetVariant::kVarA) {
   c.offsetVariant = v;
   std::memcpy(c.mac, kMac, 8);
   std::memcpy(c.sessionId, kSession, 8);
+  // Pin a convenient 60 s x 0.5 refresh window for the timing tests, independent
+  // of the production kDemandRefreshTimerByte (now 0x60 = 6 min, OEM discipline).
+  c.refreshTimerByte = 0x10;   // 60 s
+  c.refreshFraction  = 0.5f;   // re-emit due at 30 s
   return c;
 }
 
@@ -538,6 +542,32 @@ static void test_refresh_reemitted_at_fraction_of_window() {
   TEST_ASSERT_EQUAL_UINT32(now + 60000, t.nextRefreshDueMs(DemandChannel::kHeat));
 }
 
+// A steady demand re-asserted every control tick must NOT re-send on every grant
+// (it did before: ~60x the OEM refresh rate). Only a real change re-arms the
+// send; an unchanged demand waits for the refresh-timer (dueMs) path.
+static void test_unchanged_demand_not_resent_every_grant() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  grant1(t, now);                        // first send
+  ackOutstanding(t, 0x64, now + 100);
+  // Control loop re-asserts the SAME 60% each tick; grants arrive before the 30 s
+  // refresh point -> poll-ack only, no demand resend.
+  for (uint32_t dt = 5000; dt <= 15000; dt += 5000) {
+    t.setDemand(DemandChannel::kHeat, 60.0f, now + dt);
+    t.tick(now + dt);
+    Frame f = grant1(t, now + dt);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), f.msgType);
+  }
+  // A genuine change re-asserts immediately (does not wait for the 30 s refresh).
+  t.setDemand(DemandChannel::kHeat, 80.0f, now + 20000);
+  t.tick(now + 20000);
+  Frame f = grant1(t, now + 20000);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
+  TEST_ASSERT_EQUAL_UINT8(160, f.payload[3]);   // 80% -> 160 (variant A, pct x2)
+}
+
 static void test_starvation_alarm_goes_silent() {
   Ct485Thermostat t(baseCfg());
   uint32_t now = 1000;
@@ -874,6 +904,7 @@ int main() {
   RUN_TEST(test_nak2_pairing_alarm_stops_demands);
   RUN_TEST(test_echo_delivers_not_nak2_on_timer_collision);  // #162
   RUN_TEST(test_echo_recognized_as_delivery);                // #162
+  RUN_TEST(test_unchanged_demand_not_resent_every_grant);
   RUN_TEST(test_response_timeout_retries_then_comms_loss_silence);
   RUN_TEST(test_nak1_counts_against_attempt_budget);
   RUN_TEST(test_go_silent_flushes_everything);

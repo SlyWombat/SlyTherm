@@ -146,6 +146,19 @@ bool Ct485Thermostat::setDemandInternal(DemandChannel ch, float pct, uint8_t fan
   if (pct > 100.0f) pct = 100.0f;
 
   ChannelState& cs = chan_[idx(ch)];
+  // Only (re)assert sendNeeded on a real change to the wire demand. The control
+  // loop calls setDemand() every tick; without this a steady demand re-sent on
+  // every grant (~5 s) — ~60x the OEM refresh rate. An unchanged active demand is
+  // instead refreshed by the timer path (dueMs); a genuine change re-asserts
+  // immediately. Compare at wire resolution (percent x2) so float jitter that
+  // maps to the same demand byte doesn't spuriously re-send.
+  auto wireByte = [](float p) -> int {
+    if (p <= 0.0f) return 0;
+    if (p >= 100.0f) return 200;
+    return static_cast<int>(p * 2.0f + 0.5f);
+  };
+  const bool changed = !cs.active || wireByte(cs.pct) != wireByte(pct) ||
+                       cs.fanMode != fanMode;
   cs.fanMode = fanMode;
   if (pct > 0.0f) {
     if (!cs.active) {
@@ -154,7 +167,7 @@ bool Ct485Thermostat::setDemandInternal(DemandChannel ch, float pct, uint8_t fan
     }
     cs.active      = true;
     cs.pct         = pct;
-    cs.sendNeeded  = true;
+    if (changed) cs.sendNeeded = true;  // else the refresh timer (dueMs) resends
     cs.zeroPending = false;
   } else {
     const bool onWire = cs.everSent;

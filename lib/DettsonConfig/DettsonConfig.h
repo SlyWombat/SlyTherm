@@ -171,13 +171,19 @@ constexpr bool     kObEnergizedIsHeat       = true;
 
 // ---------- CT-485 demand TX (Ct485Thermostat) ----------
 // Refresh-timer byte written into every demand frame: high nibble = minutes,
-// low nibble = 3.75 s units (docs/02 §5a). 0x10 = 60 s. The equipment reverts
+// low nibble = 3.75 s units (docs/02 §5a). 0x60 = 6 min. The equipment reverts
 // the channel to off if the demand is not re-sent inside this window — the
 // protocol's own per-channel deadman (docs/04 §3 refresh discipline).
-constexpr uint8_t  kDemandRefreshTimerByte  = 0x10;
+// Matches the OEM-observed discipline (6-min timer; docs/02 §"OEM discipline"):
+// the earlier 0x10 (60 s) window was 6x tighter than the OEM and nuisance-tripped
+// starvation on any brief token-grant drought (a WDT reboot + go-silent already
+// provide a fast fail-safe if the controller hangs, so the tight window bought
+// little). SafetySupervisor bus-deadman (kBusDeadmanS) still guards true silence.
+constexpr uint8_t  kDemandRefreshTimerByte  = 0x60;
 // Re-emit each active demand within this fraction of its refresh window
-// (range 0.1-0.9). A full window elapsing with no successful re-send (token
-// starved) raises the starvation alarm AND goes silent — never a retry storm.
+// (range 0.1-0.9). 0.5 x 6 min => a steady demand refreshes ~every 3 min. A full
+// window elapsing with no successful re-send (token starved) raises the
+// starvation alarm AND goes silent — never a retry storm.
 constexpr float    kDemandRefreshFraction   = 0.5f;
 
 // ---------- Sensor fusion (SensorFusion) ----------
