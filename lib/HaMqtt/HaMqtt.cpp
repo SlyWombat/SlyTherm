@@ -1147,5 +1147,41 @@ std::string fanCirculatePctDiscoveryJson() {
   return entityDiscoveryJson(e);
 }
 
+// #163: HA-editable safe setpoints used only after the 30-min MQTT-stale
+// fallback latches (the on-board SHT31 becomes the temp source). Persisted to
+// NVS on the Controller so they survive the outage. Range clamps to the same
+// climate band as the normal setpoints.
+std::string emergencyHeatDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Emergency Heat Setpoint";
+  e.uniqueId = "slytherm_emergency_heat";
+  e.stateTopic = topic::kStateEmergencyHeat;
+  e.commandTopic = topic::kCmdEmergencyHeat;
+  e.unit = "°C";
+  e.deviceClass = "temperature";
+  e.config = true;
+  e.hasRange = true;
+  e.minV = kClimateMinTempC;
+  e.maxV = kClimateMaxTempC;
+  e.stepV = 0.5f;
+  return entityDiscoveryJson(e);
+}
+
+std::string emergencyCoolDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Emergency Cool Setpoint";
+  e.uniqueId = "slytherm_emergency_cool";
+  e.stateTopic = topic::kStateEmergencyCool;
+  e.commandTopic = topic::kCmdEmergencyCool;
+  e.unit = "°C";
+  e.deviceClass = "temperature";
+  e.config = true;
+  e.hasRange = true;
+  e.minV = kClimateMinTempC;
+  e.maxV = kClimateMaxTempC;
+  e.stepV = 0.5f;
+  return entityDiscoveryJson(e);
+}
+
 }  // namespace hamqtt
 }  // namespace dettson

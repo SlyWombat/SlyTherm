@@ -87,6 +87,12 @@ struct SensorRow {
   bool     healthy       = false;
   bool     dominant      = false;        // the sensor currently driving demand
   uint32_t lastOccAgeS   = 0xFFFFFFFFu;  // seconds since last occupied (max = never)
+  // #163 controller-attached emergency sensor (SHT31, fusion slot 0). Rendered
+  // with a non-selectable "EMERG" pill instead of the participation toggle:
+  // green when it is actively driving (30-min MQTT-stale fallback latched),
+  // gray on standby. Only present in the roster once it is actually reading.
+  bool     emergency       = false;
+  bool     emergencyActive = false;
 };
 
 struct Alarm {

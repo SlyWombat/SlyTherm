@@ -152,13 +152,16 @@
 // installed, so slot 0 is not registered, not published, and drops off the
 // Sensors screen. Build with -DSLYTHERM_LOCAL_SENSOR to compile the local slot
 // back in for other hardware; a physical DS18B20 (-DSLYTHERM_DS18B20) implies it.
-#if defined(SLYTHERM_DS18B20) && !defined(SLYTHERM_LOCAL_SENSOR)
+#if (defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)) && !defined(SLYTHERM_LOCAL_SENSOR)
 #define SLYTHERM_LOCAL_SENSOR
 #endif
 
 #ifdef SLYTHERM_DS18B20
 #include <DallasTemperature.h>
 #include <OneWire.h>
+#endif
+#ifdef SLYTHERM_SHT31
+#include <Wire.h>   // #163 on-board SHT31-D on the shared panel bus (0x44), slot 0
 #endif
 
 namespace {
@@ -214,6 +217,8 @@ SensorEntry gSensorTable[kFusionSlots];  // index == SensorFusion id; 0 = local
 struct Pending {
   bool hasMode = false;        hm::Mode mode = hm::Mode::kOff;
   bool hasSetpoint = false;    float setpointC = 0;
+  bool hasEmergHeat = false;   float emergHeatC = 0;  // #163 emergency (network-stale) setpoints
+  bool hasEmergCool = false;   float emergCoolC = 0;
   bool hasLow = false;         float lowC = 0;
   bool hasHigh = false;        float highC = 0;
   bool manualSetpoint = false; // hasLow/hasHigh came from a person tapping a REMOTE
@@ -1064,6 +1069,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, hm::topic::kCmdTargetTempHigh) == 0) {
     auto p = hm::parseSetpoint(buf);
     if (p.ok) { gPending.hasHigh = true; gPending.highC = p.value; } else accepted = false;
+  } else if (strcmp(topic, "slytherm/cmd/emergency_heat") == 0) {  // #163
+    auto p = hm::parseSetpoint(buf);
+    if (p.ok) { gPending.hasEmergHeat = true; gPending.emergHeatC = p.value; } else accepted = false;
+  } else if (strcmp(topic, "slytherm/cmd/emergency_cool") == 0) {  // #163
+    auto p = hm::parseSetpoint(buf);
+    if (p.ok) { gPending.hasEmergCool = true; gPending.emergCoolC = p.value; } else accepted = false;
   } else if (strcmp(topic, hm::topic::kCmdMode) == 0) {
     auto p = hm::parseMode(buf);
     if (p.ok) { gPending.hasMode = true; gPending.mode = p.value; } else accepted = false;
@@ -1276,6 +1287,8 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("select", "hold_duration"), holdSelectDiscoveryJson());  // #81
   pubRetained(discoveryTopic("number", "fan_circulate_min"), fanCirculateMinDiscoveryJson());  // #128
   pubRetained(discoveryTopic("number", "fan_circulate_pct"), fanCirculatePctDiscoveryJson());  // #128
+  pubRetained(discoveryTopic("number", "emergency_heat"), emergencyHeatDiscoveryJson());  // #163
+  pubRetained(discoveryTopic("number", "emergency_cool"), emergencyCoolDiscoveryJson());  // #163
   pubRetained(discoveryTopic("switch", "em_heat"), emHeatDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "lock"), lockDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "outdoor_temp"), outdoorTempDiscoveryJson());
@@ -1323,6 +1336,8 @@ void subscribeAll() {
   gMqtt.subscribe(hm::topic::kCmdOtaApply);
 #endif
   gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
+  gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
+  gMqtt.subscribe("slytherm/cmd/emergency_cool");
 #ifdef SLYTHERM_UI
   gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series (UI targets only)
 #endif
@@ -1336,6 +1351,7 @@ enum PubIdx : uint8_t {
   PUB_ACTION, PUB_BLOWER, PUB_EQUIP, PUB_MOD, PUB_OAT, PUB_OATSRC, PUB_FUSION, PUB_CMOR,
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
   PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
+  PUB_EMGHEAT, PUB_EMGCOOL,  // #163 configurable emergency setpoints (retained, NVS-backed)
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1390,6 +1406,11 @@ extern "C" bool otaSafeToReboot() {
   return millis() - gOtaLastBusyMs >= kOtaIdleWindowMs;  // idle-since-boot counts
 }
 
+// #163 emergency setpoints are defined further down (near gFallbackApplied);
+// forward-declare so the retained state echo below can read them.
+extern float gEmergencyHeatC;
+extern float gEmergencyCoolC;
+
 void publishSnapshot(bool force) {
   Snapshot s;
   xSemaphoreTake(gSnapMux, portMAX_DELAY);
@@ -1418,6 +1439,12 @@ void publishSnapshot(bool force) {
   pubState(PUB_LOW, topic::kStateTargetTempLow, b, force, /*retain=*/true);
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(s.coolSp));
   pubState(PUB_HIGH, topic::kStateTargetTempHigh, b, force, /*retain=*/true);
+  // #163 emergency setpoints RETAINED so the configured safe values are readable
+  // (they only take effect after the 30-min MQTT-stale fallback latches).
+  snprintf(b, sizeof(b), "%.1f", static_cast<double>(gEmergencyHeatC));
+  pubState(PUB_EMGHEAT, "slytherm/state/emergency_heat", b, force, /*retain=*/true);
+  snprintf(b, sizeof(b), "%.1f", static_cast<double>(gEmergencyCoolC));
+  pubState(PUB_EMGCOOL, "slytherm/state/emergency_cool", b, force, /*retain=*/true);
   // EMERGENCY_HEAT reports "heat"; the em_heat switch carries the truth (docs/06).
   pubState(PUB_MODE, topic::kStateMode, s.emHeat ? "heat" : toString(s.mode), force);
   // #128: fan mode + circulate config RETAINED — a reconnecting Remote/HA reads
@@ -2023,10 +2050,19 @@ bool gSetpointsValidated = false;
 bool gConfigOk = true;
 uint32_t gLastInboundS = 0;       // last accepted MQTT traffic (stale clock)
 bool gFallbackApplied = false;
+// #163 emergency setpoints: when the network is stale (kMqttStaleS = 30 min) the
+// system runs these locally-owned setpoints instead of a hardcoded pair, paired
+// with the on-board SHT31 (fusion slot 0) as the temp source. Configured from HA
+// while online (cmd/emergency_heat|cool) and persisted to NVS so they survive the
+// outage. Defaults are conservative unoccupied-safe values (owner-chosen).
+constexpr float kEmergencyHeatDefaultC = 20.0f;  // safe heat floor
+constexpr float kEmergencyCoolDefaultC = 24.0f;  // safe cool ceiling
+float gEmergencyHeatC = kEmergencyHeatDefaultC;
+float gEmergencyCoolC = kEmergencyCoolDefaultC;
 bool gWdtPetLevel = false;
 float gLastHpEmittedPct = 0.0f;
 
-#ifdef SLYTHERM_DS18B20
+#if defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)
 void pollLocalSensors(uint32_t nowS);
 #endif
 
@@ -2175,6 +2211,18 @@ void consumeCommands(uint32_t nowS) {
   if (p.hasHigh) {
     if (p.manualSetpoint) gModeSm->setCoolSetpoint(p.highC, nowS);
     else                  gModeSm->setCoolSetpoint(p.highC);
+  }
+  // #163 emergency setpoints: persist to NVS (survive the outage); if the system
+  // is ALREADY running on the fallback, apply the new value live.
+  if (p.hasEmergHeat) {
+    gEmergencyHeatC = clampF(p.emergHeatC, hm::kClimateMinTempC, hm::kClimateMaxTempC);
+    gPrefs.putFloat("emghsp", gEmergencyHeatC);
+    if (gFallbackApplied) gModeSm->setHeatSetpoint(gEmergencyHeatC);
+  }
+  if (p.hasEmergCool) {
+    gEmergencyCoolC = clampF(p.emergCoolC, hm::kClimateMinTempC, hm::kClimateMaxTempC);
+    gPrefs.putFloat("emgcsp", gEmergencyCoolC);
+    if (gFallbackApplied) gModeSm->setCoolSetpoint(gEmergencyCoolC);
   }
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
   // A remote setpoint/mode/preset change is a user-directed request: arm the
@@ -2695,7 +2743,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   consumeCommands(nowS);
 
   // ---- Inputs ----
-#ifdef SLYTHERM_DS18B20
+#if defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)
   pollLocalSensors(nowS);
 #endif
   const FusedTemp fused = gFusion.fusedTemp(nowS);
@@ -2719,11 +2767,15 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   const bool setpointFresh = nowS - gLastInboundS < kMqttStaleS;
   if (!setpointFresh && !gFallbackApplied) {
     gFallbackApplied = true;
-    // Dual-bounded, mode = last user mode, never escalate OFF.
-    gModeSm->setHeatSetpoint(kFallbackHeatSetpointC);
-    gModeSm->setCoolSetpoint(kFallbackCoolSetpointC);
+    // Locally-owned emergency setpoints (#163). Dual-bounded, mode = last user
+    // mode, never escalate OFF.
+    gModeSm->setHeatSetpoint(gEmergencyHeatC);
+    gModeSm->setCoolSetpoint(gEmergencyCoolC);
   }
   if (setpointFresh) gFallbackApplied = false;
+  // (The SHT31 is registered as fusion slot 0 / isLocal, which SensorFusion
+  //  already excludes from normal room fusion and uses only for the degraded
+  //  fallback tier — so it's emergency-only without any participation toggle.)
   glueAlarm(gFallbackApplied, cfg::kAlarmMqttFallback, safety::Severity::kAdvisory,
             "MQTT stale: fallback setpoints", nowS, /*autoClear=*/true);
 
@@ -3223,6 +3275,13 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     for (size_t i = 0; i < kFusionSlots && rn < ui::kMaxSensorRows; ++i) {
       if (!gSensorTable[i].used) continue;
       const SensorStatus stt = gFusion.status(static_cast<uint8_t>(i), nowS);
+#ifdef SLYTHERM_LOCAL_SENSOR
+      // #163: slot 0 is the controller-attached emergency SHT31 (isLocal). It's
+      // registered at boot regardless, so only surface it once it's actually
+      // reading — an unwired sensor shouldn't clutter the roster.
+      const bool isEmerg = (i == 0);
+      if (isEmerg && !stt.hasTemp) continue;
+#endif
       ui::SensorRow& r = rows[rn++];
       const char* disp = gSensorTable[i].disp[0] ? gSensorTable[i].disp : gSensorTable[i].name;  // #85: friendly name, fallback to id
       strlcpy(r.name, disp, sizeof(r.name));
@@ -3234,6 +3293,9 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       r.healthy = stt.faults == 0 && stt.hasTemp;
       r.dominant = (static_cast<uint8_t>(i) == dom);
       r.lastOccAgeS = stt.lastOccAgeS;
+#ifdef SLYTHERM_LOCAL_SENSOR
+      if (isEmerg) { r.emergency = true; r.emergencyActive = gFallbackApplied; }
+#endif
     }
     gUi.setSensorRows(rows, rn);
   }
@@ -3301,6 +3363,49 @@ void pollLocalSensors(uint32_t nowS) {
   gFusion.update(0, t, Occupancy::kUnknown, nowS);
   if (gDallas->getDeviceCount() > 1)
     gOat.submit(OatRung::kWired, gDallas->getTempCByIndex(1), nowS);
+}
+#endif
+
+#if defined(SLYTHERM_SHT31) && !defined(SLYTHERM_DS18B20)
+// On-board SHT31-D (0x44) on the shared panel I2C bus (Wire, SDA8/SCL9; #163).
+// Two-phase + NON-BLOCKING: issue a no-clock-stretch measurement (0x2400), then
+// read 6 bytes on a later poll (>=20 ms) — the control loop never blocks, and the
+// (per-transaction HAL-mutexed) GT911 touch poll on the same bus interleaves
+// safely (different address). CRC-8 (poly 0x31, init 0xFF) guards a corrupt read;
+// SensorFusion's range gate rejects any out-of-band value. As fusion slot 0
+// (isLocal) it feeds the degraded/fallback tier only — never normal room fusion.
+uint8_t sht31Crc(const uint8_t* d, int n) {
+  uint8_t c = 0xFF;
+  for (int i = 0; i < n; ++i) {
+    c ^= d[i];
+    for (int b = 0; b < 8; ++b) c = (c & 0x80) ? static_cast<uint8_t>((c << 1) ^ 0x31)
+                                               : static_cast<uint8_t>(c << 1);
+  }
+  return c;
+}
+uint32_t gShtLastMs = 0, gShtIssuedMs = 0;
+bool gShtMeasuring = false;
+constexpr uint8_t kShtAddr = 0x44;
+
+void pollLocalSensors(uint32_t nowS) {
+  const uint32_t nowMs = millis();
+  if (!gShtMeasuring) {
+    if (nowMs - gShtLastMs < 15000) return;                 // ~15 s cadence
+    Wire.beginTransmission(kShtAddr);
+    Wire.write(0x24); Wire.write(0x00);                     // single-shot, no clock stretch, high rep
+    if (Wire.endTransmission() != 0) { gShtLastMs = nowMs; return; }  // not wired yet -> retry
+    gShtIssuedMs = nowMs; gShtMeasuring = true;
+    return;
+  }
+  if (nowMs - gShtIssuedMs < 20) return;                    // wait out the measurement
+  gShtMeasuring = false; gShtLastMs = nowMs;
+  uint8_t b[6];
+  if (Wire.requestFrom(kShtAddr, static_cast<uint8_t>(6)) != 6) return;
+  for (uint8_t i = 0; i < 6; ++i) b[i] = static_cast<uint8_t>(Wire.read());
+  if (sht31Crc(b, 2) != b[2]) return;                       // corrupt temperature word -> drop
+  const uint16_t raw = static_cast<uint16_t>((b[0] << 8) | b[1]);
+  const float t = -45.0f + 175.0f * static_cast<float>(raw) / 65535.0f;
+  gFusion.update(0, t, Occupancy::kUnknown, nowS);
 }
 #endif
 
@@ -3463,6 +3568,11 @@ void setup() {
                                     hm::kClimateMinTempC, hm::kClimateMaxTempC));
     gModeSm->setCoolSetpoint(clampF(gPrefs.getFloat("csp", kFallbackCoolSetpointC),
                                     hm::kClimateMinTempC, hm::kClimateMaxTempC));
+    // #163 emergency setpoints (used while the network is stale; persisted).
+    gEmergencyHeatC = clampF(gPrefs.getFloat("emghsp", kEmergencyHeatDefaultC),
+                             hm::kClimateMinTempC, hm::kClimateMaxTempC);
+    gEmergencyCoolC = clampF(gPrefs.getFloat("emgcsp", kEmergencyCoolDefaultC),
+                             hm::kClimateMinTempC, hm::kClimateMaxTempC);
     // Restored mode is structurally cross-checked against OAT lockouts
     // (docs/04 §3): all OAT rungs are stale at boot -> fail-cold, so a
     // restored COOL/HP mode cannot demand until a live, permitting OAT.

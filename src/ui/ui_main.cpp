@@ -511,15 +511,27 @@ void renderMain(const DisplayState& s){ char b[128];
       char tb[16]; snprintf(tb,sizeof(tb),"%.1f\xC2\xB0",(double)r.tempC); setTxt(ro.temp,tb);
       // #89 single status word: stale > Following (drives demand) > In use (occupied) > Away[ Nh]
       char st[24];
-      if(!r.healthy) strcpy(st,"stale");
+      if(r.emergency) strcpy(st, r.emergencyActive?"Active":"Standby");   // #163 controller-attached
+      else if(!r.healthy) strcpy(st,"stale");
       else if(r.dominant) strcpy(st,"Following");
       else if(r.occupied) strcpy(st,"In use");
       else if(r.lastOccAgeS==0xFFFFFFFFu) strcpy(st,"Away");
       else if(r.lastOccAgeS<3600u) strcpy(st,"Away <1h");
       else snprintf(st,sizeof(st),"Away %luh",(unsigned long)(r.lastOccAgeS/3600u));
       setTxt(ro.pres,st);
-      lv_obj_set_style_text_color(ro.pres,lv_color_hex(!r.healthy?COL_WARN:COL_MUTED),0);
-      setTxt(ro.btnlbl, r.participating?"On":"Off"); lv_obj_set_style_bg_color(ro.btn,lv_color_hex(r.participating?COL_OK:COL_RAISED),0);
+      lv_obj_set_style_text_color(ro.pres,lv_color_hex(!r.healthy&&!r.emergency?COL_WARN:COL_MUTED),0);
+      // #163 emergency sensor: a fixed, non-selectable "EMERG" pill (green when it
+      // is actively driving demand, gray on standby) instead of the On/Off toggle.
+      // Clearing CLICKABLE alone makes it non-selectable (no click event fires, so
+      // sensorToggleEvt never runs); avoid LV_STATE_DISABLED so the theme doesn't
+      // dim our explicit green.
+      if(r.emergency){
+        setTxt(ro.btnlbl,"EMERG"); lv_obj_clear_flag(ro.btn,LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_bg_color(ro.btn,lv_color_hex(r.emergencyActive?COL_OK:COL_RAISED),0);
+      } else {
+        lv_obj_add_flag(ro.btn,LV_OBJ_FLAG_CLICKABLE);
+        setTxt(ro.btnlbl, r.participating?"On":"Off"); lv_obj_set_style_bg_color(ro.btn,lv_color_hex(r.participating?COL_OK:COL_RAISED),0);
+      }
       lv_obj_clear_flag(ro.row,LV_OBJ_FLAG_HIDDEN); }
     else { gRowName[i][0]=0; lv_obj_add_flag(ro.row,LV_OBJ_FLAG_HIDDEN); } }
   if(wSysBody){ char sb[300];

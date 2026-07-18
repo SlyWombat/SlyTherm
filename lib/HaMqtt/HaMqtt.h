@@ -50,6 +50,8 @@ constexpr const char* kCmdFanMode        = SLYTHERM_TOPIC_PREFIX "cmd/fan_mode";
 // Remote/HA reads the truth; the panel Fan sheet and HA both publish the cmd.
 constexpr const char* kCmdFanCirculateMin = SLYTHERM_TOPIC_PREFIX "cmd/fan_circulate_min";
 constexpr const char* kCmdFanCirculatePct = SLYTHERM_TOPIC_PREFIX "cmd/fan_circulate_pct";
+constexpr const char* kCmdEmergencyHeat   = SLYTHERM_TOPIC_PREFIX "cmd/emergency_heat";  // #163 NVS-backed safe setpoint
+constexpr const char* kCmdEmergencyCool   = SLYTHERM_TOPIC_PREFIX "cmd/emergency_cool";  // #163
 constexpr const char* kCmdPreset         = SLYTHERM_TOPIC_PREFIX "cmd/preset";
 constexpr const char* kCmdHold           = SLYTHERM_TOPIC_PREFIX "cmd/hold";  // hold type or "clear"
 constexpr const char* kCmdEmHeat         = SLYTHERM_TOPIC_PREFIX "cmd/em_heat";  // switch "ON"/"OFF" (G15)
@@ -73,6 +75,8 @@ constexpr const char* kStateMode            = SLYTHERM_TOPIC_PREFIX "state/mode"
 constexpr const char* kStateFanMode         = SLYTHERM_TOPIC_PREFIX "state/fan_mode";
 constexpr const char* kStateFanCirculateMin = SLYTHERM_TOPIC_PREFIX "state/fan_circulate_min";  // #128 (retained)
 constexpr const char* kStateFanCirculatePct = SLYTHERM_TOPIC_PREFIX "state/fan_circulate_pct";  // #128 (retained)
+constexpr const char* kStateEmergencyHeat   = SLYTHERM_TOPIC_PREFIX "state/emergency_heat";  // #163 (retained)
+constexpr const char* kStateEmergencyCool   = SLYTHERM_TOPIC_PREFIX "state/emergency_cool";  // #163 (retained)
 constexpr const char* kStatePreset          = SLYTHERM_TOPIC_PREFIX "state/preset";
 constexpr const char* kStateHold            = SLYTHERM_TOPIC_PREFIX "state/hold";  // {type, remaining}
 constexpr const char* kStateAction          = SLYTHERM_TOPIC_PREFIX "state/action";
@@ -542,6 +546,8 @@ std::string sensorOffsetDiscoveryJson(const std::string& sensorId);
 // tunables — minutes-per-hour (0-60, 5-step) and speed % (25-75, 25-step).
 std::string fanCirculateMinDiscoveryJson();
 std::string fanCirculatePctDiscoveryJson();
+std::string emergencyHeatDiscoveryJson();  // #163 number, °C, config: safe heat setpoint
+std::string emergencyCoolDiscoveryJson();  // #163 number, °C, config: safe cool setpoint
 
 }  // namespace hamqtt
 }  // namespace dettson
