@@ -533,6 +533,13 @@ void Ct485Thermostat::tick(uint32_t nowMs) {
     }
     if (timeReached(nowMs, refMs + dueMs)) cs.sendNeeded = true;
   }
+  // Reaching here means NO active channel is past its refresh window — either it
+  // recovered or there's no active demand (idle in the deadband). Starvation is a
+  // transient "recovering" condition, so auto-clear the latch. Without this it
+  // stuck on "Furnace link interrupted" while idle (no demand ACK to clear it via
+  // handleControlResponse). comms-loss/pairing still latch — they need operator
+  // attention.
+  starvationAlarm_ = false;
 }
 
 // ---------------- State getters ----------------
