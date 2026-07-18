@@ -2225,12 +2225,16 @@ void consumeCommands(uint32_t nowS) {
     if (gFallbackApplied) gModeSm->setCoolSetpoint(gEmergencyCoolC);
   }
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
-  // A remote setpoint/mode/preset change is a user-directed request: arm the
+  // A remote setpoint/mode/em-heat change is a user-directed request: arm the
   // manual compressor-start bypass so the resulting demand isn't held by the
-  // guard min-OFF (ODU restart delay is the backstop; see GuardGate). NB per
-  // #91 an HA *scheduler* setpoint write is indistinguishable here from a human
-  // tapping HA, so it also arms — safe: max-starts/hour still caps oscillation.
-  if (p.hasMode || p.hasEmHeat || p.hasSetpoint || p.hasLow || p.hasHigh || p.hasPreset) {
+  // guard min-OFF (ODU restart delay is the backstop; see GuardGate).
+  // #167b: do NOT arm on p.hasPreset. The HA daily schedule drives comfort by
+  // publishing cmd/preset at every preset boundary (presets are thermostat-owned;
+  // HA only selects), so arming on preset writes bypassed the #140 long-cycle
+  // min-OFF hygiene several times a day — exactly at the big-error moments. A
+  // preset selection is not urgent; it respects min-OFF (ODU delay backstops).
+  // On-panel/Remote preset TAPS still arm explicitly via the UI-intent path.
+  if (p.hasMode || p.hasEmHeat || p.hasSetpoint || p.hasLow || p.hasHigh) {
     gGuardGate.armManual(nowS);
     gCoolShaper.armManual(nowS);  // #151: also relax the cool shaper's demand-level min-OFF
   }
@@ -3007,9 +3011,20 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   hf.sensorValid = fused.valid;
   hf.setpointFresh = setpointFresh;
   hf.mqttAlive = gMqttConnected;
+  // #167a: the SafetySupervisor applies its OWN kBusDeadmanS window to busAlive.
+  // Feeding it a value already pre-thresholded at kBusDeadmanS double-counted the
+  // deadman (30 s here + 30 s in the supervisor = 60 s silence-to-demand-drop).
+  // Feed the supervisor RAW per-cycle liveness (did the last-RX second advance
+  // since the previous tick) so its kBusDeadmanS is the single 30 s threshold,
+  // and keep a separate 30 s-smoothed value for the UI link dot (raw would
+  // flicker between frames).
 #ifdef SLYTHERM_CT485_UART
-  hf.busAlive = gLastBusRxS != 0 && nowS - gLastBusRxS < kBusDeadmanS;
+  const bool busSmoothed = gLastBusRxS != 0 && nowS - gLastBusRxS < kBusDeadmanS;
+  static uint32_t sPrevBusRxS = 0;
+  hf.busAlive = (gLastBusRxS != sPrevBusRxS);  // frame seen this cycle (raw liveness)
+  sPrevBusRxS = gLastBusRxS;
 #else
+  const bool busSmoothed = true;
   hf.busAlive = true;  // no bus fitted on the bench — deadman idle by design
 #endif
   hf.controlLoopTicking = true;  // we are the loop; a stall stops update() itself
@@ -3238,7 +3253,7 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     }
     gUi.setOta(u, os.progressPct, os.available); }
 #endif
-  gUi.setLinkHealth(gWifiConnected, gMqttConnected, hf.busAlive,
+  gUi.setLinkHealth(gWifiConnected, gMqttConnected, busSmoothed,  // #167a smoothed (not raw hf.busAlive)
                     gWifiConnected ? static_cast<int8_t>(WiFi.RSSI()) : 0);  // #127
   { struct tm ti; char cb[24] = "";  // top-bar clock (#69); blank until NTP syncs
     if (getLocalTime(&ti, 0)) {
