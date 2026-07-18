@@ -107,6 +107,18 @@ static void bootZoom(void* v,int32_t z){ lv_img_set_zoom((lv_obj_t*)v,(uint16_t)
 static void bootRow(lv_obj_t* l,const char* name,bool ok){ if(!l) return;
   char b[48]; snprintf(b,sizeof(b),"%s   %s",name, ok?"ready":"connecting...");   // ASCII dots: montserrat subset has no U+2026 ellipsis (tofu)
   setTxt(l,b); lv_obj_set_style_text_color(l,lv_color_hex(ok?COL_OK:COL_MUTED),0); }
+// #92b: a settings gear on the warm-up splash so a panel with saved-but-wrong
+// Wi-Fi (connected to a network that can't reach its services) still has a way
+// into Wi-Fi setup instead of being stranded on the connecting screen. Tears the
+// splash down and opens the Wi-Fi overlay on Home (owner-requested 2026-07-18).
+static void bootSettingsCb(lv_event_t*){
+  lv_anim_del(gBootMark,nullptr);       // stop the breathing anim
+  gBootActive=false; gBootExiting=false;
+  lv_scr_load(scrMain);
+  if(gTabview) lv_tabview_set_act(gTabview,0,LV_ANIM_OFF);
+  openWifi(nullptr);
+  Serial.println("[ui] boot-splash settings -> Wi-Fi setup");
+}
 void buildBoot(){
   scrBoot=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrBoot,lv_color_hex(COL_BG),0);
   lv_obj_set_style_pad_all(scrBoot,0,0); lv_obj_clear_flag(scrBoot,LV_OBJ_FLAG_SCROLLABLE);
@@ -122,7 +134,12 @@ void buildBoot(){
   bcWifi=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcWifi,&lv_font_montserrat_16,0); lv_obj_align(bcWifi,LV_ALIGN_TOP_MID,0,330);
   bcMqtt=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcMqtt,&lv_font_montserrat_16,0); lv_obj_align(bcMqtt,LV_ALIGN_TOP_MID,0,358);
   bcOat=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcOat,&lv_font_montserrat_16,0); lv_obj_align(bcOat,LV_ALIGN_TOP_MID,0,386);
-  bcRoom=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcRoom,&lv_font_montserrat_16,0); lv_obj_align(bcRoom,LV_ALIGN_TOP_MID,0,414); }
+  bcRoom=lv_label_create(scrBoot); lv_obj_set_style_text_font(bcRoom,&lv_font_montserrat_16,0); lv_obj_align(bcRoom,LV_ALIGN_TOP_MID,0,414);
+  // #92b settings gear (top-right, created last so it stays above the breathing mark)
+  lv_obj_t* gear=lv_btn_create(scrBoot); lv_obj_set_size(gear,60,60); lv_obj_align(gear,LV_ALIGN_TOP_RIGHT,-14,14);
+  lv_obj_set_style_bg_color(gear,lv_color_hex(COL_RAISED),0); lv_obj_set_style_radius(gear,30,0); lv_obj_set_style_shadow_width(gear,0,0);
+  lv_obj_add_event_cb(gear,bootSettingsCb,LV_EVENT_CLICKED,nullptr);
+  lv_obj_t* gl=lv_label_create(gear); lv_label_set_text(gl,LV_SYMBOL_SETTINGS); lv_obj_set_style_text_color(gl,lv_color_hex(COL_INK),0); lv_obj_center(gl); }
 void renderBoot(const DisplayState& s){
   bootRow(bcWifi,"Wi-Fi",s.wifiOk);
   // #108 persona wording: on the busless Remote the later rows gate on the
