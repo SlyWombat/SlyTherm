@@ -1,8 +1,10 @@
 """SlyLog predictor (#136) — local-LLM HVAC load forecast, RECORD-ONLY.
 
 Every PREDICT_INTERVAL_H hours:
-  1. Build a structured digest from the DB: last-24h cooling/heating cycles,
-     room + outdoor temperature trajectories, occupancy, latest 24h forecast.
+  1. Build a structured digest from the DB: last-24h cooling/heating runtime,
+     room + outdoor temperature trajectories, occupancy, latest 24h forecast,
+     a daily degree-hours -> runtime history table, and the model's own recent
+     prediction errors (calibration feedback).
   2. Ask the local Ollama model for strict JSON:
        {expected_cooling_hours, expected_heating_hours, peak_window,
         confidence, recommendation}
@@ -10,6 +12,13 @@ Every PREDICT_INTERVAL_H hours:
      Timeouts/failures produce a failure row so silent skips are visible.
   3. Compute + store a degree-day linear baseline row alongside every run
      so the LLM stays scoreable against an honest model.
+
+Runtime truth comes from `hvac_state` (the thermostat's own minute-sampled
+action), NOT from `events` cycle_start/cycle_stop: the bus-derived cycle
+events went silent at go-live (2026-07-12, SlyTherm became the demand
+coordinator so the capture no longer hears third-party demand frames), which
+starved the old fit — hot days paired with zero recorded runtime drove the
+slope ~5x too shallow.
 
 This process has NO MQTT client and NO write path to SlyTherm. It reads the
 database, talks to Ollama, and writes prediction rows. Nothing else, ever.
@@ -20,7 +29,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import psycopg
@@ -54,7 +63,17 @@ weather forecast for the next 24 hours.
 
 {digest}
 
-Predict the NEXT 24 hours. Respond with ONLY a JSON object, no markdown, \
+Predict the NEXT 24 hours. Your prediction is scored afterwards against the \
+thermostat's actual equipment-on hours, so accuracy beats drama:
+- daily_history maps outdoor degree-hours to ACTUAL runtime for this exact \
+house — derive your magnitude from it, not from general intuition.
+- your_recent_predictions_vs_actuals shows your own recent errors — if you \
+have been running high or low, correct for it.
+- degree_day_baseline_estimate (when present) is a sanity anchor; large \
+departures from it need a concrete reason visible in the forecast.
+- Keep confidence honest: it should reflect your recent error record.
+
+Respond with ONLY a JSON object, no markdown, \
 no commentary, exactly these keys:
 {{
   "expected_cooling_hours": <float, total compressor-on hours in next 24h>,
@@ -81,41 +100,112 @@ def q(conn, sql: str, params=()) -> list[tuple]:
         return cur.fetchall()
 
 
-def cycles_last_24h(conn, cmd: str) -> list[dict]:
-    """Pair cycle_start/cycle_stop events for one demand command."""
+def runtime_segments_last_24h(conn, action: str) -> list[dict]:
+    """Contiguous runs of one hvac_state action (minute-sampled truth)."""
     rows = q(conn, """
-        SELECT ts, kind, (detail->>'pct')::float
-        FROM events
-        WHERE kind IN ('cycle_start','cycle_stop')
-          AND detail->>'cmd' = %s
-          AND ts > now() - interval '25 hours'
-        ORDER BY ts""", (cmd,))
-    cycles, start, pct = [], None, None
-    for ts, kind, p in rows:
-        if kind == "cycle_start":
-            start, pct = ts, p
-        elif kind == "cycle_stop" and start is not None:
-            cycles.append({"start": start.isoformat(), "stop": ts.isoformat(),
-                           "minutes": round((ts - start).total_seconds() / 60, 1),
-                           "demand_pct": pct})
+        SELECT time_bucket('1 minute', ts) m
+        FROM hvac_state
+        WHERE ts > now() - interval '24 hours' AND action = %s
+        GROUP BY 1 ORDER BY 1""", (action,))
+    runs, start, prev = [], None, None
+    for (m,) in rows:
+        if prev is not None and (m - prev).total_seconds() > 180:
+            runs.append((start, prev))
             start = None
+        if start is None:
+            start = m
+        prev = m
     if start is not None:
-        cycles.append({"start": start.isoformat(), "stop": None,
-                       "minutes": round((datetime.now(timezone.utc) - start)
-                                        .total_seconds() / 60, 1),
-                       "demand_pct": pct, "still_running": True})
-    return cycles
+        runs.append((start, prev))
+    now = datetime.now(timezone.utc)
+    out = []
+    for s, e in runs:
+        still = (now - e).total_seconds() < 180
+        out.append({"start": s.isoformat(),
+                    "stop": None if still else (e + timedelta(minutes=1)).isoformat(),
+                    "minutes": round((e - s).total_seconds() / 60 + 1, 1),
+                    **({"still_running": True} if still else {})})
+    return out
+
+
+def daily_runtime_history(conn) -> list[dict]:
+    """Per-day degree-hours vs actual runtime — the calibration table shared
+    by the baseline fit and the LLM digest. Only full, well-sampled days
+    (coverage >= 75%, current partial day excluded)."""
+    rows = q(conn, """
+        WITH dd AS (
+            SELECT time_bucket('1 day', ts) d,
+                   sum(greatest(temp_c - %s, 0)) / count(*) * 24 AS cdh,
+                   sum(greatest(%s - temp_c, 0)) / count(*) * 24 AS hdh
+            FROM outdoor_temps WHERE ts > now() - interval '21 days'
+            GROUP BY 1),
+        hs AS (
+            SELECT time_bucket('1 day', ts) d,
+                   count(DISTINCT time_bucket('1 minute', ts))
+                       FILTER (WHERE action = 'cooling') / 60.0 AS cool_h,
+                   count(DISTINCT time_bucket('1 minute', ts))
+                       FILTER (WHERE action = 'heating') / 60.0 AS heat_h,
+                   count(DISTINCT time_bucket('1 minute', ts)) / 1440.0 AS cov
+            FROM hvac_state WHERE ts > now() - interval '21 days'
+            GROUP BY 1)
+        SELECT dd.d, dd.cdh, dd.hdh, hs.cool_h, hs.heat_h
+        FROM dd JOIN hs ON hs.d = dd.d
+        WHERE hs.cov >= 0.75 AND dd.d < time_bucket('1 day', now())
+        ORDER BY dd.d""", (BASE_C, BASE_C))
+    return [{"day": d.date().isoformat(),
+             "cooling_degree_hours": round(float(cdh or 0), 1),
+             "heating_degree_hours": round(float(hdh or 0), 1),
+             "cooling_on_hours": round(float(ch or 0), 2),
+             "heating_on_hours": round(float(hh or 0), 2)}
+            for d, cdh, hdh, ch, hh in rows]
+
+
+def recent_llm_errors(conn) -> list[dict]:
+    """This model's last few scoreable predictions vs actual runtime — fed
+    back into the prompt so the LLM can see and correct its own bias."""
+    rows = q(conn, """
+        SELECT p.ts, (p.prediction->>'expected_cooling_hours')::float,
+               (p.prediction->>'expected_heating_hours')::float,
+               (SELECT count(DISTINCT time_bucket('1 minute', h.ts)) / 60.0
+                  FROM hvac_state h
+                 WHERE h.ts >= p.ts AND h.ts < p.ts + interval '24 hours'
+                   AND h.action = 'cooling'),
+               (SELECT count(DISTINCT time_bucket('1 minute', h.ts)) / 60.0
+                  FROM hvac_state h
+                 WHERE h.ts >= p.ts AND h.ts < p.ts + interval '24 hours'
+                   AND h.action = 'heating')
+        FROM predictions p
+        WHERE p.model = %s AND p.kind = 'llm' AND p.status = 'ok'
+          AND p.ts < now() - interval '24 hours'
+          AND p.prediction ? 'expected_cooling_hours'
+        ORDER BY p.ts DESC LIMIT 6""", (MODEL,))
+    return [{"predicted_at": ts.isoformat(),
+             "predicted_cooling_hours": pc,
+             "actual_cooling_hours": round(float(ac or 0), 2),
+             "predicted_heating_hours": ph,
+             "actual_heating_hours": round(float(ah or 0), 2)}
+            for ts, pc, ph, ac, ah in rows]
 
 
 def build_digest(conn) -> dict:
     digest: dict = {"generated_at": datetime.now().astimezone().isoformat()}
 
-    cool = cycles_last_24h(conn, "COOL_DEMAND")
-    heat = cycles_last_24h(conn, "HEAT_DEMAND")
+    cool = runtime_segments_last_24h(conn, "cooling")
+    heat = runtime_segments_last_24h(conn, "heating")
     digest["cooling_cycles_last_24h"] = cool
     digest["heating_cycles_last_24h"] = heat
     digest["cooling_on_hours_last_24h"] = round(sum(c["minutes"] for c in cool) / 60, 2)
     digest["heating_on_hours_last_24h"] = round(sum(c["minutes"] for c in heat) / 60, 2)
+
+    digest["daily_history"] = {
+        "note": (f"per full day: outdoor degree-hours (base {BASE_C}C) vs actual "
+                 "equipment-on hours — calibrate your totals against this mapping"),
+        "days": daily_runtime_history(conn)}
+
+    digest["your_recent_predictions_vs_actuals"] = {
+        "note": ("your own most recent scoreable forecasts and what actually "
+                 "happened — correct any systematic over- or under-forecast"),
+        "runs": recent_llm_errors(conn)}
 
     digest["room_temps_last_24h"] = [
         {"sensor": s, "avg_c": round(a, 2), "min_c": round(lo, 2),
@@ -229,45 +319,22 @@ def ask_llm(digest: dict) -> dict:
 
 
 # -------------------------------------------------------------------- baseline
-def degree_day_baseline(conn, digest: dict) -> dict:
-    """Honest linear baseline: on-hours ~= slope * degree-hours (through origin),
-    slope fit over up to 14 daily buckets of history, falling back to the
-    last-24h ratio while history is short."""
-    daily = q(conn, """
-        WITH dd AS (
-            SELECT time_bucket('1 day', ts) d,
-                   sum(greatest(temp_c - %s, 0)) / count(*) * 24 AS cdh,
-                   sum(greatest(%s - temp_c, 0)) / count(*) * 24 AS hdh
-            FROM outdoor_temps WHERE ts > now() - interval '14 days'
-            GROUP BY 1),
-        cyc AS (
-            SELECT time_bucket('1 day', ts) d, detail->>'cmd' cmd, kind, ts,
-                   lead(ts) OVER (PARTITION BY detail->>'cmd' ORDER BY ts) next_ts,
-                   lead(kind) OVER (PARTITION BY detail->>'cmd' ORDER BY ts) next_kind
-            FROM events
-            WHERE kind IN ('cycle_start','cycle_stop')
-              AND ts > now() - interval '14 days'),
-        onh AS (
-            SELECT d, cmd,
-                   sum(extract(epoch FROM next_ts - ts)) / 3600 AS hours
-            FROM cyc WHERE kind = 'cycle_start' AND next_kind = 'cycle_stop'
-            GROUP BY 1, 2)
-        SELECT dd.d, dd.cdh, dd.hdh,
-               coalesce(c.hours, 0) AS cool_h, coalesce(h.hours, 0) AS heat_h
-        FROM dd
-        LEFT JOIN onh c ON c.d = dd.d AND c.cmd = 'COOL_DEMAND'
-        LEFT JOIN onh h ON h.d = dd.d AND h.cmd = 'HEAT_DEMAND'
-        ORDER BY dd.d""", (BASE_C, BASE_C))
+def degree_day_baseline(digest: dict) -> dict:
+    """Honest linear baseline: on-hours ~= slope * degree-hours (through
+    origin), slope fit over the digest's daily_history table (hvac_state
+    runtime truth, full well-sampled days only)."""
+    daily = digest.get("daily_history", {}).get("days", [])
 
     def slope(pairs: list[tuple[float, float]]) -> float:
-        # SQL numeric arrives as Decimal — normalize to float before mixing
         pairs = [(float(x), float(y)) for x, y in pairs]
         num = sum(x * y for x, y in pairs)
         den = sum(x * x for x, y in pairs)
         return num / den if den > 0 else 0.0
 
-    slope_cool = slope([(r[1] or 0, r[3] or 0) for r in daily])
-    slope_heat = slope([(r[2] or 0, r[4] or 0) for r in daily])
+    slope_cool = slope([(d["cooling_degree_hours"], d["cooling_on_hours"])
+                        for d in daily])
+    slope_heat = slope([(d["heating_degree_hours"], d["heating_on_hours"])
+                        for d in daily])
 
     fc = digest.get("forecast_next_24h", [])
     cdh24 = sum(max((h["temp_c"] or 0) - BASE_C, 0) for h in fc)
@@ -277,6 +344,7 @@ def degree_day_baseline(conn, digest: dict) -> dict:
         "expected_cooling_hours": round(slope_cool * cdh24, 2),
         "expected_heating_hours": round(slope_heat * hdh24, 2),
         "method": "degree-day linear (through-origin least squares)",
+        "runtime_source": "hvac_state",
         "base_c": BASE_C,
         "cdh_next_24h": round(cdh24, 1), "hdh_next_24h": round(hdh24, 1),
         "slope_cool_h_per_cdh": round(slope_cool, 4),
@@ -301,13 +369,23 @@ def run_once(conn) -> None:
 
     # baseline first — it must exist even when the LLM fails
     try:
-        baseline = degree_day_baseline(conn, digest)
+        baseline = degree_day_baseline(digest)
         store(conn, "degree-day-linear", "baseline", "ok",
-              {"forecast_next_24h": digest.get("forecast_next_24h", [])},
+              {"forecast_next_24h": digest.get("forecast_next_24h", []),
+               "daily_history": digest.get("daily_history")},
               baseline, None, None)
         log.info("baseline: cool=%.2fh heat=%.2fh",
                  baseline["expected_cooling_hours"],
                  baseline["expected_heating_hours"])
+        # Let the LLM see the statistical anchor — its job is to beat the
+        # baseline by folding in forecast shape/occupancy, not to guess the
+        # magnitude from scratch.
+        digest["degree_day_baseline_estimate"] = {
+            "note": ("simple statistical model's estimate for the same next "
+                     "24h — a sanity anchor; adjust for forecast/occupancy "
+                     "nuance rather than departing wildly without cause"),
+            "expected_cooling_hours": baseline["expected_cooling_hours"],
+            "expected_heating_hours": baseline["expected_heating_hours"]}
     except Exception as e:
         log.exception("baseline failed")
         store(conn, "degree-day-linear", "baseline", "error", {}, {}, None, str(e))
