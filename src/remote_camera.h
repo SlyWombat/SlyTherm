@@ -10,6 +10,7 @@
 // dot whenever a client is actually being served.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace remote_camera {
