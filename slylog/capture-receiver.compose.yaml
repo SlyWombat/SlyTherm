@@ -11,6 +11,7 @@
       - "8093:8093"
     volumes:
       - ./capture-receiver:/app:ro
-      - /data/slylog/captures:/captures
+      # NOT /data/slylog/captures — that's the CT-485 frame archive
+      - ${DATA_DIR:-/data/slylog}/audit-captures:/captures
     environment:
       TZ: ${TZ:-America/Toronto}

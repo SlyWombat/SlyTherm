@@ -29,12 +29,12 @@ drops it).
 
 The camera Remote POSTs a JPEG + metadata to `:8093/capture` whenever a person
 makes a manual change at the panel (see `src/remote_capture.cpp`). Photos land
-in `/data/slylog/captures/YYYY-MM-DD/`, the event index in
-`captures/events.jsonl`, and `http://kdocker2:8093/` serves a review page
-(newest first, inline photos).
+in `/data/slylog/audit-captures/YYYY-MM-DD/` (NOT `captures/` — that's the
+CT-485 frame archive), the event index in `audit-captures/events.jsonl`, and
+`http://kdocker2:8093/` serves a review page (newest first, inline photos).
 
 **Deploy** (on kdocker2):
-1. `mkdir -p /data/slylog/captures && cp -r capture-receiver /data/stacks/slylog/`
+1. `mkdir -p /data/slylog/audit-captures && cp -r capture-receiver /data/stacks/slylog/`
 2. Merge `capture-receiver.compose.yaml`'s service into
    `/data/stacks/slylog/compose.yaml`.
 3. `cd /data/stacks/slylog && docker compose up -d capture-receiver`
