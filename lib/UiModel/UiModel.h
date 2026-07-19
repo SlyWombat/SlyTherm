@@ -493,6 +493,17 @@ class UiModel : public UiCommands {
   // over user lock) — a reboot must not be a lock bypass.
   bool restoreLock(const LockPersistBlob* blob, uint32_t nowS);
 
+  // --- intent observer (#181 camera-remote audit capture) ---
+  // Optional callback fired from enqueue() for every user change intent that
+  // passed the screen lock — the single choke point for "a person changed
+  // something on this panel". Runs on the caller's task with the model mutex
+  // already held (mutators are always called under it), so the callback MUST
+  // be non-blocking and MUST NOT re-take the model lock. presetName is the
+  // roster name for kSetPreset intents ("" otherwise / no roster match).
+  typedef void (*IntentObserver)(const UiIntent& intent, const char* presetName,
+                                 void* ctx);
+  void setIntentObserver(IntentObserver cb, void* ctx) { obs_ = cb; obsCtx_ = ctx; }
+
   // --- intent queue (control task consumes) ---
   bool popIntent(UiIntent& out);
   size_t pendingIntents() const { return queueCount_; }
@@ -513,6 +524,9 @@ class UiModel : public UiCommands {
   DisplayState  state_;
   uint16_t      dirty_      = kDirtyAll;  // first render draws everything
   uint32_t      generation_ = 0;
+
+  IntentObserver obs_ = nullptr;  // #181: audit-capture hook (may stay null)
+  void* obsCtx_ = nullptr;
 
   UiIntent queue_[kIntentQueueCap] = {};
   size_t   queueHead_  = 0;  // index of oldest

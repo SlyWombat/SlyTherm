@@ -149,6 +149,12 @@ constexpr float kAwbTargetBG = 0.99f;
 bool gBegun = false;
 bool gInitOk = false;
 SemaphoreHandle_t gWireMux = nullptr;  // shared-I2C lock (AE task vs touch poll)
+// #181: the JPEG engine, PPA client, and gJpgOut/gRotBuf/gHalfBuf/gQuartBuf
+// are shared between the :8080 serve paths (httpTask) and captureStill()
+// (the audit-capture task). Serves hold this across encode+send so a capture
+// can never scribble gJpgOut mid-transmission; captureStill holds it only
+// across encode+copy-out.
+SemaphoreHandle_t gEncMux = nullptr;
 uint16_t gAeExp = 0x046c;              // running AE state, seeded from the table
 uint16_t gAeGain = 0x80;               // code units (0x80 = 8x, table default)
 uint32_t gAeDgain = kDgainMin;         // code units (0x400 = 1x)
@@ -757,11 +763,13 @@ void sendIndex(WiFiClient& c) {
 void serveSnapshot(WiFiClient& c) {
   // Round-4: half-res q60 (was full-res q75). ~60KB vs the 606KB peak-pressure
   // outlier — AE/AWB are already tuned, this just shrinks the served frame.
+  xSemaphoreTake(gEncMux, portMAX_DELAY);  // #181: gJpgOut stays ours through the send
   const uint32_t sz = encodeLatest(60, /*scaleDiv=*/2);
-  if (sz == 0) { send503(c, "no frame available"); return; }
+  if (sz == 0) { xSemaphoreGive(gEncMux); send503(c, "no frame available"); return; }
   c.printf("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n"
            "Connection: close\r\n\r\n", (unsigned long)sz);
   sendAll(c, gJpgOut, sz);
+  xSemaphoreGive(gEncMux);
   telnet_log::logf("[cam] snapshot served: %lu bytes", (unsigned long)sz);
 }
 
@@ -784,12 +792,15 @@ void serveStream(WiFiClient& c) {
     for (int i = 0; i < 50 && gSeq == lastSeq; i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (gSeq == lastSeq) continue;  // still no new frame; re-check the socket
     lastSeq = gSeq;
+    xSemaphoreTake(gEncMux, portMAX_DELAY);  // #181: per-frame encode+send owns gJpgOut
     const uint32_t sz = encodeLatest(35, /*scaleDiv=*/4);  // quarter-res q35 stream (round-5): fewer/smaller frames -> less core0 tcpip/WG-encrypt CPU stolen from RX-decrypt
-    if (sz == 0) continue;
+    if (sz == 0) { xSemaphoreGive(gEncMux); continue; }
     c.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n\r\n",
              (unsigned long)sz);
     // Stop on a failed frame send; still-connected means it was a heap abort.
-    if (!sendAll(c, gJpgOut, sz)) { if (c.connected()) lowHeap = true; break; }
+    const bool sentOk = sendAll(c, gJpgOut, sz);
+    xSemaphoreGive(gEncMux);
+    if (!sentOk) { if (c.connected()) lowHeap = true; break; }
     c.print("\r\n");
     sent++;
     // ~10 fps cap
@@ -865,6 +876,7 @@ void begin() {
   if (gBegun) return;
   gBegun = true;
   gWireMux = xSemaphoreCreateMutex();  // before any task could contend
+  gEncMux = xSemaphoreCreateMutex();   // #181: encode-path serialization
   gInitOk = initHw();
   if (!gInitOk) {
     telnet_log::logf("[cam] init FAILED - camera disabled for this boot");
@@ -912,5 +924,26 @@ void resumeAfterOta() {
 bool enabled() { return gEnabled && gInitOk; }
 bool clientActive() { return gClientActive; }
 uint32_t frames() { return gFrames; }
+
+// #181 audit capture — see remote_camera.h. A serve in progress can hold the
+// mutex for the whole tunnel-paced send, so the wait is caller-bounded: a
+// timeout returns 0 and the caller ships a metadata-only event instead.
+uint32_t captureStill(uint8_t* dst, size_t cap, uint8_t quality, int scaleDiv,
+                      uint32_t waitMs) {
+  if (!gInitOk || gCamPaused || dst == nullptr || gEncMux == nullptr) return 0;
+  if (xSemaphoreTake(gEncMux, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
+    telnet_log::logf("[cam] captureStill: encoder busy past %lums", (unsigned long)waitMs);
+    return 0;
+  }
+  uint32_t sz = encodeLatest(quality, scaleDiv);
+  if (sz > cap) {
+    telnet_log::logf("[cam] captureStill: %lu B exceeds %u B buffer",
+                     (unsigned long)sz, (unsigned)cap);
+    sz = 0;
+  }
+  if (sz > 0) memcpy(dst, gJpgOut, sz);
+  xSemaphoreGive(gEncMux);
+  return sz;
+}
 
 }  // namespace remote_camera

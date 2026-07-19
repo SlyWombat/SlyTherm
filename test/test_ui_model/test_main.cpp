@@ -640,6 +640,64 @@ static void test_comp_hold_setter_survives_model_path() {
   TEST_ASSERT_FALSE(m.state().compressorHeldOff);
 }
 
+// ---------- #181 intent observer (camera-remote audit capture) ----------
+
+namespace {
+struct ObsCapture {
+  int calls = 0;
+  IntentType lastType = IntentType::kAckAlarms;
+  char lastPreset[kUiPresetNameLen] = {};
+};
+void obsCb(const UiIntent& it, const char* presetName, void* ctx) {
+  auto* c = static_cast<ObsCapture*>(ctx);
+  ++c->calls;
+  c->lastType = it.type;
+  strncpy(c->lastPreset, presetName, sizeof(c->lastPreset) - 1);
+}
+}  // namespace
+
+static void test_intent_observer_fires_post_lock_with_preset_name() {
+  UiModel m = freshModel();
+  ObsCapture cap;
+  m.setIntentObserver(obsCb, &cap);
+
+  // Fires for a change intent, with the roster name resolved for presets.
+  DisplayState::PresetView pv[2] = {};
+  strncpy(pv[0].name, "home", sizeof(pv[0].name));
+  strncpy(pv[1].name, "away", sizeof(pv[1].name));
+  m.setPresets(pv, 2);
+  m.setPreset(static_cast<Preset>(1));
+  TEST_ASSERT_EQUAL_INT(1, cap.calls);
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kSetPreset),
+                    static_cast<int>(cap.lastType));
+  TEST_ASSERT_EQUAL_STRING("away", cap.lastPreset);
+
+  // Non-preset intents pass "" (no stale name leaks through).
+  m.adjustSetpoint(SetpointSide::kHeat, 0.5f);
+  TEST_ASSERT_EQUAL_INT(2, cap.calls);
+  TEST_ASSERT_EQUAL(static_cast<int>(IntentType::kSetSetpoints),
+                    static_cast<int>(cap.lastType));
+  TEST_ASSERT_EQUAL_STRING("", cap.lastPreset);
+
+  // A lock-blocked change never reaches the observer (post-lock choke point).
+  const uint8_t pin[kPinLen] = {1, 2, 3, 4};
+  m.setUserPin(pin, 0xA5A5A5A5u);
+  m.setLockLevel(LockLevel::kSettingsAndSetpoints);
+  TEST_ASSERT_TRUE(m.lockNow(1000));
+  m.setPreset(static_cast<Preset>(0));
+  TEST_ASSERT_EQUAL_INT(2, cap.calls);
+}
+
+static void test_intent_observer_null_by_default_and_out_of_range_preset() {
+  UiModel m = freshModel();  // no observer set: mutators must not crash
+  m.setMode(UserMode::kHeat);
+  ObsCapture cap;
+  m.setIntentObserver(obsCb, &cap);
+  m.setPreset(static_cast<Preset>(7));  // out of roster range -> "" name
+  TEST_ASSERT_EQUAL_INT(1, cap.calls);
+  TEST_ASSERT_EQUAL_STRING("", cap.lastPreset);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_state_is_safe_and_fully_dirty);
@@ -681,5 +739,7 @@ int main() {
   RUN_TEST(test_comp_hold_not_held_when_no_timer_remaining);
   RUN_TEST(test_comp_hold_lockout_suppresses_soon);
   RUN_TEST(test_comp_hold_setter_survives_model_path);
+  RUN_TEST(test_intent_observer_fires_post_lock_with_preset_name);
+  RUN_TEST(test_intent_observer_null_by_default_and_out_of_range_preset);
   return UNITY_END();
 }

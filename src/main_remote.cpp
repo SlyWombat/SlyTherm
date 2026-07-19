@@ -32,6 +32,7 @@
 #endif
 #ifdef SLYTHERM_CAM
 #include "remote_camera.h"    // #150: HTTP MJPEG camera server (pilot Remote only)
+#include "remote_capture.h"   // #181: who-changed-it audit capture
 #endif
 
 // Dev builds may carry a compiled-in seed; production images ship secretless
@@ -193,6 +194,16 @@ void setup() {
   // the bus again after begin(), so the two can't contend at runtime.
   slytherm_ui::begin(&gUi, gUiMux, /*reducedUi=*/boot_guard::reducedUi(), gFirstRun);
   remote_camera::begin();
+  // #181 audit capture: every user change intent (post screen-lock) queues an
+  // event; the capture task photographs + POSTs to the SlyLog receiver. The
+  // observer runs on the UI task with the model mutex held — noteIntent only
+  // copies into a queue, per the UiModel contract.
+  remote_capture::begin();
+  gUi.setIntentObserver(
+      [](const ui::UiIntent& it, const char* presetName, void*) {
+        remote_capture::noteIntent(it, presetName);
+      },
+      nullptr);
 #endif
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 

@@ -18,7 +18,8 @@
 #include "mqtt_cfg.h"
 #include "wifi_prov.h"   // #121: wifi_prov owns the radio
 #ifdef SLYTHERM_CAM
-#include "remote_camera.h"  // #150: MQTT privacy switch for the camera
+#include "remote_camera.h"   // #150: MQTT privacy switch for the camera
+#include "remote_capture.h"  // #181: audit-capture receiver URL cmd
 #endif
 
 // #156: ui_main.cpp, MQTT-task safe (parses ints into a buffer, never touches
@@ -300,8 +301,12 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
 #ifdef SLYTHERM_CAM
   } else if (strcmp(topic, gCamTopic) == 0) {
     // #150 privacy switch: "0" disables (no frame leaves the device), anything
-    // else re-enables. Default at boot is enabled (pilot device).
+    // else re-enables. Default at boot is enabled (pilot device). Does NOT
+    // gate the #181 audit capture (owner decision — see remote_capture.h).
     remote_camera::setEnabled(strcmp(buf, "0") != 0);
+  } else if (strcmp(topic, "slytherm/cmd/capture_url") == 0) {
+    // #181: audit-capture receiver URL ("" -> compiled default, "off" -> disable).
+    remote_capture::setUrl(buf);
 #endif
   } else if (strcmp(topic, "slytherm/cmd/ota_mirror") == 0) {
     // #129: fleet-wide LAN OTA mirror ("" or "clear" -> GitHub direct).
@@ -517,6 +522,7 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(gOtaApplyTopic);
 #ifdef SLYTHERM_CAM
     gMqtt.subscribe(gCamTopic);          // #150 camera privacy switch
+    gMqtt.subscribe("slytherm/cmd/capture_url");  // #181 audit-capture receiver
 #endif
     gMqtt.subscribe("slytherm/cmd/ota_mirror");  // #129 fleet-wide mirror set
     gMqtt.subscribe(hm::topic::kCmdLockClear);   // #45: forgotten-PIN recovery reaches remotes too

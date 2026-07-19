@@ -524,6 +524,14 @@ void UiModel::enqueue(const UiIntent& intent) {
   }
   queue_[(queueHead_ + queueCount_) % kIntentQueueCap] = intent;
   ++queueCount_;
+  if (obs_ != nullptr) {  // #181: audit-capture hook, non-blocking by contract
+    const char* presetName = "";
+    if (intent.type == IntentType::kSetPreset) {
+      const int idx = static_cast<int>(intent.preset);
+      if (idx >= 0 && idx < state_.presetCount) presetName = state_.presets[idx].name;
+    }
+    obs_(intent, presetName, obsCtx_);
+  }
 }
 
 bool UiModel::popIntent(UiIntent& out) {

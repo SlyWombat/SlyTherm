@@ -25,6 +25,15 @@ bool enabled();
 bool clientActive();       // a stream/snapshot client is being served now
 uint32_t frames();         // captured frame count (diagnostics)
 
+// #181 audit capture: encode the latest frame to JPEG into dst and return the
+// byte count (0 = no frame yet / paused for OTA / encoder busy past waitMs /
+// dst too small). Serialized against the :8080 serve paths (shared JPEG
+// engine + PPA buffers) by an internal mutex. Deliberately independent of the
+// privacy switch — owner decision on #181: the switch gates the live-view
+// HTTP layer only; audit captures always fire. Safe from any task.
+uint32_t captureStill(uint8_t* dst, size_t cap, uint8_t quality, int scaleDiv,
+                      uint32_t waitMs);
+
 // #180: pause the CSI capture for the duration of an OTA download. The camera's
 // DMA + framebuffers starve the esp-hosted SDIO RX pool and a download
 // crash-loops (sdio_drv.c:953) unless we free that bandwidth. Call

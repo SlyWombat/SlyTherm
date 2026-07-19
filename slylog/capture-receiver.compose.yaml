@@ -1,0 +1,16 @@
+# #181: audit-capture receiver — the camera Remote POSTs a JPEG + metadata
+# here on every manual panel change; review page on :8093. Stdlib-only script,
+# so a bare python image with the source bind-mounted is enough (no build).
+# Merge this service into /data/stacks/slylog/compose.yaml.
+  capture-receiver:
+    image: python:3.12-alpine
+    container_name: slylog-capture-receiver
+    restart: unless-stopped
+    command: python /app/capture_receiver.py
+    ports:
+      - "8093:8093"
+    volumes:
+      - ./capture-receiver:/app:ro
+      - /data/slylog/captures:/captures
+    environment:
+      TZ: ${TZ:-America/Toronto}
