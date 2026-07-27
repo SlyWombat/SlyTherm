@@ -362,6 +362,33 @@ static void test_em_heat_discovery_json_and_not_a_mode_or_preset() {
   TEST_ASSERT_FALSE(has(climate, "em_heat"));
 }
 
+// #50: the smart-recovery gate is a settings-class switch on the SAME tolerant
+// ON/OFF grammar as em_heat, with a RETAINED state topic — an HA restart must
+// read back the real setting, not sit unknown until the next toggle.
+static void test_smart_recovery_switch_discovery_and_topics() {
+  TEST_ASSERT_EQUAL_STRING("slytherm/cmd/smart_recovery", topic::kCmdSmartRecovery);
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/smart_recovery", topic::kStateSmartRecovery);
+
+  std::string j = smartRecoveryDiscoveryJson();
+  assertCoherentJson(j);
+  TEST_ASSERT_TRUE(has(j, "\"unique_id\":\"slytherm_smart_recovery\""));
+  TEST_ASSERT_TRUE(has(j, "\"command_topic\":\"slytherm/cmd/smart_recovery\""));
+  TEST_ASSERT_TRUE(has(j, "\"state_topic\":\"slytherm/state/smart_recovery\""));
+  TEST_ASSERT_TRUE(has(j, "\"payload_on\":\"ON\""));
+  TEST_ASSERT_TRUE(has(j, "\"payload_off\":\"OFF\""));
+  TEST_ASSERT_TRUE(has(j, "\"entity_category\":\"config\""));
+
+  // The controller parses this topic with parseEmHeatCommand: exact ON/OFF, and
+  // nothing else moves the setting (a retained-junk payload must not toggle it).
+  TEST_ASSERT_TRUE(parseEmHeatCommand("ON").ok);
+  TEST_ASSERT_TRUE(parseEmHeatCommand("ON").value);
+  TEST_ASSERT_TRUE(parseEmHeatCommand("OFF").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("OFF").value);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("on").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("").ok);
+  TEST_ASSERT_FALSE(parseEmHeatCommand("true").ok);
+}
+
 // ---------- preset roster config + dynamic discovery (G4) ----------
 
 static void test_preset_roster_json_round_trip() {
@@ -689,6 +716,16 @@ static void test_parse_next_target_valid_and_tolerant() {
   TEST_ASSERT_EQUAL_UINT32(0, t.inS);
   TEST_ASSERT_TRUE(parseNextTargetJson(
       "{\"temp\":30,\"mode\":\"cool\",\"in_s\":604800}", t));
+
+  // The exact wire format ha/packages/slytherm_smart_recovery.yaml emits,
+  // including the diagnostic "why" key it adds for MQTT-trace readability.
+  // That key is NOT part of the contract — this pins that it stays harmless,
+  // so the package can keep annotating comfort vs TOU pre-buy publishes.
+  TEST_ASSERT_TRUE(parseNextTargetJson(
+      "{\"temp\": 20.0, \"mode\": \"cool\",\n \"in_s\": 1800, \"why\": \"tou_prechill\"}", t));
+  TEST_ASSERT_TRUE(t.mode == Mode::kCool);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 20.0f, t.tempC);
+  TEST_ASSERT_EQUAL_UINT32(1800, t.inS);
 }
 
 static void test_parse_next_target_rejects_junk() {
@@ -1140,6 +1177,7 @@ int main() {
   RUN_TEST(test_em_heat_topics);
   RUN_TEST(test_parse_em_heat_command);
   RUN_TEST(test_em_heat_discovery_json_and_not_a_mode_or_preset);
+  RUN_TEST(test_smart_recovery_switch_discovery_and_topics);
   RUN_TEST(test_preset_roster_json_round_trip);
   RUN_TEST(test_preset_roster_json_rejects_structural_junk);
   RUN_TEST(test_preset_roster_json_skips_invalid_entries_and_caps);

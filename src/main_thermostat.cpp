@@ -219,6 +219,7 @@ struct Pending {
   bool hasSetpoint = false;    float setpointC = 0;
   bool hasEmergHeat = false;   float emergHeatC = 0;  // #163 emergency (network-stale) setpoints
   bool hasEmergCool = false;   float emergCoolC = 0;
+  bool hasSmartRecovery = false; bool smartRecovery = false;  // #50 runtime gate
   bool hasLow = false;         float lowC = 0;
   bool hasHigh = false;        float highC = 0;
   bool manualSetpoint = false; // hasLow/hasHigh came from a person tapping a REMOTE
@@ -1108,6 +1109,10 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, hm::topic::kCmdEmHeat) == 0) {
     auto p = hm::parseEmHeatCommand(buf);
     if (p.ok) { gPending.hasEmHeat = true; gPending.emHeat = p.value; } else accepted = false;
+  } else if (strcmp(topic, hm::topic::kCmdSmartRecovery) == 0) {  // #50
+    auto p = hm::parseEmHeatCommand(buf);  // same tolerant ON/OFF grammar
+    if (p.ok) { gPending.hasSmartRecovery = true; gPending.smartRecovery = p.value; }
+    else accepted = false;
   } else if (strcmp(topic, hm::topic::kCmdLockClear) == 0) {
     auto p = hm::parseLockClearCommand(buf);
     if (p.ok) gPending.lockClear = true; else accepted = false;
@@ -1292,6 +1297,7 @@ void publishDiscovery() {
   pubRetained(discoveryTopic("number", "emergency_heat"), emergencyHeatDiscoveryJson());  // #163
   pubRetained(discoveryTopic("number", "emergency_cool"), emergencyCoolDiscoveryJson());  // #163
   pubRetained(discoveryTopic("switch", "em_heat"), emHeatDiscoveryJson());
+  pubRetained(discoveryTopic("switch", "smart_recovery"), smartRecoveryDiscoveryJson());  // #50
   pubRetained(discoveryTopic("sensor", "lock"), lockDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "outdoor_temp"), outdoorTempDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "outdoor_source"), outdoorSourceDiscoveryJson());
@@ -1340,6 +1346,7 @@ void subscribeAll() {
   gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
   gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
   gMqtt.subscribe("slytherm/cmd/emergency_cool");
+  gMqtt.subscribe(hm::topic::kCmdSmartRecovery);  // #50 smart-recovery on/off
 #ifdef SLYTHERM_UI
   gMqtt.subscribe(hm::topic::kStateGraph);  // #156 SlyLog-published System-tab trend series (UI targets only)
 #endif
@@ -1354,6 +1361,7 @@ enum PubIdx : uint8_t {
   PUB_CLO, PUB_EMHEAT, PUB_CHG, PUB_LOCK, PUB_BUS, PUB_FAULT, PUB_HEALTH,
   PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
   PUB_EMGHEAT, PUB_EMGCOOL,  // #163 configurable emergency setpoints (retained, NVS-backed)
+  PUB_SMREC,                 // #50 smart-recovery on/off (retained, NVS-backed)
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1412,6 +1420,8 @@ extern "C" bool otaSafeToReboot() {
 // forward-declare so the retained state echo below can read them.
 extern float gEmergencyHeatC;
 extern float gEmergencyCoolC;
+// #50 smart-recovery gate: same deal — defined with the recovery state below.
+extern bool gSmartRecovery;
 
 void publishSnapshot(bool force) {
   Snapshot s;
@@ -1447,6 +1457,10 @@ void publishSnapshot(bool force) {
   pubState(PUB_EMGHEAT, "slytherm/state/emergency_heat", b, force, /*retain=*/true);
   snprintf(b, sizeof(b), "%.1f", static_cast<double>(gEmergencyCoolC));
   pubState(PUB_EMGCOOL, "slytherm/state/emergency_cool", b, force, /*retain=*/true);
+  // #50 RETAINED: the HA switch must read back the real state after a restart,
+  // not sit unknown until the next toggle (the #155/1.2.8 retained-topic lesson).
+  pubState(PUB_SMREC, topic::kStateSmartRecovery, gSmartRecovery ? "ON" : "OFF",
+           force, /*retain=*/true);
   // EMERGENCY_HEAT reports "heat"; the em_heat switch carries the truth (docs/06).
   pubState(PUB_MODE, topic::kStateMode, s.emHeat ? "heat" : toString(s.mode), force);
   // #128: fan mode + circulate config RETAINED — a reconnecting Remote/HA reads
@@ -2073,6 +2087,11 @@ bool gHaveTarget = false;
 hm::NextTarget gTarget;
 uint32_t gTargetRxS = 0;
 bool gTargetApplied = false;
+// #50 runtime gate for acting on the recovery advice, NVS-backed ("smrec") so
+// it survives reboots. The estimator learns ramp rates either way — this only
+// decides whether the learned lead is USED to early-apply a scheduled setpoint,
+// so it can be pulled back from HA without a reflash if a pre-cool misbehaves.
+bool gSmartRecovery = kRecoveryEnabledDefault;
 // #141 two-ramp fallback verdict (advisory; refreshed every adviseRecovery,
 // consumed by the next cycle's heat-source pick). Dead until BOTH
 // kRecoveryEnabledDefault and kRecoveryTwoRampEnabledDefault are on —
@@ -2225,6 +2244,15 @@ void consumeCommands(uint32_t nowS) {
     gEmergencyCoolC = clampF(p.emergCoolC, hm::kClimateMinTempC, hm::kClimateMaxTempC);
     gPrefs.putFloat("emgcsp", gEmergencyCoolC);
     if (gFallbackApplied) gModeSm->setCoolSetpoint(gEmergencyCoolC);
+  }
+  // #50 smart recovery on/off. Turning it OFF mid-recovery deliberately does NOT
+  // rescind an already early-applied setpoint: that would yo-yo the setpoint on
+  // a live call. It stops the NEXT one; the current target lapses normally.
+  if (p.hasSmartRecovery) {
+    gSmartRecovery = p.smartRecovery;
+    gPrefs.putBool("smrec", gSmartRecovery);
+    gRecovery.setEnabled(gSmartRecovery);
+    Serial.printf("[recovery] smart recovery %s\n", gSmartRecovery ? "ON" : "OFF");
   }
   if (p.hasPreset) gModeSm->applyPreset(p.preset, nowS);
   // A remote setpoint/mode/em-heat change is a user-directed request: arm the
@@ -3601,6 +3629,10 @@ void setup() {
                              hm::kClimateMinTempC, hm::kClimateMaxTempC);
     gEmergencyCoolC = clampF(gPrefs.getFloat("emgcsp", kEmergencyCoolDefaultC),
                              hm::kClimateMinTempC, hm::kClimateMaxTempC);
+    // #50 smart recovery: restore the owner's choice, then hand it to the
+    // estimator. Learning runs regardless; this gates acting on the advice.
+    gSmartRecovery = gPrefs.getBool("smrec", kRecoveryEnabledDefault);
+    gRecovery.setEnabled(gSmartRecovery);
     // Restored mode is structurally cross-checked against OAT lockouts
     // (docs/04 §3): all OAT rungs are stale at boot -> fail-cold, so a
     // restored COOL/HP mode cannot demand until a live, permitting OAT.

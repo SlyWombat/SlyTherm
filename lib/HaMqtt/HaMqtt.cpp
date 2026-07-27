@@ -911,6 +911,19 @@ std::string emHeatDiscoveryJson() {
   return entityDiscoveryJson(e);
 }
 
+// #50: a settings-class toggle, not an operating control — it changes WHEN a
+// scheduled setpoint is applied, never what the equipment is allowed to do.
+std::string smartRecoveryDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Smart Recovery";
+  e.uniqueId = "slytherm_smart_recovery";
+  e.stateTopic = topic::kStateSmartRecovery;
+  e.commandTopic = topic::kCmdSmartRecovery;
+  e.binary = true;   // ON/OFF payloads, both directions
+  e.config = true;   // entity_category config
+  return entityDiscoveryJson(e);
+}
+
 std::string holdStateJson(HoldType t, uint32_t remainingS) {
   return Obj().str("type", toString(t)).num("remaining", remainingS).close();
 }

@@ -57,6 +57,10 @@ constexpr const char* kCmdHold           = SLYTHERM_TOPIC_PREFIX "cmd/hold";  //
 constexpr const char* kCmdEmHeat         = SLYTHERM_TOPIC_PREFIX "cmd/em_heat";  // switch "ON"/"OFF" (G15)
 constexpr const char* kCmdLockClear      = SLYTHERM_TOPIC_PREFIX "cmd/lock_clear";  // forgotten-PIN recovery (issue #45)
 constexpr const char* kCmdNextTarget     = SLYTHERM_TOPIC_PREFIX "cmd/next_target";  // smart recovery (issue #50)
+// Runtime on/off for smart recovery ("ON"/"OFF"), NVS-backed. The estimator
+// LEARNS regardless; this gates only whether its advice is acted on, so the
+// feature can be enabled — or pulled back — from HA without a reflash.
+constexpr const char* kCmdSmartRecovery  = SLYTHERM_TOPIC_PREFIX "cmd/smart_recovery";
 // #143: retained energy prices for the economic switchover — HA publishes
 // from its energy config (or a TOU automation) so prices survive our reboots
 // at the broker AND in NVS; see parseEnergyPricesJson().
@@ -89,6 +93,7 @@ constexpr const char* kStateCompressorMinOffRemaining =
     SLYTHERM_TOPIC_PREFIX "state/compressor_min_off_remaining";
 constexpr const char* kStateCompressorLockedOut = SLYTHERM_TOPIC_PREFIX "state/compressor_locked_out";
 constexpr const char* kStateEmHeat              = SLYTHERM_TOPIC_PREFIX "state/em_heat";  // "ON"/"OFF"
+constexpr const char* kStateSmartRecovery       = SLYTHERM_TOPIC_PREFIX "state/smart_recovery";  // "ON"/"OFF" (#50)
 constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/changeover_reason";
 // Composed wall-screen wording, published for HA display parity: the action line
 // ("Cooling to 21.0°", "Idle - holding 18-21°") and the presence/tracking line
@@ -519,6 +524,7 @@ std::string compressorLockedOutDiscoveryJson();        // binary_sensor, diagnos
 std::string holdDiscoveryJson();                       // sensor, diagnostic (type + attrs)
 std::string holdSelectDiscoveryJson();                 // select: HA sets/reads the hold duration (#81)
 std::string emHeatDiscoveryJson();                     // switch component (G15)
+std::string smartRecoveryDiscoveryJson();              // #50 switch, entity_category config
 std::string lockDiscoveryJson();                       // sensor, diagnostic (state + attrs)
 std::string filterLifeDiscoveryJson();           // #175 sensor, % consumed, diagnostic
 std::string filterResetButtonDiscoveryJson();    // #175 button: "filter replaced"

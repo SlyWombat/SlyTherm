@@ -1,0 +1,283 @@
+# SlyTherm smart recovery + smart TOU pre-buy (#50, docs/13 §7).
+#
+# Two jobs, one mechanism. Both tell the thermostat "the next target is X °C,
+# N seconds out" and let RecoveryEstimator derive the LEAD from the ramp rate it
+# has learned for this house — an EMA over observed run segments, per
+# {heat|cool} x {hp|gas}, against the live room temperature.
+#
+#   1. COMFORT recovery — arrive AT the scheduled preset AT the block boundary
+#      (07:00 / 10:00 / 20:00 / 23:00). Aims at the preset's own setpoint.
+#
+#   2. TOU PRE-BUY — on a forecast-hot (or forecast-cold) day, drive PAST the
+#      comfort setpoint before the 07:00 peak begins, banking cheap off-peak
+#      kWh in the building mass so the peak window runs with the compressor
+#      idle (docs/13 §7). Aims at input_number.slytherm_prechill_target /
+#      slytherm_prewarm_target.
+#
+# WHAT CHANGED vs. the old `slytherm_precondition_0630` automation
+# ---------------------------------------------------------------------------
+# The old one had the STRATEGY right and the EXECUTION fixed. It kept:
+#   - the forecast gate (only pre-condition when today's high >= 26 / low <= 5),
+#     which is genuinely selective — over 2026-07-20..27 it fired 6 days and
+#     correctly stood down on the two coolest (obs highs 19.7 and 22.6);
+#   - the off-peak-before-07:00 TOU intent;
+#   - an owner-tunable target.
+# What it got wrong was a FIXED 30-minute lead. Measured cool rate for this
+# house is ~0.35 °C/h, so 30 min buys ~0.18 °C — against a 1.8 °C pre-chill
+# ambition. On 2026-07-25 it wrote 20.0 at 06:30 with the room at 21.8 and the
+# room was still 21.55 at 07:00, only reaching 21.0 near 08:50 — i.e. most of
+# the "pre-buy" actually happened DURING the peak, which is the exact opposite
+# of the point.
+#
+# Now the lead is whatever the learned rate says it must be, capped at the
+# firmware's kRecoveryMaxLookaheadS (2 h). At the measured rate the cap binds:
+# a full 1.8 °C pre-chill needs ~5 h. That is fine and is not a failure —
+# reaching the target was never the objective, RUNNING ON CHEAP POWER is. The
+# cap simply means "up to 2 h of off-peak pre-buy", which at the 30 % staged
+# cool level is a far bigger bank than 30 minutes ever was. If you later want a
+# deeper pre-buy, raise kRecoveryMaxLookaheadS (DettsonConfig.h) — it is a
+# comfort/bill bound, not a safety one; every demand is still gated by
+# CompressorGuard, DemandArbiter and the OAT lockouts regardless.
+#
+# ADVISORY, and that matters: the firmware only early-APPLIES a setpoint. The
+# worst case for a bad target is a normal, fully-protected call starting early
+# (docs/06 "Smart recovery", docs/04 §3 single-emission-point).
+#
+# ---------------------------------------------------------------------------
+# DEPLOY ORDER — this matters, do not reorder
+# ---------------------------------------------------------------------------
+# Removing the old 06:30 automation before the firmware can act would leave the
+# house with NO pre-buy at all. So:
+#   1. Flash controller firmware carrying the #50 runtime switch.
+#   2. Turn ON `switch.slytherm_smart_recovery` and confirm the thermostat logs
+#      `[recovery] early start: <t>C in <n>s`.
+#   3. THEN delete `slytherm_precondition_0630` from packages/slytherm_schedule.yaml
+#      and install this file. Its input_number/input_select helpers stay — this
+#      package reuses them by name.
+#
+# Entity naming: this file uses the LIVE long-form climate entity
+# `climate.slytherm_climatetalk_thermostat_slytherm_hvac`, not the short
+# `climate.slytherm_hvac` used in the reference starter package. The short form
+# needs a delete + re-add of the MQTT device and is deferred
+# (ha/HA_TO_SLYTHERM_ISSUES.md #3/#4). Referencing the short name here fails
+# SILENTLY — `states()` returns 'unknown', side resolves to 'none', and the
+# publish condition simply never passes.
+# ---------------------------------------------------------------------------
+
+input_boolean:
+  # Today's pre-condition verdict. Set once, early, by the decision automation
+  # below — the forecast lookup is a SERVICE CALL with a response variable, so
+  # it cannot live in a template that renders every minute. Latching the verdict
+  # into a boolean also means the publisher stays a pure template, and you can
+  # see/override today's decision from the dashboard.
+  slytherm_precondition_today:
+    name: SlyTherm pre-condition today
+    icon: mdi:snowflake-thermometer
+
+mqtt:
+  sensor:
+    # The preset roster is owned by the THERMOSTAT (retained
+    # slytherm/config/presets) — HA must not hard-code setpoints, or the two
+    # drift apart the first time you edit a preset on the panel. State is the
+    # preset count (MQTT sensor states are capped at 255 chars); the roster
+    # itself rides in the attributes.
+    - name: "SlyTherm preset roster"
+      unique_id: slytherm_preset_roster
+      state_topic: "slytherm/config/presets"
+      value_template: "{{ value_json.presets | count }}"
+      json_attributes_topic: "slytherm/config/presets"
+      icon: mdi:format-list-bulleted
+
+    # Visibility only: echoes what we last published, by subscribing to the very
+    # topic the automation writes. Deliberately NOT a second computation of the
+    # schedule — one source of truth (the automation below), so the dashboard
+    # can never disagree with what the thermostat was actually told.
+    - name: "SlyTherm next target"
+      unique_id: slytherm_next_target
+      state_topic: "slytherm/cmd/next_target"
+      value_template: "{{ value_json.temp }}"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      json_attributes_topic: "slytherm/cmd/next_target"
+      icon: mdi:calendar-clock
+      # No availability_topic: this topic is intentionally non-retained, so the
+      # sensor is `unknown` until the first publish after an HA restart. That is
+      # honest — "nothing has been sent this minute" is the truth.
+
+automation:
+  # -------------------------------------------------------------------------
+  # 1. Decide, once a day, whether tomorrow morning earns a TOU pre-buy.
+  # -------------------------------------------------------------------------
+  # Runs at 03:00 — comfortably before the earliest possible pre-buy start
+  # (07:00 minus the 2 h cap = 05:00) and inside off-peak, so a late-evening
+  # forecast revision is picked up. Also on HA start so a restart re-decides
+  # rather than running on a stale verdict.
+  #
+  # The thresholds and targets are the SAME helpers the old automation used
+  # (slytherm_schedule.yaml) — this changes when/how the pre-buy runs, never
+  # the owner's stated policy for whether it should.
+  - id: slytherm_precondition_decide
+    alias: "SlyTherm: decide today's TOU pre-condition"
+    description: >-
+      Sets input_boolean.slytherm_precondition_today from the daily forecast and
+      the season, replacing the forecast branch of the old 06:30 automation. The
+      pre-buy itself is executed by the publisher below, at a lead derived from
+      the thermostat's learned ramp rate rather than a fixed 30 minutes.
+    triggers:
+      - trigger: time
+        at: "03:00:00"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: weather.get_forecasts
+        target: { entity_id: weather.forecast_home }
+        data: { type: daily }
+        response_variable: fc
+      - variables:
+          today: "{{ fc['weather.forecast_home'].forecast[0] }}"
+          today_high: "{{ today.temperature }}"
+          today_low: "{{ today.templow | default(today.temperature) }}"
+          summer: "{{ is_state('input_select.slytherm_season','summer') }}"
+          # Same comparison as the automation this replaces.
+          verdict: >-
+            {{ (summer and today_high | float
+                  >= states('input_number.slytherm_precondition_hot_c') | float)
+               or ((not summer) and today_low | float
+                  <= states('input_number.slytherm_precondition_cold_c') | float) }}
+      - action: "input_boolean.turn_{{ 'on' if verdict else 'off' }}"
+        target: { entity_id: input_boolean.slytherm_precondition_today }
+      - action: logbook.log
+        data:
+          name: SlyTherm pre-condition
+          message: >-
+            {{ 'ARMED' if verdict else 'stood down' }} — season
+            {{ states('input_select.slytherm_season') }}, forecast high
+            {{ today_high }} °C / low {{ today_low }} °C
+    mode: single
+
+  # -------------------------------------------------------------------------
+  # 2. Publish slytherm/cmd/next_target once a minute.
+  # -------------------------------------------------------------------------
+  # Every minute rather than on-change: `in_s` is a countdown, so a stale
+  # publish is a WRONG publish. The firmware ages what it holds
+  # (gTargetRxS/elapsed) and drops the target once it lapses, so a missed
+  # minute degrades to "no early start", never to a bad one.
+  #
+  # NOT retained: a retained countdown is a lie the moment it is stored — a
+  # reconnecting thermostat would read a stale in_s and pre-condition for a
+  # boundary that has already passed.
+  - id: slytherm_publish_next_target
+    alias: "SlyTherm: publish next scheduled target"
+    description: >-
+      Feeds RecoveryEstimator (#50) the upcoming target and the time remaining,
+      so the thermostat starts early by its own LEARNED ramp rate — for both the
+      comfort boundary and the TOU pre-buy. Stands down during vacation/away,
+      exactly like the schedule automation: those override the schedule, so
+      there is no scheduled arrival to hit.
+    triggers:
+      - trigger: time_pattern
+        minutes: "/1"
+    conditions:
+      - condition: state
+        entity_id: calendar.slytherm_vacation
+        state: "off"
+      - condition: template
+        value_template: >-
+          {{ state_attr('climate.slytherm_climatetalk_thermostat_slytherm_hvac',
+                        'preset_mode') != 'away' }}
+    variables:
+      # The next block boundary at which the preset actually CHANGES, what it
+      # changes to, and the hour it lands on (the hour identifies the 07:00 peak
+      # edge, which is the only boundary the TOU pre-buy applies to).
+      #
+      # Boundaries that are no-ops (every weekend 07:00/10:00/20:00 collapses to
+      # daytime) are skipped — publishing those would ask the thermostat to
+      # "recover" to the setpoint it is already holding.
+      #
+      # The block rule mirrors script.slytherm_apply_scheduled_preset. If you
+      # change the times or the rule THERE, change them here too — two views of
+      # one schedule.
+      nxt: >-
+        {% macro blk(b) %}
+          {%- set h = b.hour -%}
+          {%- set weekend = b.weekday() >= 5 -%}
+          {%- if h < 7 or h >= 23 -%}night
+          {%- elif weekend -%}daytime
+          {%- elif h < 10 -%}morning
+          {%- elif h < 20 -%}daytime
+          {%- else -%}evening
+          {%- endif -%}
+        {% endmacro %}
+        {% set cur = blk(now()) | trim %}
+        {% set ns = namespace(hit=none) %}
+        {% for d in [0, 1] %}
+          {% for h in [7, 10, 20, 23] %}
+            {% set b = (now() + timedelta(days=d)).replace(
+                          hour=h, minute=0, second=0, microsecond=0) %}
+            {% if ns.hit is none and b > now() and (blk(b) | trim) != cur %}
+              {% set ns.hit = b %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {{ {'name': (blk(ns.hit) | trim) if ns.hit is not none else 'none',
+            'hour': ns.hit.hour if ns.hit is not none else -1,
+            'in_s': ((ns.hit - now()).total_seconds() | int) if ns.hit is not none else 0} }}
+
+      # Which side the target serves, and its setpoint.
+      #
+      # TOU pre-buy wins over the comfort target when it is armed AND the next
+      # boundary is the 07:00 peak edge — that is the whole point: aim PAST the
+      # comfort setpoint, on off-peak power, arriving by the time the peak
+      # starts. Every other boundary (10:00 / 20:00 / 23:00) is plain comfort
+      # recovery.
+      #
+      # Both paths are gated on the hvac mode actually being able to serve that
+      # side — a pre-warm target while the system is in COOL is meaningless, and
+      # the firmware would (correctly) ignore it anyway.
+      tgt: >-
+        {% set roster = state_attr('sensor.slytherm_preset_roster','presets') or [] %}
+        {% set p = roster | selectattr('name','eq', nxt.name) | list | first
+                   if nxt.name != 'none' else none %}
+        {% set m = states('climate.slytherm_climatetalk_thermostat_slytherm_hvac') %}
+        {% set room = state_attr('climate.slytherm_climatetalk_thermostat_slytherm_hvac',
+                                 'current_temperature') %}
+        {% set precon = is_state('input_boolean.slytherm_precondition_today','on')
+                        and nxt.hour == 7 %}
+        {% set summer = is_state('input_select.slytherm_season','summer') %}
+        {% if precon and summer and m in ['cool','heat_cool'] %}
+          {{ {'side': 'cool', 'why': 'tou_prechill',
+              'temp': states('input_number.slytherm_prechill_target') | float(0)} }}
+        {% elif precon and (not summer) and m in ['heat','heat_cool'] %}
+          {{ {'side': 'heat', 'why': 'tou_prewarm',
+              'temp': states('input_number.slytherm_prewarm_target') | float(0)} }}
+        {% else %}
+          {% set side = 'cool' if m == 'cool' else 'heat' if m == 'heat'
+                        else ('cool' if (m == 'heat_cool' and p is not none and room is not none
+                                         and room | float > p.cool | float)
+                              else 'heat' if (m == 'heat_cool' and p is not none and room is not none
+                                              and room | float < p.heat | float)
+                              else 'none') %}
+          {{ {'side': side, 'why': 'comfort',
+              'temp': (p.cool if side == 'cool' else p.heat)
+                      if (p is not none and side in ['cool','heat']) else 0} }}
+        {% endif %}
+    actions:
+      # A valid, actionable target: a known side, a real setpoint, and a
+      # boundary still ahead of us. `in_s` is inside the firmware's 7-day parse
+      # limit by construction (our horizon is 24 h).
+      - condition: template
+        value_template: >-
+          {{ tgt.side in ['cool','heat'] and tgt.temp | float(0) > 0
+             and nxt.in_s | int(0) > 0 }}
+      - action: mqtt.publish
+        data:
+          topic: "slytherm/cmd/next_target"
+          retain: false
+          # `why` is not part of the firmware contract — the parse requires temp/
+          # mode/in_s and ignores extra keys — but it makes the MQTT trace and the
+          # sensor attributes self-explaining: comfort vs tou_prechill vs
+          # tou_prewarm, without correlating against the schedule by hand.
+          payload: >-
+            {"temp": {{ tgt.temp | float }}, "mode": "{{ tgt.side }}",
+             "in_s": {{ nxt.in_s | int }}, "why": "{{ tgt.why }}"}
+    mode: single
