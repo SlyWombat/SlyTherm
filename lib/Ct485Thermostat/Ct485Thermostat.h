@@ -142,11 +142,20 @@ class Ct485Thermostat {
   // (refreshFraction * window past the last send); 0 when inactive.
   uint32_t nextRefreshDueMs(DemandChannel ch) const;
 
-  // ---- Alarms (latched; survive resume() until clearAlarms()) ----
+  // ---- Alarms ----
+  // pairing latches until clearAlarms() (it needs a human: two masters on one
+  // bus). comms-loss and starvation are CONDITIONS, not events: both describe
+  // "the furnace isn't answering", and both are disproved by the furnace
+  // answering. They self-clear on a proven round-trip so a recovered link can
+  // never leave a stuck alarm on the panel/HA. The event survives auto-clear as
+  // commsLossCount() (and in SlyLog/telnet history) — visibility without a latch.
   bool pairingAlarm() const { return pairingAlarm_; }        // NAK2 0x1B (docs/02 §9)
   bool commsLossAlarm() const { return commsLossAlarm_; }    // response timeout exhausted
   bool starvationAlarm() const { return starvationAlarm_; }  // refresh window missed (no token)
   DemandChannel starvedChannel() const { return starvedCh_; }
+  // Monotonic count of comms-loss ONSETS since boot (not cleared by clearAlarms()
+  // or by the auto-clear): "it happened N times" outlives "it is happening now".
+  uint32_t commsLossCount() const { return commsLossCount_; }
   void clearAlarms();
 
   // ---- Diagnostics ----
@@ -205,6 +214,8 @@ class Ct485Thermostat {
   void  handleControlResponse(const Frame& f, uint32_t nowMs);
   void  clearDemands();
   void  commsLoss();
+  // The furnace answered an outstanding request: the link demonstrably works.
+  void  noteRoundTrip();
   bool  setDemandInternal(DemandChannel ch, float pct, uint8_t fanMode, uint32_t nowMs);
 
   static constexpr size_t kTxQueueDepth  = 6;
@@ -232,6 +243,7 @@ class Ct485Thermostat {
   bool         pairingAlarm_    = false;
   bool         commsLossAlarm_  = false;
   bool         starvationAlarm_ = false;
+  uint32_t     commsLossCount_  = 0;  // onsets since boot; never auto-cleared
   DemandChannel starvedCh_      = DemandChannel::kHeat;
   uint8_t      lastResponseCode_ = 0;
   uint32_t     unexpected_ = 0;

@@ -760,6 +760,120 @@ static void test_nak1_counts_against_attempt_budget() {
   TEST_ASSERT_TRUE(t.silent());
 }
 
+// The live-controller regression: comms-loss trips, the glue resumes the stack,
+// the furnace answers again — and the alarm MUST go with the condition. Before
+// this, resume() left the latch set forever, so "Furnace not responding on the
+// bus" stuck for 4.5 days on a bus running 28-29 ok-frames/min with zero errors.
+static void test_comms_loss_clears_when_furnace_answers_again() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  grant1(t, now);                          // attempt 1
+  t.tick(now + kResponseTimeoutMs);
+  uint32_t g2 = now + kResponseTimeoutMs + 100;
+  grant1(t, g2);                           // attempt 2
+  t.tick(g2 + kResponseTimeoutMs);
+  uint32_t g3 = g2 + kResponseTimeoutMs + 100;
+  grant1(t, g3);                           // attempt 3
+  t.tick(g3 + kResponseTimeoutMs);         // budget exhausted
+  TEST_ASSERT_TRUE(t.commsLossAlarm());
+  TEST_ASSERT_TRUE(t.silent());
+  TEST_ASSERT_EQUAL_UINT32(1, t.commsLossCount());
+
+  // What the glue does every cycle: silent + boot gate open -> resume().
+  uint32_t r = g3 + kResponseTimeoutMs + 500;
+  t.resume(r);
+  TEST_ASSERT_TRUE(t.commsLossAlarm());  // resuming alone proves nothing
+
+  // The furnace answers a fresh demand: condition over, alarm over.
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, r));
+  Frame f = grant1(t, r + 100);
+  t.onFrame(coCtrlEcho(f.sendParamHi, /*timer=*/0x60), r + 150);
+  TEST_ASSERT_FALSE(t.commsLossAlarm());
+  TEST_ASSERT_EQUAL_UINT32(1, t.commsLossCount());  // event survives the clear
+}
+
+// An explicit ACK is equally good proof, and a non-demand round-trip counts too
+// (comms-loss is about the LINK, not about any one demand channel).
+static void test_comms_loss_clears_on_ack_of_non_demand_command() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  grant1(t, now);
+  t.tick(now + kResponseTimeoutMs);
+  uint32_t g2 = now + kResponseTimeoutMs + 100;
+  grant1(t, g2);
+  t.tick(g2 + kResponseTimeoutMs);
+  uint32_t g3 = g2 + kResponseTimeoutMs + 100;
+  grant1(t, g3);
+  t.tick(g3 + kResponseTimeoutMs);
+  TEST_ASSERT_TRUE(t.commsLossAlarm());
+
+  uint32_t r = g3 + kResponseTimeoutMs + 500;
+  t.resume(r);
+  TEST_ASSERT_TRUE(t.setSystemSwitch(SystemSwitch::kHeat, r));  // not a demand
+  Frame f = grant1(t, r + 100);
+  t.onFrame(coCtrlResp(kAck1, f.sendParamHi), r + 150);
+  TEST_ASSERT_FALSE(t.commsLossAlarm());
+}
+
+// Pairing is a different animal: a second master keeps answering our frames, so
+// a round-trip is no evidence it left. That one stays latched for a human.
+static void test_pairing_alarm_does_not_self_clear_on_round_trip() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  Frame f = grant1(t, now);
+  t.onFrame(coCtrlResp(kNak2, f.sendParamHi), now + 50);  // ownership rejection
+  TEST_ASSERT_TRUE(t.pairingAlarm());
+
+  TEST_ASSERT_TRUE(t.setSystemSwitch(SystemSwitch::kHeat, now + 100));
+  Frame g = grant1(t, now + 200);
+  t.onFrame(coCtrlResp(kAck1, g.sendParamHi), now + 250);
+  TEST_ASSERT_TRUE(t.pairingAlarm());   // still latched
+  TEST_ASSERT_FALSE(t.commsLossAlarm());
+  t.clearAlarms();
+  TEST_ASSERT_FALSE(t.pairingAlarm());  // only a deliberate ack clears it
+}
+
+// Repeated trips count once each, so `comms_loss_n` reads as an event history.
+static void test_comms_loss_count_tracks_onsets_not_repeats() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_EQUAL_UINT32(0, t.commsLossCount());
+  for (int trip = 1; trip <= 2; trip++) {
+    // A distinct pct per trip: demands are resend-on-change (see
+    // test_unchanged_demand_not_resent_every_grant), so re-asserting the value
+    // the channel already holds would never put a frame on the wire to time out.
+    const float pct = 50.0f + 10.0f * static_cast<float>(trip);
+    TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, pct, now));
+    grant1(t, now);
+    t.tick(now + kResponseTimeoutMs);
+    uint32_t a2 = now + kResponseTimeoutMs + 100;
+    grant1(t, a2);
+    t.tick(a2 + kResponseTimeoutMs);
+    uint32_t a3 = a2 + kResponseTimeoutMs + 100;
+    grant1(t, a3);
+    t.tick(a3 + kResponseTimeoutMs);
+    TEST_ASSERT_TRUE(t.commsLossAlarm());
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(trip), t.commsLossCount());
+
+    now = a3 + kResponseTimeoutMs + 500;
+    t.resume(now);
+    // goSilent() cleared the channels, so re-asserting pct IS a change here.
+    TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, pct, now));
+    Frame f = grant1(t, now + 100);
+    t.onFrame(coCtrlEcho(f.sendParamHi, /*timer=*/0x60), now + 150);
+    TEST_ASSERT_FALSE(t.commsLossAlarm());
+    now += 1000;
+  }
+  TEST_ASSERT_EQUAL_UINT32(2, t.commsLossCount());
+}
+
 // ---------- goSilent / alarm latching ----------
 
 static void test_go_silent_flushes_everything() {
@@ -907,6 +1021,10 @@ int main() {
   RUN_TEST(test_unchanged_demand_not_resent_every_grant);
   RUN_TEST(test_response_timeout_retries_then_comms_loss_silence);
   RUN_TEST(test_nak1_counts_against_attempt_budget);
+  RUN_TEST(test_comms_loss_clears_when_furnace_answers_again);
+  RUN_TEST(test_comms_loss_clears_on_ack_of_non_demand_command);
+  RUN_TEST(test_pairing_alarm_does_not_self_clear_on_round_trip);
+  RUN_TEST(test_comms_loss_count_tracks_onsets_not_repeats);
   RUN_TEST(test_go_silent_flushes_everything);
   RUN_TEST(test_alarms_latched_across_resume_until_cleared);
   RUN_TEST(test_version_announce_and_version_bit_mirroring);

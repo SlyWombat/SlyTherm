@@ -297,7 +297,9 @@ struct Snapshot {
   hm::LockState lockState = hm::LockState::kUnlocked;
   hm::LockLevel lockLevel = hm::LockLevel::kSettingsOnly;
   bool pinSet = false;
-  char busJson[176] = "{}";
+  // Worst case ~165 B ("discovery_responded" + a saturated comms_loss_n);
+  // sized with headroom so a future field can't silently truncate the JSON.
+  char busJson[224] = "{}";
 #ifdef SLYTHERM_ACTUATOR_RELAY
   char relaysJson[80] = "{}";  // Case B diagnostic (docs/06 topic map)
 #endif
@@ -2724,14 +2726,19 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   uiUnlock();
 
   xSemaphoreTake(gCtMux, portMAX_DELAY);
+  // comms_loss_n: monotonic onset count. comms_loss now auto-clears when the
+  // furnace answers again, so the *count* is what tells you it ever happened —
+  // a rising n with comms_loss=false is a link that recovered, not a quiet bus.
   snprintf(s.busJson, sizeof(s.busJson),
            "{\"join\":\"%s\",\"addr\":%u,\"silent\":%s,\"last_ack\":\"0x%02X\","
-           "\"alarms\":{\"pairing\":%s,\"comms_loss\":%s,\"starvation\":%s}}",
+           "\"alarms\":{\"pairing\":%s,\"comms_loss\":%s,\"starvation\":%s},"
+           "\"comms_loss_n\":%lu}",
            joinStateName(gCt->joinState()), gCt->nodeAddress(),
            gCt->silent() ? "true" : "false", gCt->lastResponseCode(),
            gCt->pairingAlarm() ? "true" : "false",
            gCt->commsLossAlarm() ? "true" : "false",
-           gCt->starvationAlarm() ? "true" : "false");
+           gCt->starvationAlarm() ? "true" : "false",
+           static_cast<unsigned long>(gCt->commsLossCount()));
   xSemaphoreGive(gCtMux);
 
 #ifdef SLYTHERM_ACTUATOR_RELAY

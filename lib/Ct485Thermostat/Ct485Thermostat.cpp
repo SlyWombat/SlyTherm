@@ -111,7 +111,10 @@ void Ct485Thermostat::goSilent() {
 
 void Ct485Thermostat::resume(uint32_t nowMs) {
   (void)nowMs;
-  silent_ = false;  // alarms stay latched until clearAlarms()
+  // Pairing stays latched until clearAlarms(); comms-loss/starvation clear
+  // themselves once the bus proves it works again (noteRoundTrip()/tick()).
+  // Resuming is NOT itself proof of anything, so nothing is cleared here.
+  silent_ = false;
 }
 
 void Ct485Thermostat::clearAlarms() {
@@ -124,8 +127,27 @@ void Ct485Thermostat::clearDemands() {
 }
 
 void Ct485Thermostat::commsLoss() {
+  if (!commsLossAlarm_) commsLossCount_++;  // count ONSETS, not repeat trips
   commsLossAlarm_ = true;
   goSilent();  // comms-loss state = all channels silent (docs/02 §6 timing)
+}
+
+// A response to something we sent proves the furnace is answering, which is the
+// exact negation of comms-loss ("response timeout budget exhausted"). Clear it.
+//
+// Without this the latch outlived the condition forever: commsLoss() goes
+// silent, the glue's `if (silent()) resume()` brings the stack straight back,
+// and resume() deliberately leaves alarms latched — so the bus recovered and
+// ran normally (frames flowing, demands delivered) while "Furnace not
+// responding on the bus" stayed asserted until a manual ack or a reboot. Live
+// controller sat that way for 4.5 days (2026-07-22 18:14 -> 07-27) with a
+// perfectly healthy bus: 28-29 ok-frames/min, zero checksum errors.
+//
+// Pairing is deliberately NOT cleared here: a second master on the bus keeps
+// answering our frames, so a round-trip is no evidence at all that it went
+// away. That one still needs a human.
+void Ct485Thermostat::noteRoundTrip() {
+  commsLossAlarm_ = false;
 }
 
 // ---------------- Demand API ----------------
@@ -353,9 +375,10 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
       // condition (a refresh window slipped, the equipment briefly reverted);
       // leaving it latched until a manual ack/reboot left "Furnace link
       // interrupted" stuck on the screen/HA while the furnace was in fact
-      // running normally. Comms-loss / pairing stay latched (they need
-      // operator attention); starvation self-heals.
+      // running normally. Pairing stays latched (it needs operator attention);
+      // starvation and comms-loss self-heal.
       if (out_.isDemand) starvationAlarm_ = false;
+      noteRoundTrip();  // NOT gated on isDemand: any answer proves the link
       out_ = Outstanding{};
       return;
     case kNak1:  // bad CRC: retransmit, bounded by the attempt budget
@@ -389,6 +412,7 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
       // controller now, so rejection is unlikely to occur in practice).
       if (f.payloadLen >= 1 && code == out_.cmdCode) {
         if (out_.isDemand) starvationAlarm_ = false;  // echo proves the round-trip
+        noteRoundTrip();  // ...and that the furnace is responding at all
         out_ = Outstanding{};
         return;
       }
