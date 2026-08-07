@@ -297,7 +297,8 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   } else if (strcmp(topic, gOtaCheckTopic) == 0) {
     ota::requestCheck();   // payload ignored; no-op mid-phase (#111)
   } else if (strcmp(topic, gOtaApplyTopic) == 0) {
-    ota::requestApply();
+    // #182: payload "force" clears the crash-loop guard ("manual retry only")
+    ota::requestApply(strcmp(buf, "force") == 0);
 #ifdef SLYTHERM_CAM
   } else if (strcmp(topic, gCamTopic) == 0) {
     // #150 privacy switch: "0" disables (no frame leaves the device), anything

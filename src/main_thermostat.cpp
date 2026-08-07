@@ -1053,10 +1053,10 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (strcmp(topic, hm::topic::kStateGraph) == 0) { slytherm_ui::ingestGraphSeries(buf); return; }  // #156
 #endif
 #ifdef SLYTHERM_OTA
-  // #61: payload deliberately ignored — any message triggers; the OTA task
-  // no-ops requests that arrive mid-phase.
+  // #61: any message triggers; the OTA task no-ops requests that arrive
+  // mid-phase. #182: apply payload "force" clears the crash-loop guard.
   if (strcmp(topic, hm::topic::kCmdOtaCheck) == 0) { ota::requestCheck(); return; }
-  if (strcmp(topic, hm::topic::kCmdOtaApply) == 0) { ota::requestApply(); return; }
+  if (strcmp(topic, hm::topic::kCmdOtaApply) == 0) { ota::requestApply(strcmp(buf, "force") == 0); return; }
 #endif
 
   if (strcmp(topic, "slytherm/cmd/filter_reset") == 0) { gFilterResetReq = true; return; }  // #175

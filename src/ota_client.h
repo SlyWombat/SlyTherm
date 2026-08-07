@@ -77,9 +77,12 @@ void noteSelfTestPass();
 // the network task exists. Also performs the daily background check.
 void begin();
 
-// Async requests (no-ops while a phase is in flight).
+// Async requests (no-ops while a phase is in flight). force=true clears the
+// crash-loop guard ("manual retry only") before applying — the remote escape
+// for a version whose apply reset the board kMaxApplyAttempts times (#182:
+// before this, only a NEW release or USB could unlatch a fielded unit).
 void requestCheck();
-void requestApply();
+void requestApply(bool force = false);
 
 // #129 escape hatch: LAN OTA mirror base URL (e.g. "http://192.168.10.12:8090")
 // replaces GitHub for catalog + assets. Integrity still enforced by the
@@ -96,7 +99,7 @@ inline bool bootValidate() { return false; }
 inline void noteSelfTestPass() {}
 inline void begin() {}
 inline void requestCheck() {}
-inline void requestApply() {}
+inline void requestApply(bool = false) {}
 inline void setMirror(const char*) {}
 inline Status status() { return Status{}; }
 

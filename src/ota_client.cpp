@@ -83,6 +83,13 @@ constexpr uint32_t kStreamTimeoutMs = 30 * 1000;  // stall watchdog per read
 // server can't flood past the esp-hosted SDIO RX pool (sdio_drv.c:953). MSS is
 // 1436; ~4 KB keeps it well under the pool.
 constexpr int kOtaRcvBufBytes = 4096;
+// #182: mirror Range-chunk size — the structural in-flight bound for the P4's
+// tunnelled download. ~12 TCP segments per chunk, far under the esp-hosted
+// SDIO RX pool; at the field tunnel's ~90 ms RTT the ~117 round-trips for a
+// 1.9 MB image cost ~10 s. Retries: consecutive zero-progress rounds before
+// giving up (transient drops resume at the current offset for free).
+constexpr size_t kMirrorRangeBytes = 16 * 1024;
+constexpr uint8_t kMirrorRangeRetries = 8;
 
 // NVS namespace "ota": pend = version being validated ("" = none),
 // tries = boot attempts while pending, last = last outcome (for the UI).
@@ -93,6 +100,7 @@ Status gStatus;
 dettson::ota::CatalogEntry gAvailable;   // task-local once resolved
 volatile bool gCheckReq = false;
 volatile bool gApplyReq = false;
+volatile bool gForceApply = false;  // #182: clear the crash-loop guard once
 volatile bool gSelfTestPass = false;
 bool gPendingAtBoot = false;             // set by bootValidate()
 uint32_t gBootMs = 0;
@@ -291,54 +299,92 @@ bool doCheck() {
   return true;
 }
 
-// #180: manual http:// GET that shrinks the TCP receive window BEFORE sending
-// the request. On the P4/WireGuard path the 64 KB default window
-// (CONFIG_LWIP_TCP_WND_DEFAULT) lets the server flood the esp-hosted SDIO RX
-// pool (sdio_drv.c:953) before we can drain it. HTTPClient connects inside
-// GET(), too late to set the window; connecting here, setting SO_RCVBUF while
-// the socket is idle, then sending GET makes the request segment itself
-// advertise the small window. Together with the fast full-buffer read (below)
-// and pre-allocated PSRAM, the tunnelled download completes — bench-validated.
-// Parses host[:port]/path (no redirects — the LAN mirror serves directly),
-// consumes the response headers, and leaves the socket at the body with
-// contentLen filled. HTTPS keeps HTTPClient (GitHub-direct isn't tunnelled).
-bool openMirrorGet(const char* url, WiFiClient& c, int& contentLen) {
+// ---- mirror HTTP (plain http://, no redirects — the LAN mirror serves
+// directly; HTTPS keeps HTTPClient since GitHub-direct isn't tunnelled) ----
+//
+// #180 established that read SPEED can't be the whole answer; #182 proved it
+// in the field: lwIP always advertises the 64 KB default window
+// (CONFIG_LWIP_TCP_WND_DEFAULT — compile-time in the prebuilt esp-hosted
+// libs; SO_RCVBUF provably does not shrink it), so at WAN RTT (~90 ms on the
+// off-LAN camera remote's tunnel) the server fills the whole window and ~45
+// segments land as one line-rate burst that overflows the esp-hosted SDIO RX
+// pool (sdio_drv.c:953) no matter how fast we read. The bench validated #180
+// only because its WG endpoint was on-LAN (~2 ms RTT — no burst). In-flight
+// data must be bounded STRUCTURALLY: the P4 requests the image in
+// kMirrorRangeBytes `Range:` chunks on a keep-alive connection, so the server
+// can never have more than one chunk (~12 segments) in flight. A server
+// without Range support answers 200 — fall back to the #180 single-GET path
+// (works on-LAN; the mirror's nginx pacing covers the tunnel case).
+
+struct MirrorUrl {
+  char host[96];
+  char path[96];
+  uint16_t port = 80;
+};
+
+bool parseMirrorUrl(const char* url, MirrorUrl& m) {
   const char* p = url + 7;  // past "http://"
   const char* slash = strchr(p, '/');
-  const char* path = slash ? slash : "/";
-  char host[96];
   const size_t hl = slash ? static_cast<size_t>(slash - p) : strlen(p);
-  if (hl == 0 || hl >= sizeof(host)) return false;
-  memcpy(host, p, hl);
-  host[hl] = 0;
-  uint16_t port = 80;
-  if (char* colon = strchr(host, ':')) { *colon = 0; port = atoi(colon + 1); }
-  if (!c.connect(host, port, 15000)) return false;
-  int rb = kOtaRcvBufBytes;  // shrink the window while the socket is idle
+  if (hl == 0 || hl >= sizeof(m.host)) return false;
+  memcpy(m.host, p, hl);
+  m.host[hl] = 0;
+  snprintf(m.path, sizeof(m.path), "%s", slash ? slash : "/");
+  if (char* colon = strchr(m.host, ':')) { *colon = 0; m.port = atoi(colon + 1); }
+  return true;
+}
+
+bool mirrorConnect(WiFiClient& c, const MirrorUrl& m) {
+  if (!c.connect(m.host, m.port, 15000)) return false;
+  // Kept from #180: harmless, and on lwIPs where it DOES clamp the window it
+  // only helps. The structural bound is the Range chunk, not this.
+  int rb = kOtaRcvBufBytes;
   c.setSocketOption(SOL_SOCKET, SO_RCVBUF, &rb, sizeof(rb));
-  int got = 0; socklen_t gl = sizeof(got);
-  const int fd = c.fd();
-  if (fd >= 0 && lwip_getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl) == 0)
-    Serial.printf("[ota] rcvbuf window %d -> %d\n", rb, got);
-  c.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: SlyTherm-OTA\r\n"
-           "Connection: close\r\n\r\n", path, host);
-  const String status = c.readStringUntil('\n');  // "HTTP/1.1 200 OK\r"
-  if (status.indexOf(" 200") < 0) {
-    Serial.printf("[ota] mirror GET status: %s\n", status.c_str());
-    return false;
-  }
-  contentLen = -1;
+  return true;
+}
+
+// One GET on an open connection. want > 0 requests bytes [off, off+want).
+// Returns the HTTP status code (0 = transport failure), leaves the socket at
+// the body. bodyLen = this response's Content-Length; totalLen = full asset
+// size (Content-Range total on 206, Content-Length on 200); keepAlive = the
+// connection survives past this body.
+int mirrorRequest(WiFiClient& c, const MirrorUrl& m, size_t off, size_t want,
+                  size_t& bodyLen, size_t& totalLen, bool& keepAlive) {
+  if (!c.connected() && !mirrorConnect(c, m)) return 0;
+  if (want > 0)
+    c.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: SlyTherm-OTA\r\n"
+             "Range: bytes=%u-%u\r\nConnection: keep-alive\r\n\r\n",
+             m.path, m.host, static_cast<unsigned>(off),
+             static_cast<unsigned>(off + want - 1));
+  else
+    c.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: SlyTherm-OTA\r\n"
+             "Connection: close\r\n\r\n", m.path, m.host);
+  const String status = c.readStringUntil('\n');  // "HTTP/1.1 206 ...\r"
+  const int sp = status.indexOf(' ');
+  const int code = sp > 0 ? atoi(status.c_str() + sp + 1) : 0;
+  bodyLen = 0;
+  totalLen = 0;
+  keepAlive = want > 0;  // HTTP/1.1 default; overridden by Connection header
   for (;;) {
     String h = c.readStringUntil('\n');
     if (h.length() == 0 || h == "\r") break;  // blank line ends the headers
     h.toLowerCase();
-    if (h.startsWith("content-length:")) contentLen = atoi(h.c_str() + 15);
+    if (h.startsWith("content-length:"))
+      bodyLen = strtoul(h.c_str() + 15, nullptr, 10);
+    else if (h.startsWith("content-range:")) {
+      // "content-range: bytes 0-16383/1913840" — the suffix is the full size
+      if (const char* sl = strchr(h.c_str(), '/'))
+        totalLen = strtoul(sl + 1, nullptr, 10);
+    } else if (h.startsWith("connection:")) {
+      keepAlive = h.indexOf("keep-alive") >= 0;
+    }
   }
-  return true;
+  if (code == 200) totalLen = bodyLen;
+  return code;
 }
 
 // ---- download + verify + stage ----
-bool doApply() {
+bool doApply(bool force) {
   if (gAvailable.appUrl.empty()) {
     fail("apply: no update resolved (check first)");
     return false;
@@ -364,9 +410,15 @@ bool doApply() {
     String v = p.getString("atryv", "");
     uint8_t n = (v == gAvailable.version.c_str()) ? p.getUChar("atry", 0) : 0;
     if (n >= kMaxApplyAttempts) {
-      p.end();
-      fail("apply: repeated resets mid-apply — manual retry only");
-      return false;
+      // #182: `cmd/ota_apply` payload "force" is the remote escape — before
+      // it, only a new release (or USB) could unlatch a fielded unit.
+      if (!force) {
+        p.end();
+        fail("apply: repeated resets mid-apply — manual retry only");
+        return false;
+      }
+      Serial.printf("[ota] FORCE apply: clearing crash-loop guard (%u strikes)\n", n);
+      n = 0;
     }
     p.putString("atryv", gAvailable.version.c_str());
     p.putUChar("atry", static_cast<uint8_t>(n + 1));
@@ -394,14 +446,43 @@ bool doApply() {
   HTTPClient http;
   WiFiClient* stream = nullptr;
   int total = -1;
+  MirrorUrl mh{};
+  bool ranged = false;      // #182: P4 Range-chunked mirror mode
+  size_t chunkBody = 0;     // body bytes pending on the wire (ranged mode)
+  bool keepAlive = false;
   // Close whichever transport we actually opened.
   auto closeDl = [&]() { if (secure) http.end(); else plain.stop(); };
   if (!secure) {
-    // #180: LAN mirror (http, tunnelled) — small-window GET so the response
-    // can't flood the SDIO RX pool. This is the path the P4 Remotes use.
-    if (!openMirrorGet(url, plain, total)) {
+    // LAN mirror (plain http, possibly tunnelled) — the path the Remotes use.
+    if (!parseMirrorUrl(url, mh)) {
+      if (ram) free(ram);
+      fail("apply: bad mirror url");
+      return false;
+    }
+    size_t bodyLen = 0, totalLen = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    // #182: probe with a Range request. 206 = chunked mode (in-flight bounded
+    // to one chunk — the tunnel can't burst past the SDIO RX pool); 200 = the
+    // server has no Range support, single-GET fallback as before.
+    const int code = mirrorRequest(plain, mh, 0, kMirrorRangeBytes,
+                                   bodyLen, totalLen, keepAlive);
+    if (code == 206 && totalLen > 0) {
+      ranged = true;
+      chunkBody = bodyLen;
+      total = static_cast<int>(totalLen);
+      Serial.printf("[ota] mirror ranged download: %d B in %u B chunks\n",
+                    total, static_cast<unsigned>(kMirrorRangeBytes));
+    } else if (code == 200) {
+      total = static_cast<int>(bodyLen);
+    }
+#else
+    const int code = mirrorRequest(plain, mh, 0, 0, bodyLen, totalLen, keepAlive);
+    if (code == 200) total = static_cast<int>(bodyLen);
+#endif
+    if (total <= 0) {
       if (ram) free(ram);
       plain.stop();
+      Serial.printf("[ota] mirror GET status: %d\n", code);
       fail("apply: mirror GET failed");
       return false;
     }
@@ -454,66 +535,104 @@ bool doApply() {
   Sha256 sha;
   static uint8_t buf[4096];
   size_t written = 0;
-  uint32_t lastDataMs = millis();
-  while (stream->connected() && (total < 0 || written < static_cast<size_t>(total))) {
-    const size_t avail = stream->available();
-    if (avail == 0) {
-      if (millis() - lastDataMs > kStreamTimeoutMs) {
-        if (ram) free(ram); else Update.abort();
-        closeDl();
-        fail("apply: stream stalled");
-        return false;
+  const char* pumpErr = nullptr;  // set on unrecoverable pump failure
+
+  // Read up to `need` body bytes (SIZE_MAX = until the stream ends) into the
+  // image (PSRAM or flash), updating sha + progress. Returns bytes consumed
+  // this call; a short return with pumpErr unset means the connection ended
+  // (ranged mode reconnects and resumes; single-shot mode treats it as EOF).
+  auto pump = [&](WiFiClient* s, size_t need) -> size_t {
+    size_t got = 0;
+    uint32_t lastDataMs = millis();
+    while (got < need) {
+      const size_t avail = s->available();
+      if (avail == 0) {
+        // A finished transfer closes the connection; re-check before timing out.
+        if (!s->connected()) break;
+        if (millis() - lastDataMs > kStreamTimeoutMs) {
+          pumpErr = "apply: stream stalled";
+          break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
       }
-      vTaskDelay(pdMS_TO_TICKS(20));
-      // A finished chunked transfer closes the connection; loop re-checks.
-      continue;
-    }
-    lastDataMs = millis();
-    size_t chunk = avail > sizeof(buf) ? sizeof(buf) : avail;
+      lastDataMs = millis();
+      size_t chunk = avail > sizeof(buf) ? sizeof(buf) : avail;
+      if (chunk > need - got) chunk = need - got;
 #ifdef CONFIG_IDF_TARGET_ESP32P4
     // Pace the download so the esp-hosted SDIO drainer keeps up. The RX pool
     // asserts (sdio_drv.c:953) when inbound data outruns the sdio_read task —
     // cap the per-iteration read and yield between reads.
 #ifdef SLYTHERM_WG
-    // #180: over the WireGuard tunnel the 64 KB default TCP window (SO_RCVBUF
-    // does NOT shrink it in this lwIP) lets the server outrun a throttled
-    // reader — the socket buffer backs up, lwIP stops draining the esp-hosted
-    // SDIO RX pool, and it overflows (sdio_drv.c:953). So do the OPPOSITE of
-    // throttling: read the full buffer every iteration so consumption keeps
-    // pace with arrival, with only a modest 1-tick yield to hand the RX /
-    // WG-decrypt tasks CPU to drain the pool. (The camera is paused via #180,
-    // so it isn't competing.)
-    vTaskDelay(1);
+      // #180/#182: never throttle reads on the tunnel — a slow reader backs
+      // the socket buffer up until lwIP stops draining the SDIO RX pool. Read
+      // the full buffer every iteration; the 1-tick yield hands the RX/
+      // WG-decrypt tasks CPU. (In-flight volume is bounded by the Range chunk
+      // — #182; the camera keeps running.)
+      vTaskDelay(1);
 #else
-    // #129 LAN pacing (~500 KB/s ceiling; a 2 MB image gains a few seconds).
-    if (chunk > 2048) chunk = 2048;
-    vTaskDelay(pdMS_TO_TICKS(4));
+      // #129 LAN pacing (~500 KB/s ceiling; a 2 MB image gains a few seconds).
+      if (chunk > 2048) chunk = 2048;
+      vTaskDelay(pdMS_TO_TICKS(4));
 #endif
 #endif
-    if (ram && written + chunk > expect) chunk = expect - written;
-    if (ram && chunk == 0) break;  // server sent more than expected
-    const int n = stream->readBytes(
-        ram ? reinterpret_cast<char*>(ram + written)
-            : reinterpret_cast<char*>(buf), chunk);
-    if (n <= 0) continue;
-    sha.update(ram ? ram + written : buf, static_cast<size_t>(n));
-    if (!ram &&
-        Update.write(buf, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
-      Update.abort();
-      closeDl();
-      fail("apply: flash write failed");
-      return false;
+      if (ram && written + chunk > expect) chunk = expect - written;
+      if (ram && chunk == 0) break;  // server sent more than expected
+      const int n = s->readBytes(
+          ram ? reinterpret_cast<char*>(ram + written)
+              : reinterpret_cast<char*>(buf), chunk);
+      if (n <= 0) continue;
+      sha.update(ram ? ram + written : buf, static_cast<size_t>(n));
+      if (!ram &&
+          Update.write(buf, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
+        pumpErr = "apply: flash write failed";
+        break;
+      }
+      written += static_cast<size_t>(n);
+      got += static_cast<size_t>(n);
+      if (total > 0)
+        setStatus(State::kDownloading,
+                  static_cast<uint8_t>((written * 100u) / total),
+                  gAvailable.version.c_str(), "");
     }
-    written += static_cast<size_t>(n);
-    if (total > 0)
-      setStatus(State::kDownloading,
-                static_cast<uint8_t>((written * 100u) / total),
-                gAvailable.version.c_str(), "");
+    return got;
+  };
+
+  if (!ranged) {
+    pump(stream, total > 0 ? static_cast<size_t>(total) : SIZE_MAX);
+  } else {
+    // #182: sequential Range chunks; a dropped connection resumes at
+    // `written`. Only consecutive zero-progress rounds count against the
+    // retry budget, so a long download can survive many transient drops.
+    uint8_t stalls = 0;
+    for (;;) {
+      const size_t before = written;
+      const size_t got = pump(&plain, chunkBody);
+      if (pumpErr != nullptr) break;
+      if (got < chunkBody || !keepAlive) plain.stop();
+      if (written >= static_cast<size_t>(total)) break;
+      stalls = (written == before) ? static_cast<uint8_t>(stalls + 1) : 0;
+      if (stalls > kMirrorRangeRetries) {
+        pumpErr = "apply: mirror range retries exhausted";
+        break;
+      }
+      const size_t left = static_cast<size_t>(total) - written;
+      size_t bodyLen = 0, totalLen = 0;
+      const int code = mirrorRequest(plain, mh, written,
+                                     left > kMirrorRangeBytes ? kMirrorRangeBytes : left,
+                                     bodyLen, totalLen, keepAlive);
+      if (code != 206 || bodyLen == 0) {
+        plain.stop();
+        chunkBody = 0;  // burn a retry round, reconnect next pass
+        continue;
+      }
+      chunkBody = bodyLen;
+    }
   }
   closeDl();
-  if (total > 0 && written != static_cast<size_t>(total)) {
+  if (pumpErr != nullptr || (total > 0 && written != static_cast<size_t>(total))) {
     if (ram) free(ram); else Update.abort();
-    fail("apply: truncated download");
+    fail(pumpErr != nullptr ? pumpErr : "apply: truncated download");
     return false;
   }
 
@@ -644,7 +763,9 @@ void otaTask(void*) {
       }
       if (gApplyReq && !staged) {
         gApplyReq = false;
-        if (status().state == State::kUpdateAvailable) staged = doApply();
+        const bool force = gForceApply;
+        gForceApply = false;
+        if (status().state == State::kUpdateAvailable) staged = doApply(force);
         else if (status().state != State::kDownloading &&
                  status().state != State::kVerifying)
           fail("apply: nothing available (check first)");
@@ -708,7 +829,10 @@ void begin() {
 }
 
 void requestCheck() { gCheckReq = true; }
-void requestApply() { gApplyReq = true; }
+void requestApply(bool force) {
+  if (force) gForceApply = true;
+  gApplyReq = true;
+}
 
 void setMirror(const char* baseUrl) {
   char clean[sizeof(gMirror)] = "";
