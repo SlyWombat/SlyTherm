@@ -416,6 +416,103 @@ static void test_two_ramp_cool_targets_have_no_fallback() {
   TEST_ASSERT_FALSE(re.adviseRamps(t, 20.0f).fallbackValid);
 }
 
+// ---------- #183 coast (optimal stop) ----------
+
+static RecoveryEstimator coastEstimator() {
+  RecoveryConfig cfg;
+  cfg.enabled = true;
+  cfg.coastEnabled = true;
+  return RecoveryEstimator(cfg);
+}
+
+// The canonical field case: daytime cool 21 relaxing to evening 22 in 30 min,
+// room held at ~21.3, drifting up slowly.
+static RecoveryTarget coolRelaxTarget() {
+  RecoveryTarget t;
+  t.setpointC = 22.0f;
+  t.mode = RecoveryMode::kCool;
+  t.inS = 1800;
+  return t;
+}
+
+static void test_coast_disabled_by_default_and_doubly_gated() {
+  TEST_ASSERT_FALSE(kCoastEnabledDefault);
+  const RecoveryTarget t = coolRelaxTarget();
+  // Default config: both gates off.
+  TEST_ASSERT_FALSE(RecoveryEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
+  // Master on, coast off — the #50 runtime switch alone must not enable it.
+  TEST_ASSERT_FALSE(enabledEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
+  // Coast on, master off — the runtime kill-switch still rules.
+  RecoveryConfig cfg;
+  cfg.coastEnabled = true;
+  TEST_ASSERT_FALSE(RecoveryEstimator(cfg).coastAdvised(t, 21.0f, 21.3f, 0.2f));
+  TEST_ASSERT_TRUE(coastEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
+}
+
+static void test_coast_only_for_relaxing_targets() {
+  RecoveryEstimator re = coastEstimator();
+  RecoveryTarget t = coolRelaxTarget();
+  // Tightening (22 -> 21) or flat targets are recovery's business.
+  t.setpointC = 20.0f;
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, 0.1f));
+  t.setpointC = 21.0f;
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 20.0f, 0.0f));
+  // Heat side relaxes DOWNWARD (evening 21 -> night 18, room ~20.8 falling).
+  t.mode = RecoveryMode::kHeat;
+  t.setpointC = 18.0f;
+  TEST_ASSERT_TRUE(re.coastAdvised(t, 21.0f, 20.8f, -0.3f));
+  t.setpointC = 21.0f;  // flat: not relaxing
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 20.8f, -0.3f));
+  t.setpointC = 22.0f;  // tightening upward
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 20.8f, -0.3f));
+}
+
+static void test_coast_drift_projection_and_margin() {
+  RecoveryEstimator re = coastEstimator();
+  const RecoveryTarget t = coolRelaxTarget();  // 22.0 in 1800 s
+  // 21.3 + 0.2 C/h * 0.5 h = 21.4 <= 22.0 - 0.2 margin -> release.
+  TEST_ASSERT_TRUE(re.coastAdvised(t, 21.0f, 21.3f, 0.2f));
+  // 21.5 + 1.9 C/h * 0.5 h = 22.45 > 21.8 -> would overshoot: hold on.
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.5f, 1.9f));
+  // Just under the margin line (21.75 vs 21.8): still releases.
+  TEST_ASSERT_TRUE(re.coastAdvised(t, 21.0f, 21.25f, 1.0f));
+  // Just over it (21.85): holds on.
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.35f, 1.1f));
+  // A falling room is trivially safe on the cool side.
+  TEST_ASSERT_TRUE(re.coastAdvised(t, 21.0f, 21.5f, -0.5f));
+  // Heat mirror: 20.8 - 0.5 C/h * 0.5 h = 20.55 >= 18.0 + 0.2 -> release;
+  // a fast-falling room that would undershoot 18.2 by the boundary holds on.
+  RecoveryTarget h;
+  h.setpointC = 18.0f;
+  h.mode = RecoveryMode::kHeat;
+  h.inS = 1800;
+  TEST_ASSERT_TRUE(re.coastAdvised(h, 21.0f, 20.8f, -0.5f));
+  h.inS = 3600;
+  TEST_ASSERT_FALSE(re.coastAdvised(h, 21.0f, 19.0f, -1.0f));  // lands 18.0 < 18.2
+}
+
+static void test_coast_window_bound_and_bad_inputs() {
+  RecoveryEstimator re = coastEstimator();
+  RecoveryTarget t = coolRelaxTarget();
+  // Beyond the comfort window: a tight house must not release hours early.
+  t.inS = kCoastMaxLeadS + 1;
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, 0.1f));
+  t.inS = kCoastMaxLeadS;
+  TEST_ASSERT_TRUE(re.coastAdvised(t, 21.0f, 21.0f, 0.1f));
+  t.inS = 0;  // boundary already here: nothing to coast toward
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, 0.1f));
+  t.inS = 1800;
+  // Implausible slope DISABLES coast (either sign) — never unlocks it.
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, kCoastDriftMaxCPerH + 0.1f));
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, -(kCoastDriftMaxCPerH + 0.1f)));
+  // NaN/inf anywhere -> false (an untrusted trend is passed as NaN by glue).
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, std::nanf("")));
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, std::nanf(""), 0.1f));
+  TEST_ASSERT_FALSE(re.coastAdvised(t, std::nanf(""), 21.3f, 0.1f));
+  t.setpointC = std::nanf("");
+  TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, 0.1f));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_disabled_by_default_gives_no_advice);
@@ -436,5 +533,9 @@ int main() {
   RUN_TEST(test_fallback_gas_advised_exactly_below_the_line);
   RUN_TEST(test_deep_cold_advises_gas_from_the_recovery_start);
   RUN_TEST(test_two_ramp_cool_targets_have_no_fallback);
+  RUN_TEST(test_coast_disabled_by_default_and_doubly_gated);
+  RUN_TEST(test_coast_only_for_relaxing_targets);
+  RUN_TEST(test_coast_drift_projection_and_margin);
+  RUN_TEST(test_coast_window_bound_and_bad_inputs);
   return UNITY_END();
 }

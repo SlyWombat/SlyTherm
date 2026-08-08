@@ -35,6 +35,14 @@
 //     recovery. OFF by default (kRecoveryTwoRampEnabledDefault): heating
 //     validation is a WINTER task.
 //
+// Issue #183 adds the mirror arm, coast (ASHRAE optimal STOP): when the next
+// target RELAXES the active side, coastAdvised() reports whether pure drift
+// (the live TrendEstimator slope) lands inside the incoming band by the
+// boundary — the glue may then early-apply the relaxed setpoint instead of
+// defending the old band to the last minute. Equally advisory, doubly gated
+// (kCoastEnabledDefault), and window-bounded (kCoastMaxLeadS) so a tight
+// house cannot trade hours of the outgoing comfort band for the release.
+//
 // Disabled by default (kRecoveryEnabledDefault) until field-tuned (docs/06).
 //
 // Pure C++17, no Arduino. Time is injected as uint32_t nowS (monotonic).
@@ -64,6 +72,11 @@ struct RecoveryConfig {
   // fallback ramp; enabled alone keeps pre-#141 behavior exactly.
   bool     twoRampEnabled   = kRecoveryTwoRampEnabledDefault;
   float    fallbackMargin   = kRecoveryFallbackMargin;  // (0,1]: derate the gas rate
+  // #183 coast (optimal stop). Gated like two-ramp: enabled AND coastEnabled.
+  bool     coastEnabled     = kCoastEnabledDefault;
+  uint32_t coastMaxLeadS    = kCoastMaxLeadS;
+  float    coastMarginC     = kCoastMarginC;
+  float    coastDriftMaxCPerH = kCoastDriftMaxCPerH;
 };
 
 // The next scheduled setpoint change (glue maps hamqtt::NextTarget here).
@@ -143,6 +156,17 @@ class RecoveryEstimator {
   // crossed) returns none — the call machinery owns violations.
   static CrossingBias crossingBias(float toGoC, float approachCPerH,
                                    uint32_t horizonS, float biasMaxC);
+
+  // #183 coast (optimal stop, docs/13 — ASHRAE optimal start/stop): true when
+  // the pending target RELAXES the active side (cool: setpoint rising; heat:
+  // setpoint falling) and pure drift cannot overshoot it before the boundary,
+  // so early-applying the relaxed setpoint costs at most a bounded excursion
+  // the schedule was about to allow anyway. driftCPerH is the live fused-temp
+  // slope (TrendEstimator, signed: positive = warming); a slope outside the
+  // plausibility clamp DISABLES coast — bad input never unlocks a release.
+  // Window-bounded by coastMaxLeadS. Requires enabled AND coastEnabled.
+  bool coastAdvised(const RecoveryTarget& target, float activeSpC,
+                    float currentTempC, float driftCPerH) const;
 
   // #141 two-ramp recovery. hp mirrors advise(target, temp, kHp); the
   // fallback line is fallbackTempAt() evaluated at target.inS. Heat targets

@@ -94,6 +94,10 @@ constexpr const char* kStateCompressorMinOffRemaining =
 constexpr const char* kStateCompressorLockedOut = SLYTHERM_TOPIC_PREFIX "state/compressor_locked_out";
 constexpr const char* kStateEmHeat              = SLYTHERM_TOPIC_PREFIX "state/em_heat";  // "ON"/"OFF"
 constexpr const char* kStateSmartRecovery       = SLYTHERM_TOPIC_PREFIX "state/smart_recovery";  // "ON"/"OFF" (#50)
+// #183 recovery/coast diagnostics JSON (retained): learned °C/h + accepted-
+// segment count per channel, last advised lead, last early-apply (start|coast),
+// live coast verdict — so grading recovery no longer needs SQL archaeology.
+constexpr const char* kStateRecovery            = SLYTHERM_TOPIC_PREFIX "state/recovery";
 constexpr const char* kStateChangeoverReason    = SLYTHERM_TOPIC_PREFIX "state/changeover_reason";
 // Composed wall-screen wording, published for HA display parity: the action line
 // ("Cooling to 21.0°", "Idle - holding 18-21°") and the presence/tracking line

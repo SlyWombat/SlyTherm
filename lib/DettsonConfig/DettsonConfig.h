@@ -266,6 +266,20 @@ constexpr bool     kRecoveryTwoRampEnabledDefault = false;
 constexpr float    kRecoveryFallbackMargin        = 0.85f; // assume gas achieves only this fraction of
                                                            //  its learned ramp -> the line sits higher,
                                                            //  so gas engages a little early, never late
+// #183 coast (optimal stop, the mirror of optimal start): when the pending
+// next_target RELAXES the active side, early-apply the relaxed setpoint once
+// pure drift (live TrendEstimator slope) cannot overshoot it before the
+// boundary — instead of defending the old band right up to the boundary.
+// OFF by default until field-tuned; rides the same #50 runtime switch.
+constexpr bool     kCoastEnabledDefault       = false;
+constexpr uint32_t kCoastMaxLeadS             = 3600;  // comfort bound: never release earlier than
+                                                       //  this (a tight house would otherwise want
+                                                       //  4+ h and eat the outgoing comfort band)
+constexpr float    kCoastMarginC              = 0.2f;  // predicted landing must clear the relaxed
+                                                       //  setpoint by this before we let go
+constexpr float    kCoastDriftMaxCPerH        = 2.0f;  // plausibility clamp on the live drift slope:
+                                                       //  beyond it the slope DISABLES coast (a bad
+                                                       //  sensor must never unlock an early release)
 
 // ---------- Fused-temp trend + crossing prediction (issue #141, docs/13 §2) ----------
 // TrendEstimator (lib/SensorFusion): EMA'd slope of the fused temperature,

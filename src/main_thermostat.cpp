@@ -278,6 +278,7 @@ struct Snapshot {
   float filterLifePct = 0;  // #175 % of filter life consumed
   char  energyJson[144] = "{}";  // #176 {gas_m3,hp_kwh,cool_kwh,cost_gas,cost_elec}
   char  suggestedJson[192] = "{}";  // #177 {confident,weekday,weekend}
+  char  recoveryJson[192] = "{}";   // #183 recovery/coast diag (docs/06 topic map)
   bool oatValid = false; float oatC = 0; OatRung oatRung = OatRung::kNone;
   char fusionJson[224] = "{}";  // {temp,tier,participants[],occupied,dominant} (#117)
   char statusLine[40] = "Idle";      // composed action wording (wall-screen parity)
@@ -1362,6 +1363,7 @@ enum PubIdx : uint8_t {
   PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
   PUB_EMGHEAT, PUB_EMGCOOL,  // #163 configurable emergency setpoints (retained, NVS-backed)
   PUB_SMREC,                 // #50 smart-recovery on/off (retained, NVS-backed)
+  PUB_RECOVERY,              // #183 recovery/coast diagnostics JSON (retained)
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
 #endif
@@ -1461,6 +1463,9 @@ void publishSnapshot(bool force) {
   // not sit unknown until the next toggle (the #155/1.2.8 retained-topic lesson).
   pubState(PUB_SMREC, topic::kStateSmartRecovery, gSmartRecovery ? "ON" : "OFF",
            force, /*retain=*/true);
+  // #183 RETAINED like energy: slow-changing diagnostics a fresh subscriber
+  // (or a grading query) must read without waiting for the next change.
+  pubState(PUB_RECOVERY, topic::kStateRecovery, s.recoveryJson, force, /*retain=*/true);
   // EMERGENCY_HEAT reports "heat"; the em_heat switch carries the truth (docs/06).
   pubState(PUB_MODE, topic::kStateMode, s.emHeat ? "heat" : toString(s.mode), force);
   // #128: fan mode + circulate config RETAINED — a reconnecting Remote/HA reads
@@ -2097,6 +2102,12 @@ bool gSmartRecovery = kRecoveryEnabledDefault;
 // kRecoveryEnabledDefault and kRecoveryTwoRampEnabledDefault are on —
 // heating validation is a WINTER task.
 bool gRecoveryGasAdvised = false;
+// #183 diagnostics for slytherm/state/recovery (control-task owned, snapshot
+// carries them to the mqttTask): last advised lead, live coast verdict, and
+// which arm last early-applied a scheduled setpoint.
+uint32_t gRecoveryLeadS = 0;
+bool gCoastAdvisedNow = false;
+char gRecoveryApplied[8] = "none";  // none | start | coast
 
 // Run-segment tracking for RecoveryEstimator learning.
 enum class Serving : uint8_t { kNone, kGas, kHpHeat, kCool };
@@ -2511,9 +2522,12 @@ void updateRunSegments(const DemandSet& out, const FusedTemp& fused, uint32_t no
 void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS) {
   const bool wasGasAdvised = gRecoveryGasAdvised;  // log on the rising edge only
   gRecoveryGasAdvised = false;  // re-derived below; clears when the target lapses
-  if (!gHaveTarget || !fused.valid) return;
+  if (!gHaveTarget || !fused.valid) { gCoastAdvisedNow = false; gRecoveryLeadS = 0; return; }
   const uint32_t elapsed = nowS - gTargetRxS;
-  if (elapsed >= gTarget.inS) { gHaveTarget = false; return; }
+  if (elapsed >= gTarget.inS) {
+    gHaveTarget = false; gCoastAdvisedNow = false; gRecoveryLeadS = 0;
+    return;
+  }
   RecoveryTarget t;
   t.setpointC = gTarget.tempC;
   t.mode = gTarget.mode == hm::Mode::kCool ? RecoveryMode::kCool : RecoveryMode::kHeat;
@@ -2524,6 +2538,7 @@ void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS
           ? RecoveryEquipment::kGas
           : RecoveryEquipment::kHp;
   const RecoveryAdvice a = gRecovery.advise(t, fused.value, equip);
+  gRecoveryLeadS = a.startEarlyByS;
   if (a.startNow && !gTargetApplied) {
     // ADVISORY acted on here, in glue: early-apply the scheduled setpoint via
     // the time-less setters (no hold). Every demand still passes the full
@@ -2531,8 +2546,31 @@ void adviseRecovery(const FusedTemp& fused, const OatReading& oat, uint32_t nowS
     if (t.mode == RecoveryMode::kHeat) gModeSm->setHeatSetpoint(t.setpointC);
     else gModeSm->setCoolSetpoint(t.setpointC);
     gTargetApplied = true;
+    strlcpy(gRecoveryApplied, "start", sizeof(gRecoveryApplied));
     Serial.printf("[recovery] early start: %.1fC in %lus\n",
                   static_cast<double>(t.setpointC), static_cast<unsigned long>(t.inS));
+  } else if (!gTargetApplied) {
+    // #183 coast (optimal stop), the mirror arm: a RELAXING target (advise()
+    // returned nothing for it) is early-applied once pure drift cannot
+    // overshoot it before the boundary — instead of defending the outgoing
+    // band to the last minute. Same setters, same bookkeeping, same
+    // downstream gates; a running call simply exits at the new setpoint
+    // under CompressorGuard's min-run as ever. The trend slope is passed
+    // only while trusted (warmed up); NAN otherwise, which coastAdvised()
+    // rejects — an unknown drift must never unlock a release.
+    const float activeSp = t.mode == RecoveryMode::kCool
+                               ? gModeSm->coolSetpoint()
+                               : gModeSm->heatSetpoint();
+    gCoastAdvisedNow = gRecovery.coastAdvised(
+        t, activeSp, fused.value, gTrend.valid() ? gTrend.slopeCPerH() : NAN);
+    if (gCoastAdvisedNow) {
+      if (t.mode == RecoveryMode::kHeat) gModeSm->setHeatSetpoint(t.setpointC);
+      else gModeSm->setCoolSetpoint(t.setpointC);
+      gTargetApplied = true;
+      strlcpy(gRecoveryApplied, "coast", sizeof(gRecoveryApplied));
+      Serial.printf("[recovery] coast release: %.1fC in %lus\n",
+                    static_cast<double>(t.setpointC), static_cast<unsigned long>(t.inS));
+    }
   }
   // #141 two-ramp fallback (docs/13 §2, Honeywell two-ramp scheme) — WINTER
   // validation task, doubly gated OFF by default (adviseRamps() itself
@@ -2596,6 +2634,19 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
            "\"cost_gas\":%.2f,\"cost_elec\":%.2f}",
            gEnergyGasM3, gEnergyHpKwh, gEnergyCoolKwh, gCostGas, gCostElec);
   strlcpy(s.suggestedJson, gSuggestedScheduleJson, sizeof(s.suggestedJson));  // #177
+  snprintf(s.recoveryJson, sizeof(s.recoveryJson),  // #183 recovery/coast diag
+           "{\"enabled\":%s,\"heat_hp_cph\":%.2f,\"heat_gas_cph\":%.2f,"
+           "\"cool_cph\":%.2f,\"heat_hp_n\":%lu,\"heat_gas_n\":%lu,\"cool_n\":%lu,"
+           "\"lead_s\":%lu,\"applied\":\"%s\",\"coast\":%s}",
+           gSmartRecovery ? "true" : "false",
+           static_cast<double>(gRecovery.rateCPerH(RecoveryMode::kHeat, RecoveryEquipment::kHp)),
+           static_cast<double>(gRecovery.rateCPerH(RecoveryMode::kHeat, RecoveryEquipment::kGas)),
+           static_cast<double>(gRecovery.rateCPerH(RecoveryMode::kCool, RecoveryEquipment::kHp)),
+           static_cast<unsigned long>(gRecovery.samples(RecoveryMode::kHeat, RecoveryEquipment::kHp)),
+           static_cast<unsigned long>(gRecovery.samples(RecoveryMode::kHeat, RecoveryEquipment::kGas)),
+           static_cast<unsigned long>(gRecovery.samples(RecoveryMode::kCool, RecoveryEquipment::kHp)),
+           static_cast<unsigned long>(gRecoveryLeadS), gRecoveryApplied,
+           gCoastAdvisedNow ? "true" : "false");
   s.oatValid = oat.valid; s.oatC = oat.valueC; s.oatRung = oat.rung;
   s.asleep = gSleep.asleep();  // #90: slytherm/state/sleep
 

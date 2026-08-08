@@ -120,6 +120,31 @@ CrossingBias RecoveryEstimator::crossingBias(float toGoC, float approachCPerH,
   return out;
 }
 
+bool RecoveryEstimator::coastAdvised(const RecoveryTarget& target,
+                                     float activeSpC, float currentTempC,
+                                     float driftCPerH) const {
+  if (!cfg_.enabled || !cfg_.coastEnabled) return false;
+  if (std::isnan(currentTempC) || std::isnan(target.setpointC) ||
+      std::isnan(activeSpC) || !std::isfinite(driftCPerH)) {
+    return false;
+  }
+  if (target.inS == 0 || target.inS > cfg_.coastMaxLeadS) return false;
+  // Plausibility clamp: an absurd slope means the trend (or its sensor) is
+  // not to be trusted — it must never UNLOCK a release.
+  if (std::fabs(driftCPerH) > cfg_.coastDriftMaxCPerH) return false;
+
+  const bool cool = target.mode == RecoveryMode::kCool;
+  // Relaxing means the target moves AWAY from the load: cool setpoint rising,
+  // heat setpoint falling. Anything else is recovery's (advise's) business.
+  if (cool ? !(target.setpointC > activeSpC) : !(target.setpointC < activeSpC))
+    return false;
+
+  const float landingC =
+      currentTempC + driftCPerH * static_cast<float>(target.inS) / 3600.0f;
+  return cool ? landingC <= target.setpointC - cfg_.coastMarginC
+              : landingC >= target.setpointC + cfg_.coastMarginC;
+}
+
 float RecoveryEstimator::fallbackTempAt(float setpointC,
                                         uint32_t remainS) const {
   const float rate =
