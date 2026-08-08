@@ -71,11 +71,16 @@ constexpr uint32_t kGuardSaveS      = 300;  // CompressorGuard blob persist cade
 // ---------- Glue shaping knobs (NOT canonical defaults; promotion candidates
 // for DettsonConfig.h + the docs/05 table once reviewed in the field) --------
 // fan_mode "circulate": blower for the first N minutes of each hour
-// (docs/06: duty-cycled FAN_DEMAND), at LOW speed — quieter/cheaper and the
-// destratification literature (docs/13 §3) favors long low-speed circulation.
-// 25 % = CT-485 fan Low (0x66 pct*2 = 0x32).
+// (docs/06: duty-cycled FAN_DEMAND). The destratification literature
+// (docs/13 §3) favors long LOW-speed circulation, but #184 field data shows
+// this furnace's blower NEVER ENGAGES at Low (25% = 0x32): a month of
+// action='fan' samples all report equipment='idle', frame-on-wire correct.
+// docs/02 §5a's field-confirmed note "fan-on enters at Med" is the rule —
+// default Med (50% = 0x64) so circulate actually moves air. Runtime-tunable
+// (cmd/fan_circulate_pct / panel Fan sheet); drop back to Low only on
+// equipment PROVEN to engage there.
 constexpr uint32_t kFanCirculateMinPerHour = 15;
-constexpr float    kFanCirculatePct = 25.0f;
+constexpr float    kFanCirculatePct = 50.0f;
 // Staged-HP request map (HpRelayShaper input, HEAT path only since #140 —
 // cooling maps error->duty via StagedCoolShaper::requestFromError; docs/05
 // "PID->duty" — kept proportional, not PID, per the HP-paths-are-staged
