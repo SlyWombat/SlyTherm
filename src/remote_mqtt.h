@@ -51,4 +51,11 @@ uint8_t fanCircPct();
 void setFanMode(uint8_t mode);
 void setFanCirculate(uint32_t minPerHour, uint8_t pct);
 
+// #183 Smart setpoints (the #50 smart-recovery gate). Same shape as fan: the
+// getter returns the Controller's retained state/smart_recovery (cached); the
+// setter forwards over cmd/smart_recovery. The Mode sheet re-seeds from the
+// cache on open, so a lost publish self-corrects.
+bool smartRecovery();
+void setSmartRecovery(bool on);
+
 }  // namespace remote_mqtt

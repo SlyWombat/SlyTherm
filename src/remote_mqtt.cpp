@@ -110,6 +110,7 @@ char gControllerCid[16] = {};
 uint8_t gFanMode = 0;         // 0=auto,1=on,2=circulate
 uint32_t gFanCircMin = 15;    // circulate minutes-per-hour
 uint8_t gFanCircPct = 25;     // circulate speed % (Low)
+bool gSmartRec = false;       // #183 smart setpoints (retained state cache)
 
 // ---- #117: live sensor rows, assembled from the Controller's retained
 // topics (roster gives order+names; per-sensor topics fill the cells). ----
@@ -152,6 +153,7 @@ inline void RU() { if (gRowsMux) xSemaphoreGive(gRowsMux); }
 
 bool     gPendingFanMode = false; uint8_t  gPendingFanModeVal = 0;
 bool     gPendingFanCirc = false; uint32_t gPendingFanCircMin = 0; uint8_t gPendingFanCircPct = 0;
+bool     gPendingSmartRec = false; bool    gPendingSmartRecVal = false;  // #183
 
 RowSrc* rowById(const char* id) {
   for (uint8_t i = 0; i < gRowCount; ++i)
@@ -428,6 +430,9 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     // #128: cache the Controller's retained fan state for the panel Fan sheet.
     auto p = hm::parseFanMode(buf);
     if (p.ok) gFanMode = static_cast<uint8_t>(p.value);
+  } else if (strcmp(topic, hm::topic::kStateSmartRecovery) == 0) {
+    // #183: cache the Controller's retained smart-setpoints state (Mode sheet).
+    gSmartRec = (strcmp(buf, "ON") == 0);
   } else if (strcmp(topic, hm::topic::kStateFanCirculateMin) == 0) {
     char* end = nullptr;
     const unsigned long v = strtoul(buf, &end, 10);
@@ -513,6 +518,7 @@ void tryConnect(uint32_t nowMs) {
     gMqtt.subscribe(hm::topic::kStateFanMode);          // #128 fan state (retained)
     gMqtt.subscribe(hm::topic::kStateFanCirculateMin);
     gMqtt.subscribe(hm::topic::kStateFanCirculatePct);
+    gMqtt.subscribe(hm::topic::kStateSmartRecovery);    // #183 smart setpoints (retained)
     gMqtt.subscribe("slytherm/config/sensors");          // #117 roster
     gMqtt.subscribe(kFusionTopic);                        // #117 occupancy/dominant
     gMqtt.subscribe("slytherm/state/sensor/+/age");       // #117 staleness
@@ -666,7 +672,7 @@ void pumpPendingCmds() {
   if (!gMqtt.connected()) return;
   struct { char id[24]; bool want; } parts[kMaxSensorRows];
   uint8_t nParts = 0;
-  bool fanMode = false, fanCirc = false;
+  bool fanMode = false, fanCirc = false, smartRec = false, smartRecVal = false;
   uint8_t fanModeVal = 0, fanCircPct = 0;
   uint32_t fanCircMin = 0;
   RL();
@@ -679,6 +685,7 @@ void pumpPendingCmds() {
   }
   if (gPendingFanMode) { fanMode = true; fanModeVal = gPendingFanModeVal; gPendingFanMode = false; }
   if (gPendingFanCirc) { fanCirc = true; fanCircMin = gPendingFanCircMin; fanCircPct = gPendingFanCircPct; gPendingFanCirc = false; }
+  if (gPendingSmartRec) { smartRec = true; smartRecVal = gPendingSmartRecVal; gPendingSmartRec = false; }
   RU();
   for (uint8_t i = 0; i < nParts; ++i) {
     char t[64];
@@ -699,6 +706,10 @@ void pumpPendingCmds() {
     gMqtt.publish(hm::topic::kCmdFanCirculatePct, b);
     Serial.printf("[link] fan circulate -> %lumin %u%%\n",
                   static_cast<unsigned long>(fanCircMin), static_cast<unsigned>(fanCircPct));
+  }
+  if (smartRec) {
+    gMqtt.publish(hm::topic::kCmdSmartRecovery, smartRecVal ? "ON" : "OFF");
+    Serial.printf("[link] smart setpoints -> %s\n", smartRecVal ? "ON" : "OFF");
   }
 }
 
@@ -806,6 +817,12 @@ void setFanMode(uint8_t mode) {
 }
 void setFanCirculate(uint32_t minPerHour, uint8_t pct) {
   RL(); gPendingFanCirc = true; gPendingFanCircMin = minPerHour; gPendingFanCircPct = pct; RU();
+}
+// #183: same contract as the fan setters — record the wanted state, the loop
+// task publishes it; the Mode sheet re-seeds from the retained echo on open.
+bool smartRecovery() { return gSmartRec; }
+void setSmartRecovery(bool on) {
+  RL(); gPendingSmartRec = true; gPendingSmartRecVal = on; RU();
 }
 
 }  // namespace remote_mqtt

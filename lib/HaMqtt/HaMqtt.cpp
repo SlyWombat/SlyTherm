@@ -915,7 +915,7 @@ std::string emHeatDiscoveryJson() {
 // scheduled setpoint is applied, never what the equipment is allowed to do.
 std::string smartRecoveryDiscoveryJson() {
   EntitySpec e;
-  e.name = "SlyTherm Smart Recovery";
+  e.name = "SlyTherm Smart Setpoints";  // owner's product name; unique_id stays for entity continuity
   e.uniqueId = "slytherm_smart_recovery";
   e.stateTopic = topic::kStateSmartRecovery;
   e.commandTopic = topic::kCmdSmartRecovery;

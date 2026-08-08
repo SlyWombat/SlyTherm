@@ -61,6 +61,13 @@ extern "C" void     uiSetFanMode(uint8_t mode);
 extern "C" uint32_t uiFanCircMin();                // circulate minutes-per-hour
 extern "C" uint8_t  uiFanCircPct();                // circulate speed pct (25/50/75)
 extern "C" void     uiSetFanCirculate(uint32_t minPerHour, uint8_t pct);
+// #183 Smart setpoints (the #50 smart-recovery switch): arrive at the next
+// scheduled setpoint ON time — cool early, heat early, or coast (do nothing) —
+// from the learned ramp rates. Same split as Fan: Controller applies locally
+// (global + NVS + retained MQTT state); Remote forwards over cmd/smart_recovery
+// and reads back the Controller's retained state.
+extern "C" bool     uiSmartRecovery();
+extern "C" void     uiSetSmartRecovery(bool on);
 extern "C" void uiSniffStart();              // RS-485 LISTEN capture (#71)
 extern "C" void uiSniffStop();
 extern "C" bool uiSniffActive();

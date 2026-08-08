@@ -435,18 +435,20 @@ static RecoveryTarget coolRelaxTarget() {
   return t;
 }
 
-static void test_coast_disabled_by_default_and_doubly_gated() {
-  TEST_ASSERT_FALSE(kCoastEnabledDefault);
+static void test_coast_rides_the_master_switch() {
+  // One "smart setpoints" feature (owner decision, #183): coast ships enabled
+  // and is governed by the same #50 runtime switch as the early-start arm.
+  TEST_ASSERT_TRUE(kCoastEnabledDefault);
   const RecoveryTarget t = coolRelaxTarget();
-  // Default config: both gates off.
+  // Default config: master switch off -> no coast (and no early starts).
   TEST_ASSERT_FALSE(RecoveryEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
-  // Master on, coast off — the #50 runtime switch alone must not enable it.
-  TEST_ASSERT_FALSE(enabledEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
-  // Coast on, master off — the runtime kill-switch still rules.
+  // Master on: coast advises with no second gate to flip.
+  TEST_ASSERT_TRUE(enabledEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
+  // The emergency compile-out knob is still honored when explicitly cleared.
   RecoveryConfig cfg;
-  cfg.coastEnabled = true;
+  cfg.enabled = true;
+  cfg.coastEnabled = false;
   TEST_ASSERT_FALSE(RecoveryEstimator(cfg).coastAdvised(t, 21.0f, 21.3f, 0.2f));
-  TEST_ASSERT_TRUE(coastEstimator().coastAdvised(t, 21.0f, 21.3f, 0.2f));
 }
 
 static void test_coast_only_for_relaxing_targets() {
@@ -533,7 +535,7 @@ int main() {
   RUN_TEST(test_fallback_gas_advised_exactly_below_the_line);
   RUN_TEST(test_deep_cold_advises_gas_from_the_recovery_start);
   RUN_TEST(test_two_ramp_cool_targets_have_no_fallback);
-  RUN_TEST(test_coast_disabled_by_default_and_doubly_gated);
+  RUN_TEST(test_coast_rides_the_master_switch);
   RUN_TEST(test_coast_only_for_relaxing_targets);
   RUN_TEST(test_coast_drift_projection_and_margin);
   RUN_TEST(test_coast_window_bound_and_bad_inputs);

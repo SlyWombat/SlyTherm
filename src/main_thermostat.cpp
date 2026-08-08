@@ -2067,6 +2067,20 @@ extern "C" void uiSetFanCirculate(uint32_t minPerHour, uint8_t pct) {
   gFanCircPct = fan::snapCirculatePct(static_cast<float>(pct));
 }
 
+// #183 Smart setpoints toggle from the panel Mode sheet. Same apply as the
+// MQTT cmd path (gPending handler below): flip the gate, persist, and gate the
+// estimator's advice — learning always continues. Retained state rides the
+// PUB_SMREC snapshot publish on change, so HA and the Remotes see it.
+extern bool gSmartRecovery;            // defined with the recovery state below
+extern dettson::RecoveryEstimator gRecovery;
+extern "C" bool uiSmartRecovery() { return gSmartRecovery; }
+extern "C" void uiSetSmartRecovery(bool on) {
+  gSmartRecovery = on;
+  gPrefs.putBool("smrec", on);
+  gRecovery.setEnabled(on);
+  Serial.printf("[recovery] smart setpoints %s (panel)\n", on ? "ON" : "OFF");
+}
+
 bool gSetpointsValidated = false;
 bool gConfigOk = true;
 uint32_t gLastInboundS = 0;       // last accepted MQTT traffic (stale clock)

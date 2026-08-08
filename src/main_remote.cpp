@@ -127,6 +127,10 @@ extern "C" void uiSetFanMode(uint8_t m) { remote_mqtt::setFanMode(m); }
 extern "C" uint32_t uiFanCircMin() { return remote_mqtt::fanCircMin(); }
 extern "C" uint8_t uiFanCircPct() { return remote_mqtt::fanCircPct(); }
 extern "C" void uiSetFanCirculate(uint32_t minPerHour, uint8_t pct) { remote_mqtt::setFanCirculate(minPerHour, pct); }
+// #183 Smart setpoints — same replica contract as Fan: getter reads the
+// Controller's retained state, setter forwards over cmd/smart_recovery.
+extern "C" bool uiSmartRecovery() { return remote_mqtt::smartRecovery(); }
+extern "C" void uiSetSmartRecovery(bool on) { remote_mqtt::setSmartRecovery(on); }
 extern "C" void uiSniffStart() {}
 extern "C" void uiSniffStop() {}
 extern "C" bool uiSniffActive() { return false; }

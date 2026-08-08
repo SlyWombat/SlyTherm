@@ -223,8 +223,22 @@ void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
 // off Home (set-once, not a daily control). Same segmented-control grammar as
 // the old Home bottom bar; modeBtns[] live here now and renderMain still fills
 // the active segment. modeEvt (mode intent -> gM->setMode) is unchanged.
-void openMode(lv_event_t*){ if(!gModeSheet) return; lv_obj_clear_flag(gModeSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gModeSheet); }
-void buildModeSheet(lv_obj_t*scr){ gModeSheet=sheetShell(scr,480,270,"System Mode","How the system runs");
+// #183 Smart setpoints toggle (the #50 smart-recovery gate): applies through
+// the shared uiSetSmartRecovery hook like the Fan sheet controls — Controller
+// applies locally, Remote forwards over cmd/smart_recovery. Seeded from
+// uiSmartRecovery() on sheet open (fan-sheet contract: optimistic while open,
+// truth on next open), so a lost publish self-corrects.
+static lv_obj_t* wSmartSw=nullptr;
+static void smartRecEvt(lv_event_t*){ if(!wSmartSw) return;
+  const bool want=lv_obj_has_state(wSmartSw,LV_STATE_CHECKED);
+  if(uiLocked()){ // revert the visual flip, then prompt — locked = read-only
+    if(uiSmartRecovery()) lv_obj_add_state(wSmartSw,LV_STATE_CHECKED); else lv_obj_clear_state(wSmartSw,LV_STATE_CHECKED);
+    promptUnlock(); return; }
+  uiSetSmartRecovery(want); }
+void openMode(lv_event_t*){ if(!gModeSheet) return;
+  if(wSmartSw){ if(uiSmartRecovery()) lv_obj_add_state(wSmartSw,LV_STATE_CHECKED); else lv_obj_clear_state(wSmartSw,LV_STATE_CHECKED); }
+  lv_obj_clear_flag(gModeSheet,LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(gModeSheet); }
+void buildModeSheet(lv_obj_t*scr){ gModeSheet=sheetShell(scr,480,368,"System Mode","How the system runs");
   const char*mn[4]={"OFF","HEAT","COOL","AUTO"}; UserMode mv[4]={UserMode::kOff,UserMode::kHeat,UserMode::kCool,UserMode::kAuto};
   lv_obj_t*mrow=lv_obj_create(gModeSheet); lv_obj_set_size(mrow,440,64); lv_obj_align(mrow,LV_ALIGN_TOP_MID,0,110);
   lv_obj_set_style_bg_color(mrow,lv_color_hex(COL_BG),0); lv_obj_set_style_bg_opa(mrow,LV_OPA_COVER,0); lv_obj_set_style_border_width(mrow,0,0);
@@ -235,9 +249,19 @@ void buildModeSheet(lv_obj_t*scr){ gModeSheet=sheetShell(scr,480,270,"System Mod
     lv_obj_set_style_bg_opa(b,LV_OPA_TRANSP,0); lv_obj_set_style_shadow_width(b,0,0); lv_obj_set_style_radius(b,9,0);  // flat segment; renderMain fills the active one
     lv_obj_add_event_cb(b,modeEvt,LV_EVENT_CLICKED,(void*)(intptr_t)mv[i]);
     lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,mn[i]); lv_obj_set_style_text_color(l,lv_color_hex(COL_MUTED),0); lv_obj_center(l); modeBtns[i]=b; }
+  // #183 Smart setpoints row: title + explainer left, switch right.
+  lv_obj_t*srl=lv_label_create(gModeSheet); lv_label_set_text(srl,"Smart setpoints");
+  lv_obj_set_style_text_font(srl,&lv_font_montserrat_24,0); lv_obj_set_style_text_color(srl,lv_color_hex(COL_INK),0);
+  lv_obj_align(srl,LV_ALIGN_TOP_LEFT,22,196);
+  lv_obj_t*srh=lv_label_create(gModeSheet); lv_label_set_text(srh,"Reach scheduled temperatures on time -\nstart early or coast, from learned ramp rates");
+  lv_obj_set_style_text_font(srh,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(srh,lv_color_hex(COL_TEXT3),0);
+  lv_obj_align(srh,LV_ALIGN_TOP_LEFT,22,228);
+  wSmartSw=lv_switch_create(gModeSheet); lv_obj_set_size(wSmartSw,64,32); lv_obj_align(wSmartSw,LV_ALIGN_TOP_RIGHT,-22,196);
+  lv_obj_set_style_bg_color(wSmartSw,lv_color_hex(COL_CRYO),LV_PART_INDICATOR|LV_STATE_CHECKED);
+  lv_obj_add_event_cb(wSmartSw,smartRecEvt,LV_EVENT_VALUE_CHANGED,nullptr);
   lv_obj_t*hint=lv_label_create(gModeSheet); lv_obj_set_style_text_font(hint,&lv_font_montserrat_16,0);
   lv_obj_set_style_text_color(hint,lv_color_hex(COL_TEXT3),0); lv_obj_set_style_text_align(hint,LV_TEXT_ALIGN_CENTER,0);
-  lv_obj_set_width(hint,440); lv_obj_align(hint,LV_ALIGN_TOP_MID,0,196);
+  lv_obj_set_width(hint,440); lv_obj_align(hint,LV_ALIGN_TOP_MID,0,294);
   lv_label_set_text(hint,"Set once - not a daily control.\nAdjust temperatures on the Home screen."); }
 
 // Settings information-architecture reorg (#128/settings): the flat button list
@@ -562,7 +586,8 @@ void renderMain(const DisplayState& s){ char b[128];
   // card, refreshed every renderMain like the old WiFi/Home status words were.
   if(wCatMode){ const char*mnm; switch(s.mode){ case UserMode::kHeat:mnm="Heat"; break; case UserMode::kCool:mnm="Cool"; break;
       case UserMode::kAuto:mnm="Auto"; break; case UserMode::kEmergencyHeat:mnm="Emergency heat"; break; default:mnm="Off"; }
-    setTxt(wCatMode,mnm); }
+    snprintf(b,sizeof(b),"%s    Smart setpoints %s",mnm,uiSmartRecovery()?"on":"off");  // #183
+    setTxt(wCatMode,b); }
   if(wCatNet){ char ss[33],ip[20]; int8_t rs=0; bool wc=false; wifi_prov::status(ss,sizeof(ss),ip,sizeof(ip),&rs,&wc);
     snprintf(b,sizeof(b),"WiFi %s    %s    Home %s", wc?ss:"not set", wc?ip:"offline", s.mqttOk?"connected":"offline");
     setTxt(wCatNet,b); }

@@ -39,9 +39,11 @@
 // target RELAXES the active side, coastAdvised() reports whether pure drift
 // (the live TrendEstimator slope) lands inside the incoming band by the
 // boundary — the glue may then early-apply the relaxed setpoint instead of
-// defending the old band to the last minute. Equally advisory, doubly gated
-// (kCoastEnabledDefault), and window-bounded (kCoastMaxLeadS) so a tight
-// house cannot trade hours of the outgoing comfort band for the release.
+// defending the old band to the last minute. Equally advisory, riding the
+// same #50 runtime switch (one "smart setpoints" feature: cool early, heat
+// early, or do nothing — kCoastEnabledDefault is an emergency compile-out
+// only), and window-bounded (kCoastMaxLeadS) so a tight house cannot trade
+// hours of the outgoing comfort band for the release.
 //
 // Disabled by default (kRecoveryEnabledDefault) until field-tuned (docs/06).
 //

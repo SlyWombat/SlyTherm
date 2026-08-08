@@ -270,8 +270,11 @@ constexpr float    kRecoveryFallbackMargin        = 0.85f; // assume gas achieve
 // next_target RELAXES the active side, early-apply the relaxed setpoint once
 // pure drift (live TrendEstimator slope) cannot overshoot it before the
 // boundary — instead of defending the old band right up to the boundary.
-// OFF by default until field-tuned; rides the same #50 runtime switch.
-constexpr bool     kCoastEnabledDefault       = false;
+// ON by default (owner decision 2026-08-08): "smart setpoints" is ONE feature
+// — arrive at the future setpoint on time by cooling, heating, or doing
+// nothing — governed by the single #50 runtime switch. The config knob stays
+// as an emergency compile-out only.
+constexpr bool     kCoastEnabledDefault       = true;
 constexpr uint32_t kCoastMaxLeadS             = 3600;  // comfort bound: never release earlier than
                                                        //  this (a tight house would otherwise want
                                                        //  4+ h and eat the outgoing comfort band)
