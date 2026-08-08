@@ -620,6 +620,51 @@ static void test_late_grant_within_grace_no_false_starvation() {
   TEST_ASSERT_FALSE(t.starvationAlarm());
 }
 
+static void test_established_session_activation_judged_by_window_not_grace() {
+  // #186: the #178 join grace is SESSION-scoped, not channel-scoped. A channel
+  // activating mid-session (the hourly fan circulate) is judged by the normal
+  // refresh window — before the fix it silently inherited the 5 min grace
+  // (everSent resets on every 0->nonzero transition), which in the field was
+  // TIGHTER than the 6 min window and tripped goSilent() on a healthy bus.
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setFanDemand(25.0f, 0x01, now));  // establish: fan on wire
+  grant1(t, now);
+  ackOutstanding(t, 0x66, now + 100);
+  TEST_ASSERT_TRUE(t.setFanDemand(0.0f, 0x01, now + 200));  // window ends
+  grant1(t, now + 300);                                     // cancel-zero out
+  ackOutstanding(t, 0x66, now + 400);
+  // Next circulate window opens; the coordinator stops granting entirely.
+  const uint32_t act = now + 10000;
+  TEST_ASSERT_TRUE(t.setFanDemand(25.0f, 0x01, act));
+  t.tick(act + 59999);       // inside the refresh window: no alarm
+  TEST_ASSERT_FALSE(t.starvationAlarm());
+  t.tick(act + 60000);       // full window, zero grants: genuinely starved
+  TEST_ASSERT_TRUE(t.starvationAlarm());
+  TEST_ASSERT_TRUE(t.silent());
+}
+
+static void test_grace_restored_after_resume_from_silent() {
+  // #186: goSilent() ends the session, so the next join earns the full grace
+  // again (the #178 reboot case must survive the rescoping).
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setFanDemand(25.0f, 0x01, now));
+  grant1(t, now);
+  ackOutstanding(t, 0x66, now + 100);
+  t.tick(now + 100000);      // sent-channel refresh starved -> alarm + silent
+  TEST_ASSERT_TRUE(t.silent());
+  t.resume(now + 100100);
+  const uint32_t act = now + 101000;
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, act));
+  t.tick(act + 299999);      // not yet polled this session: grace, no alarm
+  TEST_ASSERT_FALSE(t.starvationAlarm());
+  t.tick(act + 300000);      // grace exhausted -> alarm
+  TEST_ASSERT_TRUE(t.starvationAlarm());
+}
+
 static void test_zero_demand_sends_one_cancel_frame() {
   Ct485Thermostat t(baseCfg());
   uint32_t now = 1000;
@@ -649,6 +694,56 @@ static void test_zero_demand_never_sent_sends_nothing() {
   TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 0.0f, now + 10));  // never hit the wire
   Frame f = grant1(t, now + 20);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), f.msgType);  // nothing to cancel
+}
+
+static void test_reasserted_zero_does_not_repeat_the_cancel() {
+  // #185: the control loop re-asserts setDemand(ch, 0) EVERY tick. The
+  // cancel-zero must go out exactly once — before the fix each re-assert
+  // re-read everSent==true and re-armed zeroPending, so the fan channel
+  // re-sent `66 00 60 00 00` on every grant, forever (~8.5 frames/min idle).
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setFanDemand(25.0f, 0x01, now));
+  Frame f = grant1(t, now);
+  TEST_ASSERT_EQUAL_UINT8(0x66, f.sendParamHi);
+  ackOutstanding(t, 0x66, now + 100);
+  // Circulate window ends: control loop holds fan at 0 from here on.
+  TEST_ASSERT_TRUE(t.setFanDemand(0.0f, 0x01, now + 200));
+  f = grant1(t, now + 300);                       // the one cancel frame
+  TEST_ASSERT_EQUAL_UINT8(0x66, f.sendParamHi);
+  TEST_ASSERT_EQUAL_UINT8(0x00, f.payload[4]);    // fan: [3]=mode, [4]=pct
+  ackOutstanding(t, 0x66, now + 400);
+  for (uint32_t dt = 5000; dt <= 30000; dt += 5000) {  // idle ticks + grants
+    TEST_ASSERT_TRUE(t.setFanDemand(0.0f, 0x01, now + dt));
+    t.tick(now + dt);
+    f = grant1(t, now + dt);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(MsgType::kR2R),
+                                    f.msgType, "cancel-zero repeated");
+  }
+}
+
+static void test_retried_cancel_zero_still_fires_once() {
+  // #185, retry path: a cancel-zero whose ACK is lost gets retransmitted —
+  // the retransmit must not re-mark the wire as loaded either, or the
+  // re-asserted zero storms exactly as in the un-retried case.
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setFanDemand(25.0f, 0x01, now));
+  grant1(t, now);
+  ackOutstanding(t, 0x66, now + 100);
+  TEST_ASSERT_TRUE(t.setFanDemand(0.0f, 0x01, now + 200));
+  grant1(t, now + 300);                 // cancel sent, ACK never arrives
+  t.tick(now + 300 + 3000);             // response timeout -> retry queued
+  Frame f = grant1(t, now + 300 + 3100);  // retransmit of the same zero
+  TEST_ASSERT_EQUAL_UINT8(0x66, f.sendParamHi);
+  TEST_ASSERT_EQUAL_UINT8(0x00, f.payload[4]);    // fan: [3]=mode, [4]=pct
+  ackOutstanding(t, 0x66, now + 300 + 3200);
+  TEST_ASSERT_TRUE(t.setFanDemand(0.0f, 0x01, now + 10000));
+  t.tick(now + 10000);
+  f = grant1(t, now + 10000);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kR2R), f.msgType);
 }
 
 // ---------- ACK/NAK / response timeout ----------
@@ -1012,8 +1107,12 @@ int main() {
   RUN_TEST(test_starvation_alarm_goes_silent);
   RUN_TEST(test_starvation_grace_while_never_granted_then_alarms);
   RUN_TEST(test_late_grant_within_grace_no_false_starvation);
+  RUN_TEST(test_established_session_activation_judged_by_window_not_grace);
+  RUN_TEST(test_grace_restored_after_resume_from_silent);
   RUN_TEST(test_zero_demand_sends_one_cancel_frame);
   RUN_TEST(test_zero_demand_never_sent_sends_nothing);
+  RUN_TEST(test_reasserted_zero_does_not_repeat_the_cancel);
+  RUN_TEST(test_retried_cancel_zero_still_fires_once);
   RUN_TEST(test_ack_clears_outstanding);
   RUN_TEST(test_nak2_pairing_alarm_stops_demands);
   RUN_TEST(test_echo_delivers_not_nak2_on_timer_collision);  // #162

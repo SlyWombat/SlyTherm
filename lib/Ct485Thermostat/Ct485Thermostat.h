@@ -223,6 +223,11 @@ class Ct485Thermostat {
 
   Config       cfg_;
   bool         silent_ = true;  // boot = silent (docs/04 §1)
+  // #186: true once any grant has been addressed to us this session; cleared by
+  // goSilent(). Scopes the #178 join starvation grace to "not yet polled after
+  // a (re)join" instead of per-channel everSent (which resets on every
+  // activation and made the grace reachable in steady state).
+  bool         sessionGranted_ = false;
   JoinState    join_   = JoinState::kUnaddressed;
   uint8_t      addr_   = 0;
   uint8_t      subnet_ = kSubnetBroadcast;

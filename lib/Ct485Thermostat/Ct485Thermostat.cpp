@@ -97,6 +97,7 @@ bool Ct485Thermostat::popTx(Frame& out) {
 
 void Ct485Thermostat::goSilent() {
   silent_  = true;
+  sessionGranted_ = false;  // #186: next (re)join earns the starvation grace again
   txCount_ = 0;
   txHead_  = 0;
   cmdCount_ = 0;
@@ -430,6 +431,11 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
 // the passive #28 turnaround probe. Any change to the grant-reply logic here
 // must be reflected there (and vice versa).
 void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kind) {
+  // #186: a grant addressed to us proves the coordinator is polling this node —
+  // the session is joined. From here on, every demand channel is judged by the
+  // normal refresh window; the long join grace is only for the gap between a
+  // (re)join and the first poll (#178's reboot case).
+  sessionGranted_ = true;
   // 1) A retransmit owed (response timeout / NAK1) goes first, verbatim.
   if (out_.active && out_.retryQueued) {
     out_.retryQueued = false;
@@ -438,7 +444,11 @@ void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kin
     if (out_.isDemand) {
       ChannelState& cs = chan_[idx(out_.ch)];
       cs.lastSentMs = nowMs;
-      cs.everSent   = true;
+      // #185: everSent means "a NONZERO demand is on the wire". A retransmitted
+      // cancel-zero (inactive channel) must not re-mark the wire as loaded, or
+      // the every-tick setDemand(0) re-arms zeroPending and the cancel repeats
+      // on every grant forever.
+      cs.everSent = cs.active;
     }
     transmit(out_.frame, nowMs);
     return;
@@ -454,7 +464,10 @@ void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kin
       cs.sendNeeded  = false;
       cs.zeroPending = false;
       cs.lastSentMs  = nowMs;
-      cs.everSent    = true;
+      // #185: true only for an active (nonzero) demand — a cancel-zero clears
+      // the wire, so the next setDemand(0) tick reads onWire=false and the
+      // cancel fires exactly once instead of on every grant.
+      cs.everSent    = cs.active;
       out_ = Outstanding{};
       out_.active   = true;
       out_.isDemand = true;
@@ -578,10 +591,16 @@ void Ct485Thermostat::tick(uint32_t nowMs) {
     ChannelState& cs = chan_[i];
     if (!cs.active) continue;
     const uint32_t refMs = cs.everSent ? cs.lastSentMs : cs.activatedMs;
-    // #178: tight refresh window once we've been granted at least once; a long
-    // join grace while still waiting for the first grant after a (re)join, so a
-    // normal reboot re-join doesn't false-positive.
-    const uint32_t limitMs = cs.everSent ? windowMs : kJoinStarvationGraceMs;
+    // #178: a long join grace while still waiting for the first poll after a
+    // (re)join, so a normal reboot re-join doesn't false-positive. #186: the
+    // grace is SESSION-scoped (sessionGranted_), not channel-scoped — everSent
+    // resets on every 0->nonzero transition, so keying the grace off it made
+    // this reboot-only safeguard reachable in steady state (fan circulate
+    // activating hourly), and it calls goSilent() on a healthy bus. A channel
+    // activating in an already-polled session is judged by the normal refresh
+    // window like everything else.
+    const uint32_t limitMs =
+        (!cs.everSent && !sessionGranted_) ? kJoinStarvationGraceMs : windowMs;
     if (timeReached(nowMs, refMs + limitMs)) {
       // A full window elapsed with no successful (re)send: the equipment is
       // reverting (or never started). Alarm and GO SILENT — the failsafe is
