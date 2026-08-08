@@ -141,6 +141,15 @@ class RecoveryEstimator {
   // Accepted-segment count for a channel.
   uint32_t samples(RecoveryMode mode, RecoveryEquipment equip) const;
 
+  // #188: restore a channel persisted by the glue (NVS) so learning survives
+  // reboots/OTA — every release was resetting the estimator to seeds. Applied
+  // only when accepted > 0 AND the rate lies inside the [rateMinCPerH,
+  // rateMaxCPerH] plausibility band: a corrupt stored float must never smuggle
+  // in an absurd rate — out-of-band is ignored and the seed stands. Returns
+  // true iff the channel was restored.
+  bool restoreChannel(RecoveryMode mode, RecoveryEquipment equip,
+                      float rateCPerH, uint32_t accepted);
+
   // Recommend an early-start lead for the given target, using the channel
   // for {target.mode, equip} (equip = what the caller expects to serve the
   // call). Pure function of state — no demand, no side effects.

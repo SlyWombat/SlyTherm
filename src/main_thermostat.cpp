@@ -2523,7 +2523,24 @@ void updateRunSegments(const DemandSet& out, const FusedTemp& fused, uint32_t no
   else if (out.hpHeatPct > 0) now = Serving::kHpHeat;
   else if (out.coolPct > 0) now = Serving::kCool;
   if (now == gServing) return;
-  if (gServing != Serving::kNone && fused.valid) gRecovery.endSegment(fused.value, nowS);
+  if (gServing != Serving::kNone && fused.valid) {
+    const RecoveryMode m =
+        gServing == Serving::kCool ? RecoveryMode::kCool : RecoveryMode::kHeat;
+    const RecoveryEquipment e =
+        gServing == Serving::kGas ? RecoveryEquipment::kGas : RecoveryEquipment::kHp;
+    if (gRecovery.endSegment(fused.value, nowS)) {
+      // #188: an ACCEPTED segment updated the estimate — persist that channel
+      // so learning survives reboots/OTA. Accepted segments are >=15 min by
+      // the learning gates, so write-through is far inside NVS wear budgets.
+      const char* rk = e == RecoveryEquipment::kGas ? "rr_hg"
+                       : m == RecoveryMode::kCool   ? "rr_ch" : "rr_hh";
+      const char* nk = e == RecoveryEquipment::kGas ? "rn_hg"
+                       : m == RecoveryMode::kCool   ? "rn_ch" : "rn_hh";
+      const uint32_t n = gRecovery.samples(m, e);
+      gPrefs.putFloat(rk, gRecovery.rateCPerH(m, e));
+      gPrefs.putUChar(nk, n > 255 ? 255 : static_cast<uint8_t>(n));
+    }
+  }
   if (now != Serving::kNone && fused.valid) {
     gRecovery.startSegment(now == Serving::kCool ? RecoveryMode::kCool : RecoveryMode::kHeat,
                            now == Serving::kGas ? RecoveryEquipment::kGas
@@ -3698,6 +3715,17 @@ void setup() {
     // estimator. Learning runs regardless; this gates acting on the advice.
     gSmartRecovery = gPrefs.getBool("smrec", kRecoveryEnabledDefault);
     gRecovery.setEnabled(gSmartRecovery);
+    // #188: restore the learned ramp rates so reboots/OTA don't reset the
+    // estimator to seeds (every release was restarting days of learning).
+    // restoreChannel() ignores a channel with no samples or a rate outside
+    // the plausibility band, so corrupt NVS can only leave the seed standing.
+    // cool×gas is never learned (single fuel on the cool side) — not stored.
+    gRecovery.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kHp,
+                             gPrefs.getFloat("rr_hh", 0), gPrefs.getUChar("rn_hh", 0));
+    gRecovery.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kGas,
+                             gPrefs.getFloat("rr_hg", 0), gPrefs.getUChar("rn_hg", 0));
+    gRecovery.restoreChannel(RecoveryMode::kCool, RecoveryEquipment::kHp,
+                             gPrefs.getFloat("rr_ch", 0), gPrefs.getUChar("rn_ch", 0));
     // Restored mode is structurally cross-checked against OAT lockouts
     // (docs/04 §3): all OAT rungs are stale at boot -> fail-cold, so a
     // restored COOL/HP mode cannot demand until a live, permitting OAT.

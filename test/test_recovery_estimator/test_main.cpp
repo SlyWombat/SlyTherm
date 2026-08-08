@@ -515,6 +515,63 @@ static void test_coast_window_bound_and_bad_inputs() {
   TEST_ASSERT_FALSE(re.coastAdvised(t, 21.0f, 21.3f, 0.1f));
 }
 
+// ---------- #188 persisted-learning restore ----------
+
+static void test_restore_channel_applies_in_band_rates_only() {
+  RecoveryEstimator re = enabledEstimator();
+  // In-band restore lands and drives advice.
+  TEST_ASSERT_TRUE(re.restoreChannel(RecoveryMode::kCool, RecoveryEquipment::kHp,
+                                     1.6f, 12));
+  TEST_ASSERT_EQUAL_FLOAT(1.6f, re.rateCPerH(RecoveryMode::kCool,
+                                             RecoveryEquipment::kHp));
+  TEST_ASSERT_EQUAL_UINT32(12, re.samples(RecoveryMode::kCool,
+                                          RecoveryEquipment::kHp));
+  RecoveryTarget t;
+  t.setpointC = 21.0f;
+  t.mode = RecoveryMode::kCool;
+  t.inS = 7200;
+  // 1.6 C deficit at 1.6 C/h -> ~3600 s lead (the seed 0.8 would say 7200);
+  // WITHIN(1) absorbs the float-ceil of 1.6 not being exactly representable.
+  TEST_ASSERT_UINT32_WITHIN(1, 3600,
+      re.advise(t, 22.6f, RecoveryEquipment::kHp).startEarlyByS);
+
+  // A zero-sample channel and out-of-band/corrupt rates keep the seed.
+  RecoveryEstimator r2 = enabledEstimator();
+  TEST_ASSERT_FALSE(r2.restoreChannel(RecoveryMode::kCool, RecoveryEquipment::kHp,
+                                      1.6f, 0));           // never learned
+  TEST_ASSERT_FALSE(r2.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kHp,
+                                      0.05f, 5));          // below band
+  TEST_ASSERT_FALSE(r2.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kGas,
+                                      42.0f, 5));          // above band
+  TEST_ASSERT_FALSE(r2.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kGas,
+                                      std::nanf(""), 5));  // corrupt
+  TEST_ASSERT_EQUAL_FLOAT(kRecoverySeedCoolCPerH,
+      r2.rateCPerH(RecoveryMode::kCool, RecoveryEquipment::kHp));
+  TEST_ASSERT_EQUAL_FLOAT(kRecoverySeedHeatCPerH,
+      r2.rateCPerH(RecoveryMode::kHeat, RecoveryEquipment::kGas));
+  TEST_ASSERT_EQUAL_UINT32(0,
+      r2.samples(RecoveryMode::kHeat, RecoveryEquipment::kHp));
+}
+
+static void test_restore_then_learning_continues_with_outlier_guard() {
+  // A restored channel counts as established: with accepted >= the outlier
+  // minimum, a wild post-restore segment is rejected instead of dragging the
+  // restored estimate (continuity of the robust-EMA behavior across reboots).
+  RecoveryEstimator re = enabledEstimator();
+  TEST_ASSERT_TRUE(re.restoreChannel(RecoveryMode::kHeat, RecoveryEquipment::kHp,
+                                     1.5f, 8));
+  uint32_t tt = 1000;
+  re.startSegment(RecoveryMode::kHeat, RecoveryEquipment::kHp, 20.0f, tt);
+  TEST_ASSERT_FALSE(re.endSegment(20.0f + 8.0f, tt + 3600));  // 8 C/h: >3x off
+  TEST_ASSERT_EQUAL_FLOAT(1.5f, re.rateCPerH(RecoveryMode::kHeat,
+                                             RecoveryEquipment::kHp));
+  tt += 5000;
+  re.startSegment(RecoveryMode::kHeat, RecoveryEquipment::kHp, 20.0f, tt);
+  TEST_ASSERT_TRUE(re.endSegment(20.0f + 1.8f, tt + 3600));   // plausible: EMA
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.5f + 0.3f * (1.8f - 1.5f),
+      re.rateCPerH(RecoveryMode::kHeat, RecoveryEquipment::kHp));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_disabled_by_default_gives_no_advice);
@@ -539,5 +596,7 @@ int main() {
   RUN_TEST(test_coast_only_for_relaxing_targets);
   RUN_TEST(test_coast_drift_projection_and_margin);
   RUN_TEST(test_coast_window_bound_and_bad_inputs);
+  RUN_TEST(test_restore_channel_applies_in_band_rates_only);
+  RUN_TEST(test_restore_then_learning_continues_with_outlier_guard);
   return UNITY_END();
 }

@@ -82,6 +82,20 @@ uint32_t RecoveryEstimator::samples(RecoveryMode mode,
   return channel(mode, equip).accepted;
 }
 
+bool RecoveryEstimator::restoreChannel(RecoveryMode mode,
+                                       RecoveryEquipment equip,
+                                       float rateCPerH, uint32_t accepted) {
+  if (accepted == 0) return false;  // nothing was ever learned
+  if (std::isnan(rateCPerH) || rateCPerH < cfg_.rateMinCPerH ||
+      rateCPerH > cfg_.rateMaxCPerH) {
+    return false;  // implausible/corrupt: keep the seed
+  }
+  Channel& ch = channel(mode, equip);
+  ch.rateCPerH = rateCPerH;
+  ch.accepted  = accepted;
+  return true;
+}
+
 RecoveryAdvice RecoveryEstimator::advise(const RecoveryTarget& target,
                                          float currentTempC,
                                          RecoveryEquipment equip) const {
