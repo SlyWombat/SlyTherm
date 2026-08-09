@@ -61,7 +61,17 @@ bool gtRead(uint16_t&x,uint16_t&y){ static uint16_t lx=0,ly=0; static bool dn=fa
 
 // ---- LVGL glue ----
 LGFX gfx;
+#ifdef SLYTHERM_MATTER
+// Epic #179: the Matter stack's BLE commissioning transport needs ~64K of
+// internal RAM at begin(); this static 800x40 draw buffer was exactly the
+// difference between "BLE_INIT: Malloc failed" (-> chip-stack panic loop,
+// bench 2026-08-09) and a clean start. PSRAM render buffer is the proven
+// P4-camera recipe (d7b5047): LVGL renders into it, flushCb reads it
+// sequentially into LovyanGFX — the buffer itself is never DMA'd.
+lv_disp_draw_buf_t drawBuf; lv_color_t* buf1 = nullptr;
+#else
 lv_disp_draw_buf_t drawBuf; lv_color_t buf1[800*40];
+#endif
 lv_disp_drv_t dispDrv; lv_indev_drv_t indDrv;
 void flushCb(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*px){
   gfx.pushImage(a->x1,a->y1,a->x2-a->x1+1,a->y2-a->y1+1,(lgfx::rgb565_t*)px); lv_disp_flush_ready(d); }
@@ -80,6 +90,10 @@ bool portInit(){
   gtReset(); Wire.beginTransmission(kGt); gTouchOk=(Wire.endTransmission()==0);
   Serial.printf("[ui] GT911 %s\n", gTouchOk?"present":"NO ACK");
   lv_init();
+#ifdef SLYTHERM_MATTER
+  if(!buf1) buf1=(lv_color_t*)ps_malloc(sizeof(lv_color_t)*800*40);  // see note at the declaration
+  if(!buf1) return false;  // no PSRAM = no UI; never fall into lv with a null buffer
+#endif
   lv_disp_draw_buf_init(&drawBuf,buf1,nullptr,800*40);
   lv_disp_drv_init(&dispDrv); dispDrv.hor_res=800; dispDrv.ver_res=480; dispDrv.flush_cb=flushCb; dispDrv.draw_buf=&drawBuf; lv_disp_drv_register(&dispDrv);
   lv_indev_drv_init(&indDrv); indDrv.type=LV_INDEV_TYPE_POINTER; indDrv.read_cb=touchCb; lv_indev_drv_register(&indDrv);

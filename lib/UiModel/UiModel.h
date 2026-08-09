@@ -204,6 +204,14 @@ struct DisplayState {
   bool vacationActive = false;
   char vacationBanner[32] = "";          // "Vacation until Jul 12" ("" when inactive)
 
+  // Matter pairing (epic #179 phase 2). Active while a Matter build is
+  // uncommissioned; the UI renders a modal pairing screen (QR + manual code).
+  // Control owns the truth (matter_glue), the UI just renders — same division
+  // as the vacation banner above.
+  bool matterPairingActive = false;
+  char matterPairCode[16] = "";          // manual pairing digits
+  char matterQrPayload[48] = "";         // raw "MT:..." onboarding payload
+
   // Firmware Upgrade (System settings sheet). UI-isolated mirror of ota::State,
   // mapped from ota::status() in the main each tick. The System sheet button
   // reads this to show "Check for updates / Checking… / Up to date / Upgrade
@@ -391,6 +399,16 @@ class UiModel : public UiCommands {
     state_.vacationActive = active;
     if (banner) { size_t n = 0; while (banner[n] && n < sizeof(state_.vacationBanner) - 1) { state_.vacationBanner[n] = banner[n]; ++n; } state_.vacationBanner[n] = 0; }
     else state_.vacationBanner[0] = 0;
+  }
+  // Matter pairing echo (epic #179); control fills it from matter_glue. No dirty bit.
+  void setMatterPairing(bool active, const char* code, const char* qr) {
+    state_.matterPairingActive = active;
+    size_t n = 0;
+    if (code) while (code[n] && n < sizeof(state_.matterPairCode) - 1) { state_.matterPairCode[n] = code[n]; ++n; }
+    state_.matterPairCode[n] = 0;
+    n = 0;
+    if (qr) while (qr[n] && n < sizeof(state_.matterQrPayload) - 1) { state_.matterQrPayload[n] = qr[n]; ++n; }
+    state_.matterQrPayload[n] = 0;
   }
   // Live preset roster echo (issue #74); rendered every tick, so no dirty bit.
   void setPresets(const DisplayState::PresetView* p, uint8_t n) {

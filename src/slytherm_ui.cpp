@@ -71,6 +71,9 @@ void service(){
         if((s.outdoorValid&&s.fusedTempValid) || now-gBootStartMs>kSplashMaxMs){ gBootExiting=true; bootExit(); } }   // ready: roll the logo off; its ready_cb loads Home
       screenshotPoll(); lv_timer_handler(); return; }   // stay on the splash through the roll-off anim
     applyGraphIfDirty();  // #156: push any newly-received central series into the chart (UI-task side)
+#ifdef SLYTHERM_MATTER
+    renderMatterPairing(s);  // epic #179: modal QR while uncommissioned (top layer, rides above tabs/ambient)
+#endif
     if(!gGraphCentral && (gGraphLastMs==0 || now-gGraphLastMs>=300000u)){ gGraphLastMs=now; sysGraphSample(s); }  // #76 fallback until the SlyLog series lands
     // Ambient starts on idle regardless of alarms; the ambient screen shows the
     // alarm banner (docs/04 §1c) rather than blocking the screensaver.

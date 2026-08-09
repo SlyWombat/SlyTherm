@@ -105,6 +105,9 @@
 #include "SleepState.h"
 #include "TrendEstimator.h"
 #include "UiModel.h"
+#ifdef SLYTHERM_MATTER
+#include "matter_glue.h"  // epic #179 phase 2: Matter data-model glue
+#endif
 
 // Running-partition app hash (reset-loop latch clear on a new flash) + the
 // #64/#61 OTA capability/rollback calls in setup() — needed on EVERY target,
@@ -260,6 +263,22 @@ struct Pending {
   bool anyInbound = false;  // any accepted MQTT traffic (setpoint-staleness clock)
 };
 Pending gPending;
+
+#ifdef SLYTHERM_MATTER
+// Epic #179: ecosystem writes arrive on the Matter task and enter through the
+// SAME no-hold mailbox HA commands use — heat sp = low, cool sp = high
+// (consumeCommands applies them unconditionally), mode as an hm::Mode. The
+// safety pipeline downstream is untouched: Matter is just another intent
+// source, never an actuator.
+void matterCommandFromEcosystem(const matter_glue::Command& c) {
+  xSemaphoreTake(gCmdMux, portMAX_DELAY);
+  if (c.hasMode)   { gPending.hasMode = true; gPending.mode = static_cast<hm::Mode>(c.hmMode); }
+  if (c.hasHeatSp) { gPending.hasLow  = true; gPending.lowC  = c.heatC; }
+  if (c.hasCoolSp) { gPending.hasHigh = true; gPending.highC = c.coolC; }
+  gPending.anyInbound = true;
+  xSemaphoreGive(gCmdMux);
+}
+#endif
 
 // Control -> MQTT snapshot (plain copy under gSnapMux).
 struct Snapshot {
@@ -1665,6 +1684,7 @@ void mqttTask(void*) {
     (void)haveWifi; (void)haveMqtt; (void)lastWifiTryMs;
     // Silent auto-discovery: Wi-Fi up but no broker saved -> browse mDNS for the
     // MQTT broker (fallback: the Home Assistant host on the default port).
+#ifndef SLYTHERM_NO_MQTT
     if (gWifiConnected && !mqtt_cfg::hostSet() && nowMs - lastDiscoverMs >= 15000) {
       lastDiscoverMs = nowMs;
       static bool sMdnsUp = false;
@@ -1690,6 +1710,14 @@ void mqttTask(void*) {
       gMqtt.disconnect();
     }
     const bool haveMqttNow = mqtt_cfg::hostSet();
+#else
+    // SLYTHERM_NO_MQTT (Matter bench, epic #179): broker contact is FORBIDDEN.
+    // Even with empty compile-time creds, the mDNS discovery above would find
+    // the PRODUCTION broker and this build would fight the live wall
+    // Controller as a second slytherm/* publisher (and claim its "slytherm"
+    // mDNS hostname). Skip discovery entirely and never connect.
+    const bool haveMqttNow = false;
+#endif  // SLYTHERM_NO_MQTT
 #else
     gWifiConnected = haveWifi && WiFi.status() == WL_CONNECTED;
     if (haveWifi && !gWifiConnected && nowMs - lastWifiTryMs >= cfg::kWifiRetryMs) {
@@ -2863,7 +2891,18 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
   s.lockState = static_cast<hm::LockState>(gUi.lockState());
   s.lockLevel = static_cast<hm::LockLevel>(gUi.lockLevel());
   s.pinSet = gUi.userPinSet();
+#ifdef SLYTHERM_MATTER
+  // Epic #179: pairing screen truth for the UI (renders the QR while
+  // uncommissioned; disappears by itself the moment the ecosystem pairs).
+  gUi.setMatterPairing(!matter_glue::commissioned(), matter_glue::manualCode(),
+                       matter_glue::qrPayload());
+#endif
   uiUnlock();
+#ifdef SLYTHERM_MATTER
+  // Outbound attribute mirror (change-compared inside the glue).
+  matter_glue::publishState(s.tempC, s.tempValid, static_cast<uint8_t>(s.mode),
+                            s.emHeat, s.heatSp, s.coolSp);
+#endif
 
   xSemaphoreTake(gCtMux, portMAX_DELAY);
   // comms_loss_n: monotonic onset count. comms_loss now auto-clears when the
@@ -3975,6 +4014,22 @@ void setup() {
   gCmdMux = xSemaphoreCreateMutex();
   gSnapMux = xSemaphoreCreateMutex();
   gCtMux = xSemaphoreCreateMutex();
+#ifdef SLYTHERM_MATTER
+  // Epic #179 init-order dance, both halves bench-proven the hard way
+  // (2026-08-09), same order the phase-1 probe used:
+  //  1. Arduino brings the WiFi STA up FIRST and owns the netifs — starting
+  //     Matter first makes the chip stack create them, and Arduino's later
+  //     wifi init then dies (esp_netif_create_default_wifi_ap assert-loop).
+  //  2. Matter SECOND, but still before the UI/control tasks exist — NimBLE
+  //     needs a ~64K contiguous internal block and this is the last moment
+  //     one exists (after WiFi+LVGL: largest=51K -> ble_hs start-stage2
+  //     assert-loop). The stack releases BLE memory once commissioned.
+  // mqttTask's later wifi_prov::begin() re-issue on an already-started STA is
+  // benign (same creds, WiFi.begin re-issues the connect). Needs gCmdMux —
+  // ecosystem writes can arrive on the Matter task from this line on.
+  wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
+  matter_glue::begin(matterCommandFromEcosystem);
+#endif
 #ifdef SLYTHERM_UI
   gUiMux = xSemaphoreCreateMutex();
   // #82: first-run onboarding gate — no NVS creds and no compile-time fallback

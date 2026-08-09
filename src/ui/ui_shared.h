@@ -168,6 +168,9 @@ void openSystem(lv_event_t*);      // ui_overlays.cpp — System sub-sheet
 void openMode(lv_event_t*);        // ui_main.cpp — System Mode sub-sheet (Off/Heat/Cool/Auto moved off Home)
 lv_obj_t* sheetShell(lv_obj_t*scr,int w,int h,const char*title,const char*sub);  // ui_overlays.cpp — shared category-sheet shell
 void renderSysOta(const DisplayState& s);  // ui_overlays.cpp — refresh the System-sheet firmware button
+#ifdef SLYTHERM_MATTER
+void renderMatterPairing(const DisplayState& s);  // ui_overlays.cpp — modal QR while uncommissioned (epic #179)
+#endif
 void openSniff(lv_event_t*);       // ui_overlays.cpp — RS-485 LISTEN screen (#71)
 void openWifi(lv_event_t*);        // ui_overlays.cpp
 void openServer(lv_event_t*);      // ui_overlays.cpp

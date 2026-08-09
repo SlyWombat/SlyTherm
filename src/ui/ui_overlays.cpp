@@ -681,4 +681,48 @@ void screenshotPoll(){
   c.stop();
 }
 
+#ifdef SLYTHERM_MATTER
+// ---- Matter pairing screen (epic #179 phase 2) ----
+// Modal on the top layer while the Matter build is uncommissioned: a QR to
+// scan from Apple Home / Google Home / Alexa plus the manual digits. Closes
+// itself the moment the stack reports commissioned; a tap hides it for this
+// boot (the commissioning window is the stack's — hiding the screen does not
+// end it, and the manual code stays available over serial/telnet).
+static lv_obj_t* gMatterOv=nullptr; static lv_obj_t* gMatterQr=nullptr;
+static bool gMatterDismissed=false;
+static void matterDismiss(lv_event_t*){ gMatterDismissed=true; }
+void renderMatterPairing(const DisplayState& s){
+  const bool want = s.matterPairingActive && !gMatterDismissed && s.matterQrPayload[0];
+  if(!want){ if(gMatterOv){ lv_obj_del(gMatterOv); gMatterOv=nullptr; gMatterQr=nullptr; } return; }
+  if(gMatterOv) return;  // static content: build once, tear down on state change
+  gMatterOv=lv_obj_create(lv_layer_top());
+  lv_obj_set_size(gMatterOv,800,480); lv_obj_set_pos(gMatterOv,0,0);
+  lv_obj_set_style_bg_color(gMatterOv,lv_color_hex(COL_BG),0); lv_obj_set_style_bg_opa(gMatterOv,LV_OPA_COVER,0);
+  lv_obj_set_style_border_width(gMatterOv,0,0); lv_obj_set_style_radius(gMatterOv,0,0);
+  lv_obj_clear_flag(gMatterOv,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(gMatterOv,LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gMatterOv,matterDismiss,LV_EVENT_CLICKED,nullptr);
+  { lv_obj_t* t=lv_label_create(gMatterOv); lv_label_set_text(t,"Pair with Matter");
+    lv_obj_set_style_text_font(t,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(t,lv_color_hex(COL_INK),0);
+    lv_obj_align(t,LV_ALIGN_TOP_MID,0,24); }
+  // White quiet-zone card: scanners need light-on-dark contrast the docs/09
+  // palette doesn't otherwise provide.
+  lv_obj_t* card=lv_obj_create(gMatterOv); lv_obj_set_size(card,256,256);
+  lv_obj_set_style_bg_color(card,lv_color_white(),0); lv_obj_set_style_bg_opa(card,LV_OPA_COVER,0);
+  lv_obj_set_style_border_width(card,0,0); lv_obj_set_style_radius(card,12,0);
+  lv_obj_clear_flag(card,LV_OBJ_FLAG_SCROLLABLE); lv_obj_align(card,LV_ALIGN_CENTER,0,-6);
+  gMatterQr=lv_qrcode_create(card,216,lv_color_black(),lv_color_white());
+  lv_obj_center(gMatterQr);
+  lv_qrcode_update(gMatterQr,s.matterQrPayload,strlen(s.matterQrPayload));
+  { lv_obj_t* c=lv_label_create(gMatterOv);
+    lv_obj_set_style_text_font(c,&lv_font_montserrat_24,0); lv_obj_set_style_text_color(c,lv_color_hex(COL_MUTED),0);
+    lv_label_set_text_fmt(c,"Manual code  %s",s.matterPairCode);
+    lv_obj_align(c,LV_ALIGN_BOTTOM_MID,0,-52); }
+  { lv_obj_t* h=lv_label_create(gMatterOv);
+    lv_label_set_text(h,"Scan from Apple Home, Google Home or Alexa  -  tap to hide");
+    lv_obj_set_style_text_font(h,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(h,lv_color_hex(COL_TEXT3),0);
+    lv_obj_align(h,LV_ALIGN_BOTTOM_MID,0,-22); }
+}
+#endif  // SLYTHERM_MATTER
+
 }  // namespace slytherm_ui
