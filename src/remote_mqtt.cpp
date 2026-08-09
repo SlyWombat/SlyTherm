@@ -12,6 +12,7 @@
 #include <ctime>
 #include <vector>
 
+#include "DettsonConfig.h"  // #190 broker-ladder constants (kMqttFallback*)
 #include "HaMqtt.h"        // parsePresetRosterJson (pure, shared with the Controller)
 #include "RemoteLink.h"    // #102 codec: echo/status parsers + intent builders
 #include "boot_guard.h"   // #123: boot/crash telemetry payload
@@ -73,6 +74,11 @@ constexpr const char* kOutdoorTemp = "slytherm/state/outdoor_temp";
 
 uint32_t gLastDiscoverMs = 0;
 uint32_t gLastConnectTryMs = 0;
+// #190 broker ladder: rung 0 = configured/primary, rung 1 = the kdocker
+// standby (bridged for slytherm/# incl. retained). Same fail-count advance +
+// TCP-probe failback as the Controller; see DettsonConfig kMqttFallback*.
+uint8_t  gBrokerRung = 0, gRungFails = 0;
+uint32_t gFallbackSinceMs = 0;
 // #109: broker retry backoff — 5s -> 60s while failing, reset on success.
 constexpr uint32_t kConnMinMs = 5000;
 constexpr uint32_t kConnMaxMs = 60000;
@@ -503,9 +509,14 @@ void tryConnect(uint32_t nowMs) {
   char host[64] = {}, user[48] = {}, pass[64] = {};
   uint16_t port = 1883;
   mqtt_cfg::current(host, sizeof(host), &port, user, sizeof(user), pass, sizeof(pass));
+  if (gBrokerRung == 1) {  // #190: standby rung
+    strlcpy(host, dettson::kMqttFallbackHost, sizeof(host));
+    port = dettson::kMqttFallbackPort;
+  }
   gMqtt.setServer(host, port);
 
-  Serial.printf("[mqtt] connecting to %s:%u as \"%s\"...\n", host, port, gClientId);
+  Serial.printf("[mqtt] connecting to %s:%u as \"%s\" (rung %u)...\n", host, port,
+                gClientId, gBrokerRung);
   const char* muser = user[0] ? user : nullptr;
   const char* mpass = pass[0] ? pass : nullptr;
   if (gMqtt.connect(gClientId, muser, mpass, gAvailTopic, 0, true, "offline")) {
@@ -551,11 +562,41 @@ void tryConnect(uint32_t nowMs) {
     // Controller on the network). Confirms a pending update; else no-op.
     ota::noteSelfTestPass();
     gConnRetryMs = kConnMinMs;           // backoff resets on success
+    gRungFails = 0;                      // #190
+    if (gBrokerRung == 1) gFallbackSinceMs = nowMs;
     Serial.println("[mqtt] connected; subscribed to controller echo/status/roster");
   } else {
     gConnRetryMs = gConnRetryMs + gConnRetryMs / 2;
     if (gConnRetryMs > kConnMaxMs) gConnRetryMs = kConnMaxMs;
-    Serial.printf("[mqtt] connect failed, state=%d\n", gMqtt.state());
+    Serial.printf("[mqtt] connect failed, state=%d, rung=%u\n", gMqtt.state(), gBrokerRung);
+    if (++gRungFails >= dettson::kBrokerFailsPerRung) {  // #190: next rung
+      gRungFails = 0;
+      gBrokerRung ^= 1;
+      gConnRetryMs = kConnMinMs;  // fresh rung deserves a prompt attempt
+    }
+  }
+}
+
+// #190 failback: on the standby rung, TCP-probe the primary and only switch
+// back when it answers — no blind reconnect flaps (each would LWT-blip this
+// remote's availability). Called from loop().
+void serviceBrokerLadder(uint32_t nowMs) {
+  if (!gMqtt.connected() || gBrokerRung != 1 ||
+      nowMs - gFallbackSinceMs < dettson::kBrokerProbePrimaryMs)
+    return;
+  gFallbackSinceMs = nowMs;
+  char host[64] = {};
+  uint16_t port = 1883;
+  mqtt_cfg::current(host, sizeof(host), &port, nullptr, 0, nullptr, 0);
+  if (!host[0]) return;
+  WiFiClient probe;
+  const bool primaryUp = probe.connect(host, port, 1500);
+  probe.stop();
+  if (primaryUp) {
+    Serial.println("[mqtt] primary broker answering — failing back");
+    gBrokerRung = 0;
+    gRungFails = 0;
+    gMqtt.disconnect();  // tryConnect reconnects on rung 0
   }
 }
 
@@ -770,6 +811,7 @@ void loop() {
   } else {
     tryConnect(nowMs);
   }
+  serviceBrokerLadder(nowMs);  // #190: probe-based failback to the primary
 }
 
 bool connected() { return gMqtt.connected(); }

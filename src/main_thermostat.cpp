@@ -1699,6 +1699,13 @@ void mqttTask(void*) {
   gMqtt.setCallback(onMqttMessage);
 
   uint32_t lastWifiTryMs = 0, lastMqttTryMs = 0, lastHeartbeatMs = 0, lastDiscoverMs = 0;
+  // #190 broker ladder state. Retained-trust note for failback: everything
+  // this client consumes retained is idempotent config (presets/sensor
+  // rosters, outdoor temp, ota_mirror) and HA commands are non-retained, so
+  // re-reading either broker's retained store after a switch is safe by
+  // construction — no extra reconciliation machinery needed.
+  uint8_t brokerRung = 0, rungFails = 0;
+  uint32_t fallbackSinceMs = 0;
   for (;;) {
     const uint32_t nowMs = millis();
 #ifdef SLYTHERM_UI
@@ -1767,6 +1774,17 @@ void mqttTask(void*) {
     if (gWifiConnected && haveMqttNow && !gMqtt.connected() &&
         nowMs - lastMqttTryMs >= cfg::kMqttReconnectMs) {
       lastMqttTryMs = nowMs;
+      // #190 ladder: rung 0 = configured/primary broker, rung 1 = the kdocker
+      // standby (bridged). kBrokerFailsPerRung consecutive failures advance.
+      if (brokerRung == 1) {
+        gMqtt.setServer(kMqttFallbackHost, kMqttFallbackPort);
+      } else {
+#ifdef SLYTHERM_UI
+        gMqtt.setServer(sMqttHost, sMqttPort);
+#else
+        gMqtt.setServer(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT);
+#endif
+      }
       // LWT: availability topic -> retained "offline" (docs/06).
 #ifdef SLYTHERM_UI
       char mqUser[48], mqPass[64];
@@ -1805,14 +1823,48 @@ void mqttTask(void*) {
         // app alive). Confirms a pending update; no-op otherwise.
         ota::noteSelfTestPass();
 #ifdef SLYTHERM_UI
-        telnet_log::logf("[mqtt] connected to %s:%u", sMqttHost, sMqttPort);
+        telnet_log::logf("[mqtt] connected to %s (rung %u)",
+                         brokerRung ? kMqttFallbackHost : sMqttHost, brokerRung);
 #else
-        Serial.println("[mqtt] connected");
+        Serial.printf("[mqtt] connected (rung %u)\n", brokerRung);
 #endif
-      }
+        // #190: which broker carries us — retained so dashboards (and the
+        // standby HA, via the bridge) can see a failover happened.
+        gMqtt.publish("slytherm/state/broker", brokerRung ? "standby" : "primary", true);
+        rungFails = 0;
+        if (brokerRung == 1) fallbackSinceMs = nowMs;
+      } else {
 #ifdef SLYTHERM_UI
-      else telnet_log::logf("[mqtt] connect failed (state=%d)", gMqtt.state());
+        telnet_log::logf("[mqtt] connect failed (state=%d, rung=%u)", gMqtt.state(), brokerRung);
 #endif
+        if (++rungFails >= kBrokerFailsPerRung) {  // #190: next rung
+          rungFails = 0;
+          brokerRung ^= 1;
+        }
+      }
+    }
+    // #190 failback: while living on the standby rung, TCP-probe the primary
+    // every kBrokerProbePrimaryMs and only switch back when it actually
+    // answers — a blind reconnect attempt would LWT-flap availability in HA
+    // on every probe while the primary is still down.
+    if (gMqtt.connected() && brokerRung == 1 &&
+        nowMs - fallbackSinceMs >= kBrokerProbePrimaryMs) {
+      fallbackSinceMs = nowMs;
+      WiFiClient probe;
+#ifdef SLYTHERM_UI
+      const bool primaryUp = probe.connect(sMqttHost, sMqttPort, 1500);
+#else
+      const bool primaryUp = probe.connect(THERMOSTAT_MQTT_HOST, THERMOSTAT_MQTT_PORT, 1500);
+#endif
+      probe.stop();
+      if (primaryUp) {
+#ifdef SLYTHERM_UI
+        telnet_log::logf("[mqtt] primary broker answering — failing back");
+#endif
+        brokerRung = 0;
+        rungFails = 0;
+        gMqtt.disconnect();  // the normal retry path reconnects on rung 0
+      }
     }
     gMqttConnected = gMqtt.connected();
 #ifdef SLYTHERM_UI

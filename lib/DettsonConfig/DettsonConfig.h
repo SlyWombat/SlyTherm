@@ -365,4 +365,16 @@ constexpr float    kEffectHeatSupplyDeltaC = 8.0f;  // supply - room while heati
 constexpr float    kEffectSetpointResetC   = 0.3f;  // setpoint move that resets the episode
 constexpr uint32_t kSupplyTempMaxAgeS      = 300;   // cmd/supply_temp staleness bound
 
+// ---- #190 broker fallback ladder ----
+// kdocker2 (primary broker host) hard-failed twice on 2026-08-09; the house
+// now runs an always-on standby broker on kdocker, live-bridged to the
+// primary for slytherm/# + homeassistant/# including retained state. Rung 0 =
+// the configured/primary broker, rung 1 = the standby. Failback probes the
+// primary's TCP port rather than blind-reconnecting, so availability never
+// LWT-flaps in HA while the primary is still down.
+constexpr const char* kMqttFallbackHost   = "192.168.10.10";
+constexpr uint16_t    kMqttFallbackPort   = 1883;
+constexpr uint8_t     kBrokerFailsPerRung = 2;       // consecutive failures -> next rung
+constexpr uint32_t    kBrokerProbePrimaryMs = 300000;  // on standby: probe primary / 5 min
+
 }  // namespace dettson
