@@ -383,6 +383,11 @@ volatile bool    gProbeAuto = true;
 // every bus-level signal). Optional supply-air probe arrives over
 // cmd/supply_temp (any HA-bridged plenum sensor); guarded by gCmdMux.
 EquipmentHealth gEquipHealth;
+// #191 bus listen-only latch: TRUE = never transmit on CT-485 (observer mode
+// for running the OEM thermostat as bus master, e.g. during equipment
+// diagnosis). NVS-persisted; defeats the auto-resume in the control loop.
+// Set via slytherm/cmd/bus_mode ("listen"/"active").
+volatile bool gBusListenOnly = false;
 float    gSupplyTempC   = 0.0f;
 uint32_t gSupplyTempAtS = 0;  // 0 = never received
 #if defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)
@@ -1104,6 +1109,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, "slytherm/cmd/filter_reset") == 0) { gFilterResetReq = true; return; }  // #175
 
+  if (strcmp(topic, "slytherm/cmd/bus_mode") == 0) {  // #191 observer-mode latch
+    if (strcmp(buf, "listen") == 0)      { gBusListenOnly = true;  gPrefs.putBool("buslisten", true); }
+    else if (strcmp(buf, "active") == 0) { gBusListenOnly = false; gPrefs.putBool("buslisten", false); }
+    return;
+  }
+
   if (strcmp(topic, "slytherm/cmd/supply_temp") == 0) {  // #189 optional plenum probe
     char* endp = nullptr;
     const float c = strtof(buf, &endp);
@@ -1412,6 +1423,7 @@ void subscribeAll() {
   gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
   gMqtt.subscribe("slytherm/cmd/furnace_probe");  // #184 read-only Get probe
   gMqtt.subscribe("slytherm/cmd/supply_temp");    // #189 optional plenum probe
+  gMqtt.subscribe("slytherm/cmd/bus_mode");       // #191 observer-mode latch
   gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
   gMqtt.subscribe("slytherm/cmd/emergency_cool");
   gMqtt.subscribe(hm::topic::kCmdSmartRecovery);  // #50 smart-recovery on/off
@@ -1430,6 +1442,7 @@ enum PubIdx : uint8_t {
   PUB_LASTERR, PUB_SLEEP, PUB_STATUSLINE, PUB_TRACKLINE, PUB_FILTER, PUB_ENERGY, PUB_SUGGEST,
   PUB_EMGHEAT, PUB_EMGCOOL,  // #163 configurable emergency setpoints (retained, NVS-backed)
   PUB_SMREC,                 // #50 smart-recovery on/off (retained, NVS-backed)
+  PUB_BUSMODE,               // #191 observer-mode latch (retained, NVS-backed)
   PUB_RECOVERY,              // #183 recovery/coast diagnostics JSON (retained)
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
@@ -1580,6 +1593,8 @@ void publishSnapshot(bool force) {
   pubState(PUB_LOCK, topic::kStateLock,
            lockStateJson(s.lockState, s.lockLevel, s.pinSet).c_str(), force);
   pubState(PUB_BUS, "slytherm/state/bus", s.busJson, force);
+  pubState(PUB_BUSMODE, "slytherm/state/bus_mode",
+           gBusListenOnly ? "listen" : "active", force, /*retain=*/true);  // #191
   {  // #184: probe answers publish once per seq (own dedup — the JSON can
      // exceed the 192 B pubState cache, which would mis-dedup on a long hex).
     static uint32_t sPubbedSeq = 0;
@@ -3359,9 +3374,17 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     req.fanPct = fanReq;
     req.defrostTemperPct = temperActive ? dfo.temperHeatPct : 0.0f;
 #if defined(SLYTHERM_CT485_UART) && defined(SLYTHERM_CT485_TX_ENABLE)
-    if (gSup->bootGateOpen() && gCt->silent()) {
+    // #191: the listen-only latch beats the auto-resume — observer mode must
+    // STICK (the OEM thermostat may be the bus master; two node-1 masters
+    // collide and the NAK2 pairing protection is known-incomplete, #162).
+    if (gSup->bootGateOpen() && gCt->silent() && !gBusListenOnly) {
       xSemaphoreTake(gCtMux, portMAX_DELAY);
       gCt->resume(nowMs);
+      xSemaphoreGive(gCtMux);
+    }
+    if (gBusListenOnly && !gCt->silent()) {  // #191: latch engaged mid-run
+      xSemaphoreTake(gCtMux, portMAX_DELAY);
+      gCt->goSilent();
       xSemaphoreGive(gCtMux);
     }
 #endif
@@ -4034,6 +4057,8 @@ void setup() {
       gShadow.holdEnd = gModeSm->holdEndS();
     }
     gFanMode = static_cast<hm::FanMode>(gPrefs.getUChar("fan", 0));
+    gBusListenOnly = gPrefs.getBool("buslisten", false);  // #191 observer latch survives reboot
+    if (gBusListenOnly) Serial.println("[bus] LISTEN-ONLY latch active (cmd/bus_mode)");
     if (gFanMode > hm::FanMode::kCirculate) gFanMode = hm::FanMode::kAuto;
     // #128: restore the runtime circulate config (cfg:: constants are the
     // DEFAULTS); re-clamp/snap defensively in case an older/corrupt value lands.
