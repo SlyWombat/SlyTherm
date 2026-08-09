@@ -7,6 +7,10 @@
 #include <cmath>
 #include <cstring>
 
+#include <platform/ESP32/ESP32Utils.h>              // chip WiFi provisioning store
+#include <platform/ESP32/NetworkCommissioningDriver.h>  // ESPWiFiDriver network list
+#include <platform/internal/DeviceNetworkInfo.h>
+
 #include "HaMqtt.h"  // hm::Mode numeric values (single source, docs/06)
 
 namespace hm = dettson::hamqtt;  // same alias main_thermostat.cpp uses
@@ -56,9 +60,17 @@ MatterThermostat::ThermostatMode_t fromHmMode(uint8_t hmMode, bool emHeat) {
   }
 }
 
+void* gBleReserve = nullptr;
+
 }  // namespace
 
-void begin(CommandFn onCommand) {
+void reserveBleRam() {
+  if (gBleReserve) return;
+  gBleReserve = heap_caps_malloc(70 * 1024, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  Serial.printf("[matter] BLE reserve %s\r\n", gBleReserve ? "held (70K)" : "FAILED");
+}
+
+void begin(CommandFn onCommand, const char* wifiSsid, const char* wifiPass) {
   if (gBegun) return;
   gOnCommand = onCommand;
 
@@ -113,6 +125,39 @@ void begin(CommandFn onCommand) {
     return true;
   });
 
+  if (gBleReserve) {  // hand the boot-time contiguous block to NimBLE
+    free(gBleReserve);
+    gBleReserve = nullptr;
+    Serial.printf("[matter] BLE reserve released: largest=%u\r\n",
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  }
+  // Seed the chip stack's WiFi stores with the station's credentials BEFORE
+  // start — see the header note on why an "unconfigured" ConnectivityManager
+  // kills the Arduino-managed connection otherwise. BOTH stores matter: the
+  // legacy station provision (ESP32Utils) and the NetworkCommissioning
+  // driver's network list — the "Failed to get configured network" saboteur
+  // reads the LATTER (bench 2026-08-09: legacy-only seeding didn't stop it).
+  if (wifiSsid && wifiSsid[0]) {
+    chip::DeviceLayer::Internal::DeviceNetworkInfo ni = {};
+    strlcpy(ni.WiFiSSID, wifiSsid, sizeof(ni.WiFiSSID));
+    const size_t keyLen = wifiPass ? strnlen(wifiPass, sizeof(ni.WiFiKey)) : 0;
+    if (keyLen) memcpy(ni.WiFiKey, wifiPass, keyLen);
+    ni.WiFiKeyLen = static_cast<uint8_t>(keyLen);
+    const CHIP_ERROR e = chip::DeviceLayer::Internal::ESP32Utils::SetWiFiStationProvision(ni);
+
+    auto& drv = chip::DeviceLayer::NetworkCommissioning::ESPWiFiDriver::GetInstance();
+    char dbg[64];
+    chip::MutableCharSpan dbgSpan(dbg);
+    uint8_t netIdx = 0;
+    const auto st = drv.AddOrUpdateNetwork(
+        chip::ByteSpan(reinterpret_cast<const uint8_t*>(wifiSsid), strlen(wifiSsid)),
+        chip::ByteSpan(reinterpret_cast<const uint8_t*>(wifiPass ? wifiPass : ""), keyLen),
+        dbgSpan, netIdx);
+    const CHIP_ERROR e2 = drv.CommitConfiguration();
+    Serial.printf("[matter] chip wifi provision: legacy=%s netcomm=%d commit=%s\r\n",
+                  e == CHIP_NO_ERROR ? "ok" : e.AsString(),
+                  static_cast<int>(st), e2 == CHIP_NO_ERROR ? "ok" : e2.AsString());
+  }
   Matter.begin();
   Serial.printf("[matter] stack up: heap=%u\r\n",
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

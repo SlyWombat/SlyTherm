@@ -34,10 +34,21 @@ struct Command {          // one ecosystem write, already mapped to hm values
 };
 using CommandFn = void (*)(const Command&);
 
+// Call FIRST THING in setup(), before any radio/UI init: holds a ~70K
+// contiguous internal block for NimBLE while big blocks still exist. begin()
+// releases it immediately before starting the stack — without this, late-init
+// fragmentation caps the largest free block near 51K and NimBLE's controller
+// silently never starts (bench 2026-08-09).
+void reserveBleRam();
+
 // Start the Matter stack + thermostat endpoint. Call ONCE, after WiFi STA is
-// connected (the chip stack binds to the netif). onCommand may be called from
-// the Matter task any time after this returns.
-void begin(CommandFn onCommand);
+// connected (the chip stack binds to the netif). wifiSsid/wifiPass are handed
+// to the chip stack's OWN provisioning store — without that, its
+// ConnectivityManager sees an unconfigured radio and stomps the
+// Arduino-managed station a few seconds after start (bench 2026-08-09:
+// wifi drops post-stack, ESP_ERR_WIFI_CONN storm). onCommand may be called
+// from the Matter task any time after this returns.
+void begin(CommandFn onCommand, const char* wifiSsid, const char* wifiPass);
 
 // Control-task outbound mirror (~1 Hz). hmMode is the hm::Mode numeric value;
 // emHeat mirrors the separate emergency-heat switch (#163) as EMERGENCY_HEAT.

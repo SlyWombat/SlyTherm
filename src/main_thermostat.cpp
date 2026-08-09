@@ -1676,7 +1676,16 @@ void mqttTask(void*) {
   for (;;) {
     const uint32_t nowMs = millis();
 #ifdef SLYTHERM_UI
+#ifndef SLYTHERM_MATTER
     wifi_prov::service(nowMs);
+#else
+    // Matter build: after the chip stack starts, ITS ConnectivityManager owns
+    // the station (seeded with our creds in matter_glue::begin). Two active
+    // reconnect managers permanently sabotage each other — every connect
+    // aborts the other's in-flight association ("sta is connecting, return
+    // error" storm, wifi=0 forever; bench 2026-08-09). wifi_prov stays
+    // passive here: status reads only.
+#endif
     telnet_log::poll();
     coredump_server::poll();          // #124: LAN coredump pull (:8082)
     boot_guard::healthyTick(millis());  // #122/#123: clears the counter after sustained uptime
@@ -4014,22 +4023,6 @@ void setup() {
   gCmdMux = xSemaphoreCreateMutex();
   gSnapMux = xSemaphoreCreateMutex();
   gCtMux = xSemaphoreCreateMutex();
-#ifdef SLYTHERM_MATTER
-  // Epic #179 init-order dance, both halves bench-proven the hard way
-  // (2026-08-09), same order the phase-1 probe used:
-  //  1. Arduino brings the WiFi STA up FIRST and owns the netifs — starting
-  //     Matter first makes the chip stack create them, and Arduino's later
-  //     wifi init then dies (esp_netif_create_default_wifi_ap assert-loop).
-  //  2. Matter SECOND, but still before the UI/control tasks exist — NimBLE
-  //     needs a ~64K contiguous internal block and this is the last moment
-  //     one exists (after WiFi+LVGL: largest=51K -> ble_hs start-stage2
-  //     assert-loop). The stack releases BLE memory once commissioned.
-  // mqttTask's later wifi_prov::begin() re-issue on an already-started STA is
-  // benign (same creds, WiFi.begin re-issues the connect). Needs gCmdMux —
-  // ecosystem writes can arrive on the Matter task from this line on.
-  wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
-  matter_glue::begin(matterCommandFromEcosystem);
-#endif
 #ifdef SLYTHERM_UI
   gUiMux = xSemaphoreCreateMutex();
   // #82: first-run onboarding gate — no NVS creds and no compile-time fallback
@@ -4037,15 +4030,50 @@ void setup() {
   // Computed here (synchronously, before uiTask) so begin() sees it race-free.
   gFirstRun = !(wifi_prov::hasSavedCredentials() || strlen(THERMOSTAT_WIFI_SSID) > 0);
 #endif
+#ifdef SLYTHERM_MATTER
+  // Epic #179 init-order contract — every wrong permutation bench-proven
+  // fatal (2026-08-09):
+  //  1. I2C — claim the bus/driver before any radio (else Wire.begin later
+  //     fails: no TX buffers, GT911 "NO ACK", SHT31 lock spam).
+  //  2. WiFi — Arduino must own the netifs (matter-first assert-loops in
+  //     esp_netif_create_default_wifi_ap).
+  //  3. UI TASK — display + LVGL + the task's own 24K stack must come out of
+  //     the still-large heap; started after Matter they silently fail
+  //     (largest block < stack size) = dark panel. The delay lets portInit
+  //     finish claiming LCD/I2C/PSRAM before the heap-hungry step.
+  //  4. Matter LAST of the big four, while ~100K internal (incl. NimBLE's
+  //     ~64K contiguous) still exists. After WiFi+UI only ~89K total remains
+  //     on a FULLY-up system — but at this point in boot the pool is intact.
+  // mqttTask's later wifi_prov::begin() re-issue on a started STA is benign.
+  Wire.begin(8, 9);
+  wifi_prov::begin(THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
+  xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
+  delay(1500);  // portInit completes in ~0.6s; generous margin, boot-only cost
+  // WiFi must be CONNECTED (not merely started) before the chip stack comes
+  // up: with a connect in flight, chip's ConnectivityManager (no configured
+  // network of its own) fights the Arduino connect forever — wifi=0 +
+  // ESP_ERR_WIFI_CONN storm (bench 2026-08-09). An already-associated
+  // station is accepted cleanly (the phase-1 probe's proven order). Bounded:
+  // a bench with no reachable AP still boots and BLE still advertises.
+  for (int i = 0; i < 100 && !wifi_prov::connected(); ++i) {
+    wifi_prov::service(millis());
+    delay(200);
+  }
+  Serial.printf("[matter] wifi %s pre-stack\r\n",
+                wifi_prov::connected() ? "CONNECTED" : "NOT connected (20s cap)");
+  matter_glue::begin(matterCommandFromEcosystem,
+                     THERMOSTAT_WIFI_SSID, THERMOSTAT_WIFI_PASS);
+#endif
 
   // Task layout (docs/01 §4): Wi-Fi/MQTT core 0; control + CT-485 core 1,
   // CT-485 above control so a slow control cycle can't starve bus timing.
   xTaskCreatePinnedToCore(mqttTask, "mqtt", cfg::kMqttStack, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(controlTask, "control", cfg::kControlStack, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(ct485Task, "ct485", cfg::kCt485Stack, nullptr, 4, nullptr, 1);
-#ifdef SLYTHERM_UI
+#if defined(SLYTHERM_UI) && !defined(SLYTHERM_MATTER)
   // Wall UI on core 0 with Wi-Fi/MQTT; control + CT-485 keep core 1 to protect
   // the control cadence and future TX turnaround (docs/03 §8, issue #28).
+  // (Matter builds start the UI task earlier — see the block above.)
   xTaskCreatePinnedToCore(uiTask, "ui", 24576, nullptr, 1, nullptr, 0);
 #endif
   // #61: OTA task (core 0, below MQTT). No-op without -DSLYTHERM_OTA.
