@@ -107,6 +107,8 @@ constexpr uint16_t kAlarmBusTxStack      = 0x4D06;  // Ct485Thermostat pairing/c
 constexpr uint16_t kAlarmFilterDue       = 0x4D07;  // #175: blower runtime past the filter-life threshold
 constexpr uint16_t kAlarmFreeze          = 0x4D08;  // #175: indoor below the freeze/burst-pipe floor
 constexpr uint16_t kAlarmExtremeHeat     = 0x4D09;  // #175: indoor above the extreme-heat ceiling
+constexpr uint16_t kAlarmCoolIneffective = 0x4D0A;  // #189: cooling running but not delivering
+constexpr uint16_t kAlarmHeatIneffective = 0x4D0B;  // #189: heating running but not delivering
 
 // #175 native alerts (table-stakes; competitors market freeze/burst-pipe).
 // Filter life is measured in BLOWER-on hours (F300 is in the airstream);

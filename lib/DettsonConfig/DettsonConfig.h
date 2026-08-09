@@ -352,4 +352,17 @@ constexpr uint32_t kTxTurnTimeoutUs  = 3000000; // coordinator RESPONSE_TIMEOUT 
 //   * the DE pre-drive hold (ct485::kDePrePostUs) before the first wire bit.
 // Reported wire-to-wire max = compute max + those two (see the [txturn] line).
 
+// ---- #189 equipment-effectiveness watchdog (EquipmentHealth) ----
+// Field-sized from the 2026-08-09 outdoor-unit lockout: cooling "ran" for
+// hours, demands ACKed, zero alarms, house warmed 22.6->23.8+. Trend rule
+// fires after 25 min of continuous running with no 0.2C progress; the
+// optional supply-air probe sharpens detection to 10 min via delta-T.
+constexpr uint32_t kEffectMinRunS          = 1500;  // 25 min continuous run -> judge
+constexpr float    kEffectMinProgressC     = 0.2f;  // required movement by the deadline
+constexpr uint32_t kEffectSupplyMinRunS    = 600;   // 10 min w/ probe -> judge delta
+constexpr float    kEffectCoolSupplyDeltaC = 4.0f;  // room - supply while cooling
+constexpr float    kEffectHeatSupplyDeltaC = 8.0f;  // supply - room while heating
+constexpr float    kEffectSetpointResetC   = 0.3f;  // setpoint move that resets the episode
+constexpr uint32_t kSupplyTempMaxAgeS      = 300;   // cmd/supply_temp staleness bound
+
 }  // namespace dettson

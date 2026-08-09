@@ -88,6 +88,7 @@
 #include "DemandShaper.h"
 #include "DettsonConfig.h"
 #include "DualFuelArbiter.h"
+#include "EquipmentHealth.h"  // #189 equipment-effectiveness watchdog
 #include "FanCirculate.h"  // #128: runtime fan-circulate duty + clamp helpers
 #include "HaMqtt.h"
 #include "LatencyStats.h"  // #28 TX-turnaround jitter probe
@@ -377,6 +378,13 @@ volatile bool gFilterResetReq = false;  // set by the cmd handler, consumed by t
 // windows produce before/after status captures without manual triggering.
 volatile uint8_t gProbeReq  = 0;
 volatile bool    gProbeAuto = true;
+// #189 equipment-effectiveness watchdog: infers whether the ACTIVE equipment
+// is actually delivering (the 2026-08-09 outdoor-unit lockout was invisible to
+// every bus-level signal). Optional supply-air probe arrives over
+// cmd/supply_temp (any HA-bridged plenum sensor); guarded by gCmdMux.
+EquipmentHealth gEquipHealth;
+float    gSupplyTempC   = 0.0f;
+uint32_t gSupplyTempAtS = 0;  // 0 = never received
 // #176 energy accounting: cumulative per-fuel energy (never reset -> HA
 // total_increasing) + cost accumulated at the live price. Persisted in NVS
 // ("egm"/"ehk"/"eck"/"cog"/"coe"); prices cached from the DualFuel config.
@@ -1091,6 +1099,18 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, "slytherm/cmd/filter_reset") == 0) { gFilterResetReq = true; return; }  // #175
 
+  if (strcmp(topic, "slytherm/cmd/supply_temp") == 0) {  // #189 optional plenum probe
+    char* endp = nullptr;
+    const float c = strtof(buf, &endp);
+    if (endp != buf && c > -40.0f && c < 80.0f) {
+      xSemaphoreTake(gCmdMux, portMAX_DELAY);
+      gSupplyTempC = c;
+      gSupplyTempAtS = static_cast<uint32_t>(esp_timer_get_time() / 1000000ULL);
+      xSemaphoreGive(gCmdMux);
+    }
+    return;
+  }
+
   if (strcmp(topic, "slytherm/cmd/furnace_probe") == 0) {  // #184 read-only Get probe
     if      (strcmp(buf, "auto_on")  == 0) gProbeAuto = true;
     else if (strcmp(buf, "auto_off") == 0) gProbeAuto = false;
@@ -1386,6 +1406,7 @@ void subscribeAll() {
 #endif
   gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
   gMqtt.subscribe("slytherm/cmd/furnace_probe");  // #184 read-only Get probe
+  gMqtt.subscribe("slytherm/cmd/supply_temp");    // #189 optional plenum probe
   gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
   gMqtt.subscribe("slytherm/cmd/emergency_cool");
   gMqtt.subscribe(hm::topic::kCmdSmartRecovery);  // #50 smart-recovery on/off
@@ -3351,6 +3372,37 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     }
   }
 #endif
+
+  // ---- #189 equipment-effectiveness watchdog ----
+  // The one failure the bus can't prove: equipment ACKing demands while
+  // delivering nothing (2026-08-09: outdoor unit in protection lockout for
+  // hours, house warming, zero alarms). Judged from what the house DOES.
+  {
+    EquipmentHealthInputs ei;
+    ei.family = out.coolPct > 0 ? EquipFamily::kCool
+                : (out.gasHeatPct > 0 || out.hpHeatPct > 0 ||
+                   out.defrostTemperPct > 0) ? EquipFamily::kHeat
+                                             : EquipFamily::kIdle;
+    ei.roomC = fused.value;
+    ei.roomValid = fused.valid;
+    ei.roomDegraded = fused.degraded;
+    ei.setpointC = ei.family == EquipFamily::kCool ? gModeSm->coolSetpoint()
+                                                   : gModeSm->heatSetpoint();
+    xSemaphoreTake(gCmdMux, portMAX_DELAY);
+    const float supplyC = gSupplyTempC;
+    const uint32_t supplyAtS = gSupplyTempAtS;
+    xSemaphoreGive(gCmdMux);
+    ei.supplyValid = supplyAtS != 0 && nowS >= supplyAtS &&
+                     nowS - supplyAtS <= kSupplyTempMaxAgeS;
+    ei.supplyC = supplyC;
+    const EquipmentHealthOutput eo = gEquipHealth.step(ei, nowS);
+    glueAlarm(eo.ineffective && eo.family == EquipFamily::kCool,
+              cfg::kAlarmCoolIneffective, safety::Severity::kCritical,
+              "Cooling running but not cooling", nowS, /*autoClear=*/true);
+    glueAlarm(eo.ineffective && eo.family == EquipFamily::kHeat,
+              cfg::kAlarmHeatIneffective, safety::Severity::kCritical,
+              "Heating running but not heating", nowS, /*autoClear=*/true);
+  }
 
   // ---- External hardware watchdog pet (docs/04 §3 pet-gating) ----
   if (gSup->petExternalWdt() && cfg::kWdtPetPin >= 0) {
