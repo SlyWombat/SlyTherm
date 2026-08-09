@@ -89,6 +89,21 @@ bool portInit(){
   ch422O(kBitTpRst|kBitLcdRst|kBitBl);
   gtReset(); Wire.beginTransmission(kGt); gTouchOk=(Wire.endTransmission()==0);
   Serial.printf("[ui] GT911 %s\n", gTouchOk?"present":"NO ACK");
+  if(!gTouchOk){
+    // Board/bus diagnostic (#179 bench, spare 4.3B with a dark panel): who is
+    // actually on the bus? Empty scan = unpowered/unseated panel FPCs (the
+    // GT911 rides the touch-glass ribbon) or a dead bus; devices at other
+    // addresses = different expander/touch part. The timeout cap matters: a
+    // WEDGED bus (floating/clamped lines) makes each probe eat the full Wire
+    // timeout — at the 1 s default this scan held the Wire lock ~2 min and
+    // stalled boot. 25 ms keeps the whole sweep under 3 s worst-case.
+    Wire.setTimeOut(25);
+    Serial.print("[ui] i2c scan @8/9:");
+    int n=0;
+    for(uint8_t a=0x08;a<0x78;a++){ Wire.beginTransmission(a); if(Wire.endTransmission()==0){ Serial.printf(" 0x%02X",a); n++; } }
+    Serial.println(n?"":" (none)");
+    Wire.setTimeOut(50);  // back to a sane runtime bound (default is 1000 ms)
+  }
   lv_init();
 #ifdef SLYTHERM_MATTER
   if(!buf1) buf1=(lv_color_t*)ps_malloc(sizeof(lv_color_t)*800*40);  // see note at the declaration
