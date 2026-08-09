@@ -181,19 +181,27 @@ DualFuelOutput DualFuelArbiter::step(const DualFuelInputs& in, uint32_t nowS) {
     src = gasPreferred_ ? HeatSource::kGas : HeatSource::kHeatPump;
   }
 
-  // Escalation: droop below setpoint while HP demand is saturated, sustained
-  // for escalationMinS -> stage to gas. Any break in the condition resets
-  // the timer; an invalid room temp can never escalate.
+  // Escalation: droop below setpoint sustained for escalationMinS, with the
+  // HP seen saturated (>= escalationHpDemandPct) at least once during the
+  // droop episode -> stage to gas. A break in the DROOP resets the clock; a
+  // demand dip does NOT (#159): the fed demand is the shaper's 0/100 duty
+  // output, whose scheduled off-phases are shorter than escalationMinS, so
+  // requiring instantaneous saturation made the timer reset every off-phase
+  // and escalation only reachable at full-scale error. The saturation latch
+  // keeps the original meaning ("the HP is being run as hard as it goes") —
+  // an HP that never saturates during the episode still never escalates.
+  // An invalid room temp can never escalate.
   if (src == HeatSource::kHeatPump && !escalated_) {
     const bool drooping = in.roomTempValid &&
-                          (in.setpointC - in.roomTempC) > cfg_.escalationDroopC &&
-                          in.hpDemandPct >= cfg_.escalationHpDemandPct;
+                          (in.setpointC - in.roomTempC) > cfg_.escalationDroopC;
     if (drooping) {
       if (!droopTiming_) {
         droopTiming_ = true;
         droopStartS_ = nowS;
+        droopSatSeen_ = false;
       }
-      if (nowS - droopStartS_ >= cfg_.escalationMinS) {
+      if (in.hpDemandPct >= cfg_.escalationHpDemandPct) droopSatSeen_ = true;
+      if (droopSatSeen_ && nowS - droopStartS_ >= cfg_.escalationMinS) {
         escalated_ = true;
         escalatedAtS_ = nowS;
       }

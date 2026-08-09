@@ -136,15 +136,15 @@ static void test_escalation_requires_droop_demand_and_duration() {
   TEST_ASSERT_TRUE(out.source == HeatSource::kGas);
 }
 
-static void test_escalation_timer_resets_on_condition_break() {
+static void test_escalation_timer_resets_on_droop_break() {
   DualFuelArbiter arb;
   const float oat = -5.0f;
   uint32_t t0 = 1000;
   arb.step(droopingHp(oat), t0);
-  // Halfway through, demand sags below the saturation threshold one tick.
-  DualFuelInputs relaxed = droopingHp(oat);
-  relaxed.hpDemandPct = kEscalationHpDemandPct - 1.0f;
-  arb.step(relaxed, t0 + kEscalationMinS / 2);
+  // Halfway through, the ROOM recovers above the droop threshold one tick.
+  DualFuelInputs recovered = droopingHp(oat);
+  recovered.roomTempC = recovered.setpointC - kEscalationDroopC + 0.1f;
+  arb.step(recovered, t0 + kEscalationMinS / 2);
   // Droop resumes: the clock restarted, so the original deadline passes on HP.
   uint32_t t1 = t0 + kEscalationMinS / 2 + 1;
   arb.step(droopingHp(oat), t1);
@@ -154,6 +154,44 @@ static void test_escalation_timer_resets_on_condition_break() {
   // ...and escalates kEscalationMinS after the RESTART.
   out = arb.step(droopingHp(oat), t1 + kEscalationMinS);
   TEST_ASSERT_TRUE(out.escalated);
+}
+
+// #159 regression: the fed hpDemandPct is the shaper's 0/100 duty output, so
+// scheduled off-phases (demand 0) with droop persisting must NOT reset the
+// escalation clock — that reset made escalation unreachable below full-scale
+// error (max on-phase < escalationMinS).
+static void test_escalation_survives_duty_cycle_off_phases() {
+  DualFuelArbiter arb;
+  const float oat = -5.0f;
+  const uint32_t stepS = 60;
+  uint32_t t = 1000;
+  const uint32_t deadline = 1000 + kEscalationMinS;
+  DualFuelOutput out;
+  // Alternate 100 / 0 demand every minute (duty cycling), droop throughout.
+  for (bool on = true; t < deadline; t += stepS, on = !on) {
+    DualFuelInputs in = droopingHp(oat);
+    in.hpDemandPct = on ? 100.0f : 0.0f;
+    out = arb.step(in, t);
+    TEST_ASSERT_FALSE(out.escalated);
+  }
+  out = arb.step(droopingHp(oat), deadline);
+  TEST_ASSERT_TRUE(out.escalated);
+  TEST_ASSERT_TRUE(out.source == HeatSource::kGas);
+}
+
+// The saturation latch keeps the original gate: an HP that never reaches
+// escalationHpDemandPct during the droop episode never escalates.
+static void test_escalation_still_requires_saturation_seen() {
+  DualFuelArbiter arb;
+  const float oat = -5.0f;
+  DualFuelInputs in = droopingHp(oat);
+  in.hpDemandPct = kEscalationHpDemandPct - 5.0f;  // drooping, never saturated
+  arb.step(in, 0);
+  TEST_ASSERT_FALSE(arb.step(in, 3 * kEscalationMinS).escalated);
+  // Saturation appears mid-episode: clock counts from droop onset, so with
+  // escalationMinS already elapsed the very next saturated tick escalates.
+  in.hpDemandPct = 100.0f;
+  TEST_ASSERT_TRUE(arb.step(in, 3 * kEscalationMinS + 1).escalated);
 }
 
 static void test_no_escalation_below_demand_threshold_or_invalid_room() {
@@ -473,7 +511,9 @@ int main() {
   RUN_TEST(test_invalid_config_rejected);
   RUN_TEST(test_invalid_config_at_construction_falls_back_to_defaults);
   RUN_TEST(test_escalation_requires_droop_demand_and_duration);
-  RUN_TEST(test_escalation_timer_resets_on_condition_break);
+  RUN_TEST(test_escalation_timer_resets_on_droop_break);
+  RUN_TEST(test_escalation_survives_duty_cycle_off_phases);
+  RUN_TEST(test_escalation_still_requires_saturation_seen);
   RUN_TEST(test_no_escalation_below_demand_threshold_or_invalid_room);
   RUN_TEST(test_deescalation_needs_dwell_and_oat);
   RUN_TEST(test_deescalation_blocked_by_low_oat);

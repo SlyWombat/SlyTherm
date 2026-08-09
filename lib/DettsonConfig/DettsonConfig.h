@@ -70,7 +70,8 @@ constexpr float    kBalancePointHystC       = 2.0f;
 constexpr float    kCompressorMinOatC       = -20.0f; // set from installed model submittal (FLEXX rated -30)
 constexpr float    kAuxMaxOatC              = 10.0f;  // gas/aux lockout above this OAT
 constexpr float    kEscalationDroopC        = 1.0f;   // droop below setpoint...
-constexpr uint32_t kEscalationMinS          = 1800;   // ...for >=30 min at >=95% HP demand -> stage gas
+constexpr uint32_t kEscalationMinS          = 1800;   // ...for >=30 min with >=95% HP demand seen during
+                                                      // the episode (#159: duty off-phases don't reset)
 constexpr float    kEscalationHpDemandPct   = 95.0f;
 constexpr uint32_t kDeescalationMinS        = 3600;   // stage back after 60 min + OAT above balance + hyst
 

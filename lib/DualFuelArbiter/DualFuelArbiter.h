@@ -20,7 +20,8 @@
 //   - config validation (hard rule): reject lockouts leaving any OAT band
 //     with no permitted heat source;
 //   - OAT invalid -> fail cold: gas allowed, compressor locked out;
-//   - escalation: droop + saturated HP demand sustained -> stage to gas;
+//   - escalation: droop sustained with HP saturation seen during the episode
+//     (duty-cycle off-phases don't reset the clock, #159) -> stage to gas;
 //     de-escalate only after a dwell AND OAT above balance + hysteresis.
 //
 // Pure C++17, no Arduino. Time is injected as uint32_t nowS (monotonic).
@@ -134,6 +135,9 @@ class DualFuelArbiter {
   uint32_t escalatedAtS_      = 0;
   bool     droopTiming_       = false;
   uint32_t droopStartS_       = 0;
+  // #159: saturation evidence latched per droop episode — the fed demand is a
+  // 0/100 duty output whose off-phases must not reset the escalation clock.
+  bool     droopSatSeen_      = false;
   bool     defrostPrev_       = false;
   uint32_t defrostStartS_     = 0;
 };
