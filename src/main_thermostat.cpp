@@ -385,6 +385,11 @@ volatile bool    gProbeAuto = true;
 EquipmentHealth gEquipHealth;
 float    gSupplyTempC   = 0.0f;
 uint32_t gSupplyTempAtS = 0;  // 0 = never received
+#if defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)
+// Locally-wired plenum head (SHT31 @0x45); defined next to pollLocalSensors.
+extern float    gSupplyLocalC;
+extern uint32_t gSupplyLocalAtS;
+#endif
 // #176 energy accounting: cumulative per-fuel energy (never reset -> HA
 // total_increasing) + cost accumulated at the live price. Persisted in NVS
 // ("egm"/"ehk"/"eck"/"cog"/"coe"); prices cached from the DualFuel config.
@@ -3388,13 +3393,24 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
     ei.roomDegraded = fused.degraded;
     ei.setpointC = ei.family == EquipFamily::kCool ? gModeSm->coolSetpoint()
                                                    : gModeSm->heatSetpoint();
-    xSemaphoreTake(gCmdMux, portMAX_DELAY);
-    const float supplyC = gSupplyTempC;
-    const uint32_t supplyAtS = gSupplyTempAtS;
-    xSemaphoreGive(gCmdMux);
-    ei.supplyValid = supplyAtS != 0 && nowS >= supplyAtS &&
-                     nowS - supplyAtS <= kSupplyTempMaxAgeS;
-    ei.supplyC = supplyC;
+    // Supply source preference: the locally-wired plenum head (0x45) first —
+    // it survives HA/MQTT outages — then the cmd/supply_temp MQTT feed.
+#if defined(SLYTHERM_DS18B20) || defined(SLYTHERM_SHT31)
+    if (gSupplyLocalAtS != 0 && nowS >= gSupplyLocalAtS &&
+        nowS - gSupplyLocalAtS <= kSupplyTempMaxAgeS) {
+      ei.supplyValid = true;
+      ei.supplyC = gSupplyLocalC;
+    }
+#endif
+    if (!ei.supplyValid) {
+      xSemaphoreTake(gCmdMux, portMAX_DELAY);
+      const float supplyC = gSupplyTempC;
+      const uint32_t supplyAtS = gSupplyTempAtS;
+      xSemaphoreGive(gCmdMux);
+      ei.supplyValid = supplyAtS != 0 && nowS >= supplyAtS &&
+                       nowS - supplyAtS <= kSupplyTempMaxAgeS;
+      ei.supplyC = supplyC;
+    }
     const EquipmentHealthOutput eo = gEquipHealth.step(ei, nowS);
     glueAlarm(eo.ineffective && eo.family == EquipFamily::kCool,
               cfg::kAlarmCoolIneffective, safety::Severity::kCritical,
@@ -3702,29 +3718,45 @@ uint8_t sht31Crc(const uint8_t* d, int n) {
   }
   return c;
 }
-uint32_t gShtLastMs = 0, gShtIssuedMs = 0;
-bool gShtMeasuring = false;
-constexpr uint8_t kShtAddr = 0x44;
+// Two heads on the same bus (#189): 0x44 = the dining-room head (fusion
+// slot 0, emergency tier), 0x45 = the SUPPLY-PLENUM probe (ADR pin tied to
+// VIN) feeding the equipment-effectiveness watchdog. The Controller mounts at
+// the furnace, so the plenum head is a short lead off the same green terminal
+// block. A locally-wired probe keeps the watchdog's sharp 10-min delta-T rule
+// alive precisely when HA/MQTT is down — the 2026-08-09 failure compound.
+constexpr uint8_t kShtAddrRoom   = 0x44;
+constexpr uint8_t kShtAddrSupply = 0x45;
+struct ShtPoll { uint8_t addr; uint32_t lastMs = 0, issuedMs = 0; bool measuring = false; };
+ShtPoll gSht[2] = {{kShtAddrRoom}, {kShtAddrSupply}};
+float    gSupplyLocalC   = 0.0f;   // control-task only (poll + consumer same task)
+uint32_t gSupplyLocalAtS = 0;      // 0 = probe never seen
 
 void pollLocalSensors(uint32_t nowS) {
   const uint32_t nowMs = millis();
-  if (!gShtMeasuring) {
-    if (nowMs - gShtLastMs < 15000) return;                 // ~15 s cadence
-    Wire.beginTransmission(kShtAddr);
-    Wire.write(0x24); Wire.write(0x00);                     // single-shot, no clock stretch, high rep
-    if (Wire.endTransmission() != 0) { gShtLastMs = nowMs; return; }  // not wired yet -> retry
-    gShtIssuedMs = nowMs; gShtMeasuring = true;
-    return;
+  for (auto& s : gSht) {
+    if (!s.measuring) {
+      if (nowMs - s.lastMs < 15000) continue;               // ~15 s cadence per head
+      Wire.beginTransmission(s.addr);
+      Wire.write(0x24); Wire.write(0x00);                   // single-shot, no clock stretch, high rep
+      if (Wire.endTransmission() != 0) { s.lastMs = nowMs; continue; }  // not wired yet -> retry
+      s.issuedMs = nowMs; s.measuring = true;
+      continue;
+    }
+    if (nowMs - s.issuedMs < 20) continue;                  // wait out the measurement
+    s.measuring = false; s.lastMs = nowMs;
+    uint8_t b[6];
+    if (Wire.requestFrom(s.addr, static_cast<uint8_t>(6)) != 6) continue;
+    for (uint8_t i = 0; i < 6; ++i) b[i] = static_cast<uint8_t>(Wire.read());
+    if (sht31Crc(b, 2) != b[2]) continue;                   // corrupt temperature word -> drop
+    const uint16_t raw = static_cast<uint16_t>((b[0] << 8) | b[1]);
+    const float t = -45.0f + 175.0f * static_cast<float>(raw) / 65535.0f;
+    if (s.addr == kShtAddrRoom) {
+      gFusion.update(0, t, Occupancy::kUnknown, nowS);
+    } else {
+      gSupplyLocalC = t;
+      gSupplyLocalAtS = nowS;
+    }
   }
-  if (nowMs - gShtIssuedMs < 20) return;                    // wait out the measurement
-  gShtMeasuring = false; gShtLastMs = nowMs;
-  uint8_t b[6];
-  if (Wire.requestFrom(kShtAddr, static_cast<uint8_t>(6)) != 6) return;
-  for (uint8_t i = 0; i < 6; ++i) b[i] = static_cast<uint8_t>(Wire.read());
-  if (sht31Crc(b, 2) != b[2]) return;                       // corrupt temperature word -> drop
-  const uint16_t raw = static_cast<uint16_t>((b[0] << 8) | b[1]);
-  const float t = -45.0f + 175.0f * static_cast<float>(raw) / 65535.0f;
-  gFusion.update(0, t, Occupancy::kUnknown, nowS);
 }
 #endif
 
