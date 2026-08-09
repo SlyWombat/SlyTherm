@@ -103,6 +103,7 @@ void Ct485Thermostat::goSilent() {
   cmdCount_ = 0;
   cmdHead_  = 0;
   out_ = Outstanding{};
+  probeQueued_ = false;  // a flushed probe is simply gone (re-queue after resume)
   clearDemands();
   // A pending discovery slot is cancelled too: a late 0xF9 after resume()
   // would be talk outside the coordinator's window.
@@ -125,6 +126,11 @@ void Ct485Thermostat::clearAlarms() {
 void Ct485Thermostat::clearDemands() {
   for (auto& c : chan_) c = ChannelState{};
   if (out_.isDemand) out_ = Outstanding{};
+}
+
+void Ct485Thermostat::resetOutstanding() {
+  if (out_.isProbe) probeQueued_ = false;
+  out_ = Outstanding{};
 }
 
 void Ct485Thermostat::commsLoss() {
@@ -250,6 +256,32 @@ bool Ct485Thermostat::setCoolSetpoint(uint8_t raw, uint32_t nowMs) {
   return queueCommand(f);
 }
 
+bool Ct485Thermostat::queueProbe(uint8_t getMsgType, uint32_t nowMs) {
+  (void)nowMs;
+  // Read-only whitelist (docs/02 §4): the probe channel must be structurally
+  // unable to write equipment state no matter what the caller passes.
+  switch (static_cast<MsgType>(getMsgType)) {
+    case MsgType::kGetConfig:
+    case MsgType::kGetStatus:
+    case MsgType::kGetDiagnostics:
+    case MsgType::kGetSensorData:
+    case MsgType::kGetIdentification:
+      break;
+    default:
+      return false;
+  }
+  if (silent_ || probeQueued_) return false;
+  // Empty payload, dst = coordinator: byte-for-byte the shape of the OEM
+  // thermostat's GetStatus in the 2026-07-08 field capture (src 1 -> dst 255).
+  Frame f = baseFrame(kAddrCoordinator, getMsgType);
+  f.payloadLen = 0;
+  if (!queueCommand(f)) return false;
+  probeQueued_ = true;
+  return true;
+}
+
+bool Ct485Thermostat::probePending() const { return probeQueued_; }
+
 bool Ct485Thermostat::buildDemandFrame(DemandChannel ch, Frame& out) const {
   if (silent_ || cfg_.offsetVariant == OffsetVariant::kUnset) return false;
   const ChannelState& cs = chan_[idx(ch)];
@@ -307,6 +339,19 @@ void Ct485Thermostat::onFrame(const Frame& f, uint32_t nowMs) {
       handleControlResponse(f, nowMs);
       return;
     default:
+      // Probe answer: response msgType = the outstanding Get | kResponseFlag
+      // (docs/02 §4). Stored raw for offline decode; like any answer it
+      // proves the round-trip. Everything else: silence (docs/04 §1).
+      if (out_.active && out_.isProbe && addressed() && f.dst == addr_ &&
+          f.msgType == (out_.frame.msgType | kResponseFlag)) {
+        probeResult_.seq++;
+        probeResult_.msgType    = f.msgType;
+        probeResult_.payloadLen = f.payloadLen;
+        std::memcpy(probeResult_.payload, f.payload, f.payloadLen);
+        noteRoundTrip();
+        resetOutstanding();
+        return;
+      }
       // Anything we don't explicitly own: silence (docs/04 §1 never babble).
       unexpected_++;
       return;
@@ -334,7 +379,8 @@ void Ct485Thermostat::handleDiscovery(const Frame& f, uint32_t nowMs) {
     clearDemands();
     cmdCount_ = 0;
     cmdHead_  = 0;
-    out_   = Outstanding{};
+    resetOutstanding();
+    probeQueued_ = false;  // FIFO flush may have discarded a queued probe
     addr_  = 0;
     subnet_ = kSubnetBroadcast;
   }
@@ -380,20 +426,25 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
       // starvation and comms-loss self-heal.
       if (out_.isDemand) starvationAlarm_ = false;
       noteRoundTrip();  // NOT gated on isDemand: any answer proves the link
-      out_ = Outstanding{};
+      resetOutstanding();
       return;
     case kNak1:  // bad CRC: retransmit, bounded by the attempt budget
-      if (out_.attempts >= kMsgResendAttempts) commsLoss();
-      else out_.retryQueued = true;
+      if (out_.attempts >= kMsgResendAttempts) {
+        if (out_.isProbe) { probeTimeouts_++; resetOutstanding(); }
+        else commsLoss();
+      } else {
+        out_.retryQueued = true;
+      }
       return;
     case kNak2:
       // Pairing/ownership rejection (docs/02 §9): we are not this equipment's
       // controller. Stop ALL demands; retrying would be two masters.
       pairingAlarm_ = true;
-      out_ = Outstanding{};
+      resetOutstanding();
       clearDemands();
       cmdCount_ = 0;
       cmdHead_  = 0;
+      probeQueued_ = false;  // FIFO flush may have discarded a queued probe
       return;
     default:
       // #162: a real Dettson demand/command response is the 0x83 ECHO of our
@@ -414,13 +465,13 @@ void Ct485Thermostat::handleControlResponse(const Frame& f, uint32_t nowMs) {
       if (f.payloadLen >= 1 && code == out_.cmdCode) {
         if (out_.isDemand) starvationAlarm_ = false;  // echo proves the round-trip
         noteRoundTrip();  // ...and that the furnace is responding at all
-        out_ = Outstanding{};
+        resetOutstanding();
         return;
       }
       // Genuinely unrecognized response to an outstanding request: surface it
       // (counter + lastResponseCode_) rather than silently assuming delivery.
       unexpected_++;
-      out_ = Outstanding{};
+      resetOutstanding();
       return;
   }
 }
@@ -479,7 +530,8 @@ void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kin
       transmit(d, nowMs);
       return;
     }
-    // 3) Queued persistent-state commands.
+    // 3) Queued persistent-state commands (and diagnostic Get probes — the
+    //    only non-SetControlCmd frames the FIFO can carry).
     if (cmdCount_ > 0) {
       Frame c = cmdFifo_[cmdHead_];
       cmdHead_ = (cmdHead_ + 1) % kCmdFifoDepth;
@@ -487,6 +539,7 @@ void Ct485Thermostat::handleGrant(uint32_t nowMs, uint8_t replyTo, GrantKind kin
       out_ = Outstanding{};
       out_.active   = true;
       out_.isDemand = false;
+      out_.isProbe  = c.msgType != static_cast<uint8_t>(MsgType::kSetControlCmd);
       out_.cmdCode  = c.sendParamHi;
       out_.attempts = 1;
       out_.sentMs   = nowMs;
@@ -577,10 +630,18 @@ void Ct485Thermostat::tick(uint32_t nowMs) {
   if (out_.active && !out_.retryQueued &&
       timeReached(nowMs, out_.sentMs + kResponseTimeoutMs)) {
     if (out_.attempts >= kMsgResendAttempts) {
-      commsLoss();
-      return;
+      if (out_.isProbe) {
+        // A probe is observational: equipment that doesn't implement the Get
+        // just doesn't answer. Drop quietly — never a comms-loss/goSilent.
+        probeTimeouts_++;
+        resetOutstanding();
+      } else {
+        commsLoss();
+        return;
+      }
+    } else {
+      out_.retryQueued = true;  // actual retransmit waits for the next grant
     }
-    out_.retryQueued = true;  // actual retransmit waits for the next grant
   }
 
   // Demand refresh + starvation watchdog (per channel, docs/04 §3).

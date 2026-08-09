@@ -302,6 +302,10 @@ struct Snapshot {
   // Worst case ~165 B ("discovery_responded" + a saturated comms_loss_n);
   // sized with headroom so a future field can't silently truncate the JSON.
   char busJson[224] = "{}";
+  // #184 last furnace Get-probe answer, raw hex (240 B payload -> 480 hex
+  // chars + wrapper); probeSeq keys the publish dedup (0 = none yet).
+  uint32_t probeSeq = 0;
+  char probeJson[560] = "{}";
 #ifdef SLYTHERM_ACTUATOR_RELAY
   char relaysJson[80] = "{}";  // Case B diagnostic (docs/06 topic map)
 #endif
@@ -348,6 +352,12 @@ using CalibrationBlob = dettson::SensorCalibration::PersistBlob;
 uint32_t gFilterRuntimeS = 0;
 uint32_t gFilterLifeHours = cfg::kFilterLifeHoursDefault;
 volatile bool gFilterResetReq = false;  // set by the cmd handler, consumed by the control task
+// #184 furnace Get probe: cmd handler stages a read-only msg type (0 = none),
+// the control task queues it into Ct485Thermostat. gProbeAuto adds a GetStatus
+// ~60 s after every blower on/off transition (rate-limited) so circulate
+// windows produce before/after status captures without manual triggering.
+volatile uint8_t gProbeReq  = 0;
+volatile bool    gProbeAuto = true;
 // #176 energy accounting: cumulative per-fuel energy (never reset -> HA
 // total_increasing) + cost accumulated at the live price. Persisted in NVS
 // ("egm"/"ehk"/"eck"/"cog"/"coe"); prices cached from the DualFuel config.
@@ -1062,6 +1072,17 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
 
   if (strcmp(topic, "slytherm/cmd/filter_reset") == 0) { gFilterResetReq = true; return; }  // #175
 
+  if (strcmp(topic, "slytherm/cmd/furnace_probe") == 0) {  // #184 read-only Get probe
+    if      (strcmp(buf, "auto_on")  == 0) gProbeAuto = true;
+    else if (strcmp(buf, "auto_off") == 0) gProbeAuto = false;
+    else if (strcmp(buf, "status")   == 0) gProbeReq = static_cast<uint8_t>(ct485::MsgType::kGetStatus);
+    else if (strcmp(buf, "config")   == 0) gProbeReq = static_cast<uint8_t>(ct485::MsgType::kGetConfig);
+    else if (strcmp(buf, "diag")     == 0) gProbeReq = static_cast<uint8_t>(ct485::MsgType::kGetDiagnostics);
+    else if (strcmp(buf, "sensors")  == 0) gProbeReq = static_cast<uint8_t>(ct485::MsgType::kGetSensorData);
+    else if (strcmp(buf, "ident")    == 0) gProbeReq = static_cast<uint8_t>(ct485::MsgType::kGetIdentification);
+    return;
+  }
+
   xSemaphoreTake(gCmdMux, portMAX_DELAY);
   bool accepted = true;
   if (strcmp(topic, hm::topic::kCmdSetpoint) == 0) {
@@ -1345,6 +1366,7 @@ void subscribeAll() {
   gMqtt.subscribe(hm::topic::kCmdOtaApply);
 #endif
   gMqtt.subscribe("slytherm/cmd/filter_reset");  // #175 filter-replaced button
+  gMqtt.subscribe("slytherm/cmd/furnace_probe");  // #184 read-only Get probe
   gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
   gMqtt.subscribe("slytherm/cmd/emergency_cool");
   gMqtt.subscribe(hm::topic::kCmdSmartRecovery);  // #50 smart-recovery on/off
@@ -1513,6 +1535,14 @@ void publishSnapshot(bool force) {
   pubState(PUB_LOCK, topic::kStateLock,
            lockStateJson(s.lockState, s.lockLevel, s.pinSet).c_str(), force);
   pubState(PUB_BUS, "slytherm/state/bus", s.busJson, force);
+  {  // #184: probe answers publish once per seq (own dedup — the JSON can
+     // exceed the 192 B pubState cache, which would mis-dedup on a long hex).
+    static uint32_t sPubbedSeq = 0;
+    if (s.probeSeq != 0 && s.probeSeq != sPubbedSeq) {
+      gMqtt.publish("slytherm/state/furnace_probe", s.probeJson, false);
+      sPubbedSeq = s.probeSeq;
+    }
+  }
   // health/fault/last_error RETAINED: HA's problem binary_sensor + last_error
   // must read the CURRENT value on (re)connect, not a stale one-shot. Combined
   // with the starvation auto-clear (Ct485Thermostat), a recovered alarm now
@@ -2849,6 +2879,26 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
            gCt->commsLossAlarm() ? "true" : "false",
            gCt->starvationAlarm() ? "true" : "false",
            static_cast<unsigned long>(gCt->commsLossCount()));
+  {  // #184: hex-encode a NEW probe answer only (control-task-local cache)
+    const ct485::Ct485Thermostat::ProbeResult& pr = gCt->lastProbe();
+    static uint32_t sEncodedSeq = 0;
+    static char sProbeJson[sizeof(s.probeJson)] = "{}";
+    if (pr.seq != sEncodedSeq) {
+      char hex[2 * ct485::kMaxPayload + 1];
+      for (size_t i = 0; i < pr.payloadLen; i++)
+        snprintf(hex + 2 * i, 3, "%02x", pr.payload[i]);
+      hex[2 * pr.payloadLen] = '\0';
+      snprintf(sProbeJson, sizeof(sProbeJson),
+               "{\"seq\":%lu,\"msg_type\":\"0x%02X\",\"len\":%u,\"hex\":\"%s\","
+               "\"timeouts\":%lu}",
+               static_cast<unsigned long>(pr.seq), pr.msgType,
+               static_cast<unsigned>(pr.payloadLen), hex,
+               static_cast<unsigned long>(gCt->probeTimeouts()));
+      sEncodedSeq = pr.seq;
+    }
+    s.probeSeq = pr.seq;
+    strlcpy(s.probeJson, sProbeJson, sizeof(s.probeJson));
+  }
   xSemaphoreGive(gCtMux);
 
 #ifdef SLYTHERM_ACTUATOR_RELAY
@@ -3222,6 +3272,37 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
   // shouldn't outlive the condition (the event history lives in SlyLog/telnet).
   glueAlarm(busAlarm, cfg::kAlarmBusTxStack, safety::Severity::kCritical, busMsg, nowS,
             /*autoClear=*/true);
+
+#if defined(SLYTHERM_CT485_UART) && defined(SLYTHERM_CT485_TX_ENABLE)
+  // ---- #184 furnace Get probe (blower observability) ----
+  // Manual (cmd/furnace_probe) or automatic: a GetStatus ~60 s after every
+  // blower on/off transition (spin-up/down settled), rate-limited. Read-only
+  // and quiet-failing by construction (Ct485Thermostat::queueProbe); the raw
+  // answer publishes on state/furnace_probe for offline decode.
+  {
+    static bool sPrevAir = false;
+    static uint32_t sAutoDueS = 0, sLastAutoS = 0;
+    const bool airOn = out.fanPct > 0 || out.gasHeatPct > 0 ||
+                       out.hpHeatPct > 0 || out.coolPct > 0;
+    if (gProbeAuto && airOn != sPrevAir &&
+        (sLastAutoS == 0 || nowS - sLastAutoS >= 300))
+      sAutoDueS = nowS + 60;
+    sPrevAir = airOn;
+    uint8_t req = gProbeReq;  // a manual request takes the slot first
+    gProbeReq = 0;
+    if (req == 0 && sAutoDueS != 0 && nowS >= sAutoDueS) {
+      req = static_cast<uint8_t>(ct485::MsgType::kGetStatus);
+      sAutoDueS = 0;
+      sLastAutoS = nowS;
+    }
+    if (req != 0) {
+      xSemaphoreTake(gCtMux, portMAX_DELAY);
+      const bool ok = gCt->queueProbe(req, nowMs);
+      xSemaphoreGive(gCtMux);
+      if (!ok) Serial.printf("[probe] refused (silent/pending) type=0x%02X\n", req);
+    }
+  }
+#endif
 
   // ---- External hardware watchdog pet (docs/04 §3 pet-gating) ----
   if (gSup->petExternalWdt() && cfg::kWdtPetPin >= 0) {

@@ -142,6 +142,29 @@ class Ct485Thermostat {
   // (refreshFraction * window past the last send); 0 when inactive.
   uint32_t nextRefreshDueMs(DemandChannel ch) const;
 
+  // ---- Diagnostic Get probe (#184 blower observability; docs/02 §4) ----
+  // Queue a ONE-SHOT read-only Get request to the coordinator (dst 0xFF —
+  // mirrors the OEM thermostat's GetStatus in the 2026-07-08 field capture).
+  // Rides the normal grant/FIFO discipline BEHIND demands, so it can never
+  // babble or delay a demand by more than one queued slot. Purely
+  // observational: an unanswered probe times out QUIETLY (probeTimeouts_
+  // counts it; never comms-loss/goSilent — equipment may simply not implement
+  // the read), an answered one lands in lastProbe() and, like any answer,
+  // proves the round-trip. Refused while silent, while another probe is
+  // pending, or for any msgType not in the read-only whitelist below.
+  // Response payload layouts are NOT decoded here (docs/02 confidence rule:
+  // publish raw, decode offline once captures confirm the shape).
+  struct ProbeResult {
+    uint32_t seq        = 0;  // increments per stored answer; 0 = never
+    uint8_t  msgType    = 0;  // response msgType (request | kResponseFlag)
+    uint8_t  payloadLen = 0;
+    uint8_t  payload[kMaxPayload] = {};
+  };
+  bool queueProbe(uint8_t getMsgType, uint32_t nowMs);
+  bool probePending() const;
+  const ProbeResult& lastProbe() const { return probeResult_; }
+  uint32_t probeTimeouts() const { return probeTimeouts_; }
+
   // ---- Alarms ----
   // pairing latches until clearAlarms() (it needs a human: two masters on one
   // bus). comms-loss and starvation are CONDITIONS, not events: both describe
@@ -196,6 +219,8 @@ class Ct485Thermostat {
     bool     active      = false;
     bool     retryQueued = false;  // timed out / NAK1: retransmit at next grant
     bool     isDemand    = false;
+    bool     isProbe     = false;  // diagnostic Get: exhausted timeout drops
+                                   // quietly instead of commsLoss() (#184)
     DemandChannel ch     = DemandChannel::kHeat;
     uint8_t  cmdCode     = 0;
     uint8_t  attempts    = 0;      // transmissions so far (max kMsgResendAttempts)
@@ -213,6 +238,9 @@ class Ct485Thermostat {
   void  handleSetAddress(const Frame& f, uint32_t nowMs);
   void  handleControlResponse(const Frame& f, uint32_t nowMs);
   void  clearDemands();
+  // End the outstanding exchange; a probe additionally frees the one-at-a-time
+  // probe slot (every terminal path must go through this or leak probeQueued_).
+  void  resetOutstanding();
   void  commsLoss();
   // The furnace answered an outstanding request: the link demonstrably works.
   void  noteRoundTrip();
@@ -253,6 +281,10 @@ class Ct485Thermostat {
   uint8_t      lastResponseCode_ = 0;
   uint32_t     unexpected_ = 0;
   uint32_t     txDropped_  = 0;
+
+  ProbeResult  probeResult_;           // last answered probe (#184)
+  bool         probeQueued_  = false;  // queued or outstanding; one at a time
+  uint32_t     probeTimeouts_ = 0;     // unanswered probes (quiet drops)
 };
 
 }  // namespace ct485

@@ -1082,6 +1082,101 @@ static void test_dryrun_mirrors_pending_demand_idempotent() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
 }
 
+// ---------- #184 diagnostic Get probe ----------
+
+static Frame coProbeResp(uint8_t getMsgType, uint8_t dst = kAddrThermostat) {
+  Frame f;
+  f.dst = dst;
+  f.src = kAddrCoordinator;
+  f.msgType = static_cast<uint8_t>(getMsgType | kResponseFlag);
+  f.payload[0] = 0xA5;
+  f.payload[1] = 0x01;
+  f.payload[2] = 0x42;
+  f.payloadLen = 3;
+  return f;
+}
+
+static void test_probe_tx_shape_and_answer_stored() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_FALSE(t.probePending());
+  TEST_ASSERT_TRUE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetStatus), now));
+  TEST_ASSERT_TRUE(t.probePending());
+  // One at a time: a second queue attempt is refused while one is pending.
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetStatus), now));
+  Frame f = grant1(t, now);
+  // Wire shape = the OEM capture: GetStatus to the coordinator, empty payload.
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetStatus), f.msgType);
+  TEST_ASSERT_EQUAL_UINT8(kAddrCoordinator, f.dst);
+  TEST_ASSERT_EQUAL_UINT8(0, f.payloadLen);
+  // Answer stored raw; slot freed; round-trip proven (clears comms-loss).
+  t.onFrame(coProbeResp(static_cast<uint8_t>(MsgType::kGetStatus)), now);
+  TEST_ASSERT_FALSE(t.probePending());
+  TEST_ASSERT_EQUAL_UINT32(1, t.lastProbe().seq);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetStatus) | kResponseFlag,
+                          t.lastProbe().msgType);
+  TEST_ASSERT_EQUAL_UINT8(3, t.lastProbe().payloadLen);
+  TEST_ASSERT_EQUAL_UINT8(0xA5, t.lastProbe().payload[0]);
+  TEST_ASSERT_EQUAL_UINT8(0x42, t.lastProbe().payload[2]);
+  // The slot is reusable after an answer.
+  TEST_ASSERT_TRUE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetDiagnostics), now));
+}
+
+static void test_probe_timeout_is_quiet_never_comms_loss() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetStatus), now));
+  (void)grant1(t, now);  // attempt 1 on the wire
+  for (uint8_t a = 1; a < kMsgResendAttempts; a++) {
+    now += kResponseTimeoutMs + 1;
+    t.tick(now);            // timeout -> retry queued
+    (void)grant1(t, now);   // retry TX
+  }
+  now += kResponseTimeoutMs + 1;
+  t.tick(now);  // attempt budget exhausted -> QUIET drop (the whole point)
+  TEST_ASSERT_FALSE(t.commsLossAlarm());
+  TEST_ASSERT_FALSE(t.silent());
+  TEST_ASSERT_FALSE(t.probePending());
+  TEST_ASSERT_EQUAL_UINT32(1, t.probeTimeouts());
+  TEST_ASSERT_EQUAL_UINT32(0, t.lastProbe().seq);
+  // An unanswered probe must not have poisoned the demand path.
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 50.0f, now));
+  Frame f = grant1(t, now);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
+}
+
+static void test_probe_never_preempts_a_demand() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  TEST_ASSERT_TRUE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetStatus), now));
+  Frame f = grant1(t, now);  // the demand takes the first grant
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
+  ackOutstanding(t, f.sendParamHi, now);
+  f = grant1(t, now);        // the probe rides the next one
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetStatus), f.msgType);
+}
+
+static void test_probe_whitelist_and_silent_gates() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  // Refused while silent (boot state).
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetStatus), now));
+  join(t, now);
+  // Write-capable msg types are structurally refused.
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kSetControlCmd), now));
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kSetDiagnostics), now));
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kSetAddress), now));
+  TEST_ASSERT_FALSE(t.probePending());
+  // goSilent flushes a pending probe and frees the slot for after resume().
+  TEST_ASSERT_TRUE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetDiagnostics), now));
+  t.goSilent();
+  TEST_ASSERT_FALSE(t.probePending());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_silent_no_demands_no_tx);
@@ -1129,5 +1224,9 @@ int main() {
   RUN_TEST(test_version_announce_and_version_bit_mirroring);
   RUN_TEST(test_dryrun_shadow_mode_acks_without_tx);
   RUN_TEST(test_dryrun_mirrors_pending_demand_idempotent);
+  RUN_TEST(test_probe_tx_shape_and_answer_stored);           // #184
+  RUN_TEST(test_probe_timeout_is_quiet_never_comms_loss);    // #184
+  RUN_TEST(test_probe_never_preempts_a_demand);              // #184
+  RUN_TEST(test_probe_whitelist_and_silent_gates);           // #184
   return UNITY_END();
 }
