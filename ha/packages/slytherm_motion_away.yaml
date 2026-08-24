@@ -1,0 +1,60 @@
+# slytherm_motion_away.yaml — sensor-based Away (replaces phone/GPS presence).
+#
+# Owner decision 2026-07-19: Away comes from the house's own interior sensors,
+# not phones. The phone automations (slytherm_presence_away/-return in
+# slytherm_starter.yaml) are pinned off with initial_state: false.
+#
+# Adapted from slytherm's handoff (claude-bridge/slytherm_motion_away.yaml):
+# instead of a raw `for: 8h` on binary_sensor.interior_presence_anywhere, both
+# automations key off binary_sensor.away (packages/away.yaml), which already
+# encapsulates the same design plus two upgrades:
+# - restart-safe 8 h clock: computed from the restored interior_last_seen /
+#   away_last_arrival timestamps, so an HA restart mid-count doesn't delay
+#   Away by up to 8 h the way a `for:` countdown would;
+# - the not-all-sensors-dead guard lives inside the sensor (it requires
+#   sensor.interior_detectors_online > 0), so it needn't be repeated here.
+# One behavioural addition: a tracked phone ARRIVING home also clears
+# binary_sensor.away, so comfort resumes as the car pulls in, a beat before
+# the first interior sensor trips. A phone merely sitting at home still never
+# blocks Away — motion remains the authority.
+#
+# The vacation calendar overrides both directions. Guard is `not on` rather
+# than `is off` so an unknown/absent calendar can never block presence
+# (same rationale as slytherm_starter.yaml section 6).
+
+automation:
+  - id: slytherm_motion_away
+    alias: "SlyTherm: no interior activity 8h -> away"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.away
+        to: "on"
+    condition:
+      - condition: template
+        value_template: "{{ not is_state('calendar.slytherm_vacation', 'on') }}"
+    action:
+      - service: climate.set_preset_mode
+        target:
+          entity_id: climate.slytherm_climatetalk_thermostat_slytherm_hvac
+        data:
+          preset_mode: away
+    mode: single
+
+  # First sign of someone (interior motion or phone arrival) -> resume the
+  # scheduled preset, but only while the preset is still 'away' so a manual
+  # preset change is never stomped (mirrors the old presence-return guard).
+  - id: slytherm_motion_return
+    alias: "SlyTherm: activity while away -> resume schedule"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.away
+        to: "off"
+    condition:
+      - condition: template
+        value_template: "{{ not is_state('calendar.slytherm_vacation', 'on') }}"
+      - condition: template
+        value_template: >-
+          {{ state_attr('climate.slytherm_climatetalk_thermostat_slytherm_hvac', 'preset_mode') == 'away' }}
+    action:
+      - service: script.slytherm_apply_scheduled_preset
+    mode: single

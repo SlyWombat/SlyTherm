@@ -1,0 +1,73 @@
+# away.yaml — house-level "Away" flag where MOTION is the authority, not phones.
+#
+# binary_sensor.away:
+#   ON  = no interior detector has seen anyone for 8 hours (clock runs from the
+#         last motion event via sensor.interior_last_seen, presence_log.yaml)
+#         AND at least one physical interior detector is genuinely reporting —
+#         a dead sensor fleet (MQTT/Zigbee/WiFi outage) can't fake an empty
+#         house; Away fails safe toward "someone is home".
+#   OFF = any interior motion (interior_last_seen re-stamps), or a tracked
+#         phone ARRIVING home (away_last_arrival re-stamps). A phone merely
+#         sitting in zone.home does NOT block Away — a left-behind phone can't
+#         hold the house in Home mode.
+#
+# Restart-safe by construction: both inputs are trigger-based timestamp
+# sensors (they restore across restarts), and the 8 h comparison re-renders
+# every minute (now() in a state template), unlike a delay_on/for: timer
+# which silently restarts its clock on every HA restart or YAML reload.
+
+template:
+  # Last time a tracked phone came home: zone.home person-count increased.
+  # Guards: both states must be numeric (skips startup unavailable/unknown
+  # transitions, which would otherwise stamp a phantom arrival) and this.state
+  # holds the previous stamp on every non-arrival change.
+  - trigger:
+      - platform: state
+        entity_id: zone.home
+    sensor:
+      - name: Away last arrival
+        unique_id: away_last_arrival
+        device_class: timestamp
+        icon: mdi:home-import-outline
+        state: >-
+          {% if trigger.from_state is not none
+                and trigger.from_state.state is is_number
+                and trigger.to_state.state is is_number
+                and trigger.to_state.state | int > trigger.from_state.state | int %}
+            {{ now().isoformat() }}
+          {% else %}
+            {{ this.state }}
+          {% endif %}
+
+  - sensor:
+      # How many PHYSICAL interior detectors are reporting a real on/off state.
+      # Deliberately excludes binary_sensor.front_door_keypad_entry: it is a
+      # template sensor computed inside HA, so it stays "available" even when
+      # every real detector is dead — counting it would defeat the safety check.
+      - name: Interior detectors online
+        unique_id: interior_detectors_online
+        state_class: measurement
+        unit_of_measurement: detectors
+        icon: mdi:radar
+        state: >-
+          {{ expand(['binary_sensor.apollo_msr_2_2d7920_radar_target',
+                     'binary_sensor.apollo_msr_2_4012d8_radar_target',
+                     'binary_sensor.apollo_msr_2_43faa4_radar_target',
+                     'binary_sensor.third_reality_inc_3rsnl02043z_motion',
+                     'binary_sensor.third_reality_inc_3rsnl02043z_motion_2',
+                     'binary_sensor.network_motion_motion',
+                     'binary_sensor.network_cabinet_motion',
+                     'binary_sensor.motion_sensor_e4e7_motion'])
+             | selectattr('state', 'in', ['on', 'off']) | list | count }}
+
+  - binary_sensor:
+      - name: Away
+        unique_id: away
+        icon: mdi:home-export-outline
+        state: >-
+          {% set stamps = [states('sensor.interior_last_seen') | as_datetime,
+                           states('sensor.away_last_arrival') | as_datetime]
+                          | reject('none') | list %}
+          {{ stamps | count > 0
+             and states('sensor.interior_detectors_online') | int(0) > 0
+             and now() - stamps | max > timedelta(hours=8) }}
