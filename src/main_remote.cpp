@@ -20,6 +20,7 @@
 #include "UiModel.h"
 #include "boot_guard.h"       // #122/#123: reset-loop latch + crash telemetry
 #include "coredump_server.h"  // #124: LAN coredump pull (:8082)
+#include "heap_debug.h"       // #193: heap-corruption instrumentation (heapdbg build only)
 #include "ota_client.h"  // #111: no-op inlines unless -DSLYTHERM_OTA
 #include "remote_mqtt.h"
 #include "remote_net_guard.h"
@@ -213,6 +214,13 @@ void setup() {
 
   // #111: OTA task (checks the GitHub catalog; reboot ungated on the Remote).
   ota::begin();
+
+#ifdef SLYTHERM_HEAPDBG
+  // #193: LAST in setup, on purpose — the store watchpoint must be armed after
+  // remote_camera::begin() has created the I2S/GDMA channel, or the driver's
+  // own init writes trip it.
+  heap_debug::begin();
+#endif
 }
 
 void loop() {
