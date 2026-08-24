@@ -1,0 +1,86 @@
+# zigbee_sensors.yaml — availability alerts for the Zigbee (ZHA) room sensors.
+#
+# Both SONOFF SNZB-02D temp/humidity sensors report to the ZHA coordinator
+# (SONOFF ZBDongle-E on kdocker2). This package alerts when a sensor goes
+# unavailable so you can re-pair it (ZHA "Add device" + ~5 s long-press on the
+# sensor) instead of silently losing data.
+#
+# MESH (corrected 2026-08-22, SlyTherm#192 §5d — this header used to say there
+# were no routers and to go buy one; there are two). Both Third Reality night
+# lights are mains-powered ZHA routers (logical_type 1), and both SNZB-02Ds are
+# parented through them — Dining Room at LQI 84 on the 2026-08-22 sweep. The
+# mesh has been clean: 0 unavailable events across all 97 ZHA entities in 10
+# days, and 0 USB re-enumerations of the coordinator in 12 days. No hardware
+# needed.
+#
+# NOTE on timing: ZHA only marks a *battery* device unavailable after a ~6 h
+# "not seen" timeout (consider_unavailable_battery), so these alerts land a few
+# hours after a real dropout — reliable, not instant.
+#
+# THIS IS NOW LOAD-BEARING (SlyTherm#192). The two ZHA rooms carry
+# `liveness: availability` in slytherm_sensors.yaml, so ZHA's availability
+# check — not report-age — is what gates them out of the thermostat's fusion.
+# A dead SNZB-02D therefore surfaces on the ~6 h timeout above, here and there
+# at once. Tempting knob, real trap: do NOT lower consider_unavailable_battery
+# to speed that up without first measuring these devices' true check-in cadence
+# (device last_seen, which advances on any received frame — NOT the value-change
+# age visible in the recorder). Set below the real cadence and both alerts flap,
+# which is the failure #192 fixed.
+#
+# Entities (from ZHA; auto-created, not defined here):
+#   sensor.sonoff_snzb_02d_temperature      Dining Room
+#   sensor.sonoff_snzb_02d_temperature_2    Main Bedroom
+
+automation:
+  - id: zigbee_snzb_unavailable_alert
+    alias: "Zigbee: SNZB-02D sensor unavailable"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.sonoff_snzb_02d_temperature
+          - sensor.sonoff_snzb_02d_temperature_2
+        to:
+          - unavailable
+          - unknown
+        for: "01:00:00"   # debounce HA-restart blips; healthy sensors re-check-in well under 1 h
+    variables:
+      who: >-
+        {% set m = {'sensor.sonoff_snzb_02d_temperature': 'Dining Room',
+                    'sensor.sonoff_snzb_02d_temperature_2': 'Main Bedroom'} %}
+        {{ m.get(trigger.entity_id, trigger.entity_id) }}
+    action:
+      - service: persistent_notification.create
+        data:
+          notification_id: "zigbee_unavail_{{ trigger.entity_id }}"
+          title: "📡 {{ who }} Zigbee sensor offline"
+          message: >-
+            The {{ who }} SNZB-02D has been unavailable for over an hour — it
+            likely dropped off the Zigbee mesh. Re-pair it: ZHA → Add device,
+            then long-press the sensor button ~5 s until the display (()) icon
+            blinks, and wait for it to go solid.
+      - service: notify.email
+        data:
+          title: "📡 {{ who }} Zigbee sensor offline"
+          target: dave@drscapital.com
+          message: >-
+            {{ who }} SNZB-02D dropped off the Zigbee mesh (unavailable > 1 h).
+            Re-pair via ZHA Add device + 5 s long-press on the sensor.
+    mode: parallel   # both sensors could alert independently
+
+  - id: zigbee_snzb_recovered
+    alias: "Zigbee: SNZB-02D sensor back online"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.sonoff_snzb_02d_temperature
+          - sensor.sonoff_snzb_02d_temperature_2
+        from:
+          - unavailable
+          - unknown
+    condition:
+      - "{{ trigger.to_state.state not in ['unavailable', 'unknown'] }}"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: "zigbee_unavail_{{ trigger.entity_id }}"
+    mode: parallel

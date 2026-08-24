@@ -1,24 +1,80 @@
 # slytherm_sensors.yaml — bridge Home Assistant room sensors into the SlyTherm
-# thermostat's live-sensor contract (issue #22, docs/06). This is the piece that
-# makes the wall unit's Sensors screen + "follow me" fusion show REAL rooms.
+# thermostat's live-sensor contract (issue #22/#88, docs/06). Makes the wall
+# unit's Sensors screen + "follow me" fusion + sticky home/away show REAL rooms.
+# Tracks the canonical ../Dettson/ha/packages/slytherm_sensors.yaml, wired to
+# Kazoo's real entities (kept: the Ecowitt outdoor-temp bridge, not in template).
 #
-# The thermostat fuses temperatures it receives on
-#   slytherm/sensors/<id>/state   {"temp": <°C>[, "occ": <bool>]}   non-retained, heartbeat
-# and only uses sensors listed in the retained roster
-#   slytherm/config/sensors       {"sensors":[{"id":"living","name":"Living Room","max_age_s":300,"offset":0.0}]}
-# For sticky home/away it also subscribes to a RETAINED presence topic (issue #88)
-#   slytherm/sensors/<id>/presence {"occupied": <bool>, "last_seen": <unix_s>}  retained
+# Contract:
+#   slytherm/sensors/<id>/state     {"temp":<°C>[,"occ":<bool>]}  non-retained, /30s heartbeat
+#   slytherm/config/sensors         {"sensors":[{"id","name","max_age_s","offset"}]}  retained
+#   slytherm/sensors/<id>/presence  {"occupied":<bool>,"last_seen":<unix_s>}  retained, /1min
+#   slytherm/cmd/outdoor_temp       <°C float>  retained (Kazoo Ecowitt bridge, below)
 #
-# Prereqs: HA's MQTT integration points at the same broker as the thermostat
-# (see ha/README.md → "Live sensors"). Then EDIT the `slytherm_rooms` list below
-# and reload automations. Occupancy (`occ`) is optional but powers the
-# occupancy-weighted "follow me" fusion — map a presence/motion/occupancy
-# binary_sensor per room where you have one.
+# Kazoo rooms → real sensors. Apollo MSR-2 = occupancy-only (DPS310 temp is
+# useless), so occ is paired with the room's real ambient temp sensor:
+#   basement  Hub2 temp         + Apollo 2d7920
+#   living    MeterPro CO2 temp + hall Apollo 4012d8
+#   dining    Dining SNZB temp  + hall Apollo 4012d8 (same unit)
+#   bedroom   Bedroom SNZB temp + Apollo 43faa4
+#
+# STALENESS GUARD (added 2026-08-03). The bridge used to republish
+# `states(entity)` every 30 s and skip only on unknown/unavailable. A BT/Zigbee
+# sensor that goes silent keeps its last state in HA forever, so the bridge kept
+# emitting a fresh-looking heartbeat and the thermostat's own `max_age_s: 900`
+# could never fire. Basement (Hub2) and Living (MeterPro CO2) both died on the
+# night of 2026-07-27 and fed the fusion a frozen value for six days unnoticed.
+#
+# Fix: gate the publish on `last_reported` age, NOT `last_changed` — a healthy
+# room sensor legitimately held one value for 21.5 h in the recorder, so
+# last_changed is not a liveness signal. last_reported advances on every state
+# write, changed or not (HA >= 2024.8). Going silent is the correct failure
+# mode: it lets the thermostat age the room out of fusion on its own terms.
+#
+# The threshold is input_number.slytherm_sensor_stale_min (default 45) and
+# sensor.slytherm_stale_room_sensors exposes each room's real age — watch it for
+# a day, then set the threshold above the worst healthy value.
+#
+# DEVICE-LEVEL LIVENESS (2026-08-07, issue #3). last_reported turned out to
+# advance ONLY on value changes on HA 2026.7 (verified: switchbot_cloud
+# coordinator refreshes, duplicate MQTT publishes and same-state REST writes
+# all leave it untouched), so gating on the temp entity alone false-fired
+# whenever a healthy room simply held a stable temperature (9-hour overnight
+# gaps on the SwitchBot sources; only the occupied bedroom stayed in fusion).
+# The gate now measures the freshest last_reported across each room's `live`
+# sibling entities (humidity / CO2 / battery — attributes that fluctuate), so
+# a stable-but-alive room keeps publishing while a dead device still goes
+# all-attributes-silent and is dropped inside the same 45-min threshold.
+#
+# PER-ROOM LIVENESS MODE (2026-08-22, SlyTherm#192). Report-age gating turned
+# out to be the wrong instrument for the two ZHA rooms. Over 10 days the gate
+# was hot 65.6% of minutes and produced 48 of the 51 phone pushes in 48 h,
+# flapping offline→OK every ~55 min, while ZHA logged ZERO unavailable events
+# across all 97 entities and the Zigbee coordinator never reset. Dining Room's
+# worst gap between value-changes on ANY sibling was 801.7 min — longer than
+# ZHA's own 6 h battery timeout, i.e. the device was demonstrably in radio
+# contact for 13.4 h while this guard counted it silent. No reachable slider
+# value could fix that (the helper's ceiling was 240).
+#
+# So each room now declares HOW it is judged, via `liveness:` in the roster:
+#   report        (default) freshest last_reported across `live` siblings,
+#                 compared to input_number.slytherm_sensor_stale_min. Right for
+#                 the cloud-backed rooms, where a wedged cloud can serve frozen
+#                 data from a dead device — the 2026-07-27 failure mode.
+#   availability  the integration's own availability check is the liveness
+#                 signal: alive unless the temp entity is unavailable/unknown.
+#                 Right for ZHA end devices, which have no cloud cache to
+#                 freeze behind — when they die they go unavailable.
+# Trade-off accepted knowingly (owner decision 2026-08-22): a genuinely dead
+# SNZB-02D now keeps feeding fusion until ZHA marks it unavailable
+# (consider_unavailable_battery, 6 h default) instead of stale_min. That is
+# slower than 45 min but faster than the only threshold that would have
+# silenced the false alarms (~900 min), so it beats the alternative on both
+# axes. Do NOT lower consider_unavailable_battery to compensate without first
+# measuring the devices' real check-in cadence — setting it below that
+# reintroduces exactly this flapping.
 
 automation:
-  # ---- Publish the retained roster: which HA sensors the thermostat may use ----
-  # Retained, so a thermostat that reconnects gets it immediately; also re-sent
-  # whenever the thermostat announces itself online (LWT availability).
+  # ---- Publish the retained roster: id / name / max_age / offset ----
   - id: slytherm_publish_sensor_roster
     alias: "SlyTherm · publish sensor roster"
     mode: single
@@ -29,31 +85,85 @@ automation:
         topic: slytherm/availability
         payload: online
     variables:
-      # ===================== EDIT ME: your rooms =====================
-      # id        topic-safe short id — the MQTT topic segment (wire), stays fixed
-      # name      (optional) friendly label shown on the wall unit; falls back to id
-      # temp      an HA sensor entity reading °C
-      # occ       (optional) a binary_sensor that is 'on' when occupied
-      # max_age_s drop from fusion if no update within this many seconds
-      # offset    (optional) calibration offset °C applied by the thermostat
+      # id  topic-safe short id (wire) | name  friendly wall-unit label
+      # temp  °C sensor | occ  binary_sensor 'on'=occupied | max_age_s | offset °C
+      # live: sibling MEASUREMENT entities on the same physical device — the
+      # liveness evidence for the staleness gate. On HA 2026.7 last_reported
+      # only advances when a value CHANGES (verified empirically: coordinator
+      # refreshes, duplicate MQTT publishes and same-state REST writes all
+      # leave it untouched), so a healthy room holding a stable temperature
+      # looks "silent" on the temp entity alone (issue #3). Humidity / CO2 /
+      # battery fluctuate far more than temperature, so the freshest report
+      # across the device is an honest "device alive" signal — while a truly
+      # dead device (the 2026-07-27 failure) goes silent on EVERY attribute
+      # and still gets gated within the same 45-min threshold.
+      # canary (switchbot_cloud rooms only): an entity whose VALUE cannot
+      # plausibly stay byte-identical for canary_max_min in a lived-in house
+      # (CO2 ppm, humidity %). Catches the "Hub 2 wedged but cloud serves
+      # cached data" mode (issue #3 follow-up, 2026-08-07: CO2 pinned at
+      # 1627 ppm for 10 h): sibling last_reported can look fresh — and a
+      # restart resets every last_reported clock — while ALL values are
+      # frozen. If the canary's last_changed exceeds canary_max_min the room
+      # is treated as wedged and gated, regardless of sibling freshness.
+      # Limitation: last_changed also resets on restart, so this check is
+      # blind for canary_max_min after a reboot. ZHA rooms need no canary —
+      # a dead Zigbee device goes silent on every attribute (no cloud cache).
+      # liveness: how this room is judged alive — 'report' (default, the
+      # last_reported logic above) or 'availability' (the integration's own
+      # availability check; ZHA rooms only). See the PER-ROOM LIVENESS MODE
+      # note in the header for why the ZHA rooms moved (SlyTherm#192).
       rooms: &slytherm_rooms
+        - id: basement
+          name: Basement
+          temp: sensor.kazoo_hub_temperature
+          live:
+            - sensor.kazoo_hub_temperature
+            - sensor.kazoo_hub_humidity
+          canary: sensor.kazoo_hub_humidity
+          canary_max_min: 360
+          occ: binary_sensor.apollo_msr_2_2d7920_radar_target
+          max_age_s: 900
+          offset: 0.0
         - id: living
           name: Living Room
-          temp: sensor.living_room_temperature
-          occ: binary_sensor.living_room_occupancy
-          max_age_s: 300
+          temp: sensor.co2_center_temperature
+          live:
+            - sensor.co2_center_temperature
+            - sensor.co2_center_humidity
+            - sensor.co2_center_carbon_dioxide
+            - sensor.co2_center_battery
+          canary: sensor.co2_center_carbon_dioxide
+          canary_max_min: 240
+          occ: binary_sensor.apollo_msr_2_4012d8_radar_target
+          max_age_s: 900
           offset: 0.0
         - id: bedroom
-          name: Bedroom
-          temp: sensor.bedroom_temperature
-          occ: binary_sensor.bedroom_occupancy
-          max_age_s: 300
+          name: Main Bedroom
+          temp: sensor.sonoff_snzb_02d_temperature_2
+          live:
+            - sensor.sonoff_snzb_02d_temperature_2
+            - sensor.sonoff_snzb_02d_humidity_2
+            - sensor.sonoff_snzb_02d_battery_2
+          # ZHA end device: judged by ZHA availability, not value-change
+          # age (SlyTherm#192). `live` is kept for the `ages` diagnostic.
+          liveness: availability
+          occ: binary_sensor.apollo_msr_2_43faa4_radar_target
+          max_age_s: 900
           offset: 0.0
-        # - id: office
-        #   name: Office
-        #   temp: sensor.office_temperature
-        #   max_age_s: 300
-      # ===============================================================
+        - id: dining
+          name: Dining Room
+          temp: sensor.sonoff_snzb_02d_temperature   # offline, self-heals
+          live:
+            - sensor.sonoff_snzb_02d_temperature
+            - sensor.sonoff_snzb_02d_humidity
+            - sensor.sonoff_snzb_02d_battery
+          # ZHA end device: judged by ZHA availability, not value-change
+          # age (SlyTherm#192 — 801.7 min between value-changes while the
+          # radio link was healthy). `live` kept for the `ages` diagnostic.
+          liveness: availability
+          occ: binary_sensor.apollo_msr_2_4012d8_radar_target
+          max_age_s: 900
+          offset: 0.0
     action:
       - service: mqtt.publish
         data:
@@ -70,7 +180,7 @@ automation:
             {%- endfor -%}
             ]}
 
-  # ---- Bridge each room sensor into the contract (heartbeat < max_age_s) ----
+  # ---- Bridge each room temp+occ into the contract (heartbeat < max_age_s) ----
   - id: slytherm_bridge_room_sensors
     alias: "SlyTherm · bridge room sensors"
     mode: single
@@ -85,8 +195,51 @@ automation:
           sequence:
             - variables:
                 t: "{{ states(repeat.item.temp) }}"
+                # Minutes since the source DEVICE last reported anything — the
+                # minimum last_reported age across the room's `live` entities
+                # (see roster note: temp alone stalls whenever the value is
+                # stable, because unchanged writes don't advance last_reported).
+                # A missing entity or null last_reported counts as dead.
+                age_min: >-
+                  {%- set r = repeat.item -%}
+                  {%- set ns = namespace(best=99999) -%}
+                  {%- if r.liveness | default('report') == 'availability' -%}
+                    {#- ZHA rooms: alive unless the integration says otherwise;
+                        0 = fresh, 99999 = gated whatever the threshold is. -#}
+                    {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
+                      {%- set ns.best = 0 -%}
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- for ent in r.live | default([r.temp]) -%}
+                      {%- set s = states[ent] -%}
+                      {%- if s is not none and s.last_reported is not none -%}
+                        {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+                        {%- if a < ns.best -%}{%- set ns.best = a -%}{%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {{ ns.best | round(1) }}
             - condition: template
               value_template: "{{ t not in ['unknown', 'unavailable', 'none', ''] }}"
+            # Stop feeding a sensor that has gone quiet. Silence is deliberate:
+            # the thermostat's max_age_s then drops the room from fusion rather
+            # than trusting a frozen reading. See the header note.
+            - condition: template
+              value_template: >-
+                {{ age_min | float(99999)
+                   <= states('input_number.slytherm_sensor_stale_min') | float(45) }}
+            # Wedged-device canary (see roster note): the canary's VALUE must
+            # have changed within canary_max_min or the room is gated even
+            # though sibling reports look fresh.
+            - condition: template
+              value_template: >-
+                {% if repeat.item.canary is not defined %} true
+                {% else %}
+                  {% set c = states[repeat.item.canary] %}
+                  {{ c is not none and
+                     (as_timestamp(now()) - as_timestamp(c.last_changed, 0)) / 60
+                       <= repeat.item.canary_max_min | default(360) }}
+                {% endif %}
             - service: mqtt.publish
               data:
                 topic: "slytherm/sensors/{{ repeat.item.id }}/state"
@@ -98,16 +251,10 @@ automation:
                   }
 
   # ---- Publish RETAINED presence per room (issue #88) ----
-  # The wall unit keeps a STICKY home/away state: it stays "Present" for 3 hours
-  # after the most recent last_seen across ALL rooms, then shows "Nobody home".
-  # Because this is RETAINED, a thermostat that reboots/reconnects seeds the
-  # last-known presence immediately (people home -> "Present" at boot, not
-  # "Nobody home"). Only rooms with an `occ` entity are published.
-  #   slytherm/sensors/<id>/presence  {"occupied":<bool>,"last_seen":<unix_s>}  retained
-  # occupied  = the room's current occupancy state
-  # last_seen = unix seconds of the most recent presence: now() while 'on', else
-  #             when the sensor last went 'off' (last_changed). The 1-min
-  #             heartbeat keeps it fresh and re-seeds the retained value.
+  # Sticky home/away: the wall unit stays "Present" for 3 h after the most recent
+  # last_seen across all rooms. Retained so a reconnecting thermostat seeds the
+  # last-known presence. Only rooms with an `occ` entity are published.
+  # last_seen = now() while 'on', else when occ last went 'off' (last_changed).
   - id: slytherm_publish_presence
     alias: "SlyTherm · publish room presence (retained)"
     mode: single
@@ -126,7 +273,10 @@ automation:
           for_each: "{{ rooms }}"
           sequence:
             - condition: template
-              value_template: "{{ repeat.item.occ is defined and repeat.item.occ }}"
+              # occ is an entity-id STRING; `x is defined and x` renders to that
+              # string, which HA's condition engine reads as false. Compare so the
+              # template yields a real boolean.
+              value_template: "{{ repeat.item.occ | default('') != '' }}"
             - service: mqtt.publish
               data:
                 topic: "slytherm/sensors/{{ repeat.item.id }}/presence"
@@ -135,3 +285,223 @@ automation:
                   {"occupied":{{ 'true' if is_state(repeat.item.occ, 'on') else 'false' }},
                   "last_seen":{{ (as_timestamp(now()) if is_state(repeat.item.occ, 'on')
                   else as_timestamp(states[repeat.item.occ].last_changed, as_timestamp(now()))) | int(0) }}}
+
+  # ---- Feed HA's Ecowitt outdoor temperature to the thermostat (Kazoo-only) ----
+  # Retained bare °C float; refreshed on Ecowitt change / HA start / thermostat
+  # online / 5-min backstop. Skips unavailable/unknown.
+  - id: slytherm_publish_outdoor_temp
+    alias: "SlyTherm · publish outdoor temp"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.hp2564bu_pro_v2_0_3_outdoor_temperature
+      - platform: homeassistant
+        event: start
+      - platform: mqtt
+        topic: slytherm/availability
+        payload: online
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hp2564bu_pro_v2_0_3_outdoor_temperature')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+    action:
+      - service: mqtt.publish
+        data:
+          topic: slytherm/cmd/outdoor_temp
+          retain: true
+          payload: >-
+            {{ states('sensor.hp2564bu_pro_v2_0_3_outdoor_temperature') | float }}
+
+  # ---- Alert when a room temp sensor stops reporting ----
+  # esp_availability_alerts.yaml only catches entities that go 'unavailable'.
+  # These sensors don't — they go quiet while holding a plausible value, which
+  # is exactly why the 2026-07-27 failure ran six days unnoticed. Fires on the
+  # staleness count, not on availability.
+  - id: slytherm_room_sensor_stale_alert
+    alias: "SlyTherm · room temp sensor offline"
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.slytherm_stale_room_sensors
+        above: 0
+        for: "00:10:00"   # ride out a reboot / momentary BT-proxy hiccup
+    action:
+      - service: persistent_notification.create
+        data:
+          notification_id: slytherm_sensor_stale
+          title: "🌡️ SlyTherm room sensor offline"
+          message: >-
+            Not reporting: {{ state_attr('sensor.slytherm_stale_room_sensors', 'stale') }}.
+
+            Dropped from the thermostat's fused temperature until they return —
+            heating/cooling now follows the remaining rooms.
+
+            Ages: {{ state_attr('sensor.slytherm_stale_room_sensors', 'ages') }}
+      - service: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🌡️ SlyTherm room sensor offline"
+          message: >-
+            {{ state_attr('sensor.slytherm_stale_room_sensors', 'stale') }}
+            stopped reporting — dropped from fusion.
+
+  - id: slytherm_room_sensor_recovered
+    alias: "SlyTherm · room temp sensor recovered"
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.slytherm_stale_room_sensors
+        below: 1
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: slytherm_sensor_stale
+      - service: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🌡️ SlyTherm room sensors OK"
+          message: "All room temp sensors are reporting again."
+
+input_number:
+  # Minutes of silence before a room sensor is considered dead. Applies to
+  # rooms in the default `report` liveness mode only — rooms marked
+  # `liveness: availability` in the roster ignore it (see the header note).
+  # Tune from sensor.slytherm_stale_room_sensors' `ages` attribute: set it
+  # comfortably above the worst age a HEALTHY sensor reaches, or the bridge
+  # will drop good rooms. Measured over 10 days: Living Room max 34.7 min,
+  # Basement max 383.9 min (Basement is currently participating=off).
+  #
+  # NO `initial:` — deliberately (SlyTherm#192). For input_number, a defined
+  # `initial:` OVERRIDES state restoration, so HA forced this helper back to 45
+  # on every restart and silently reverted kazoo-home-assistant#4's set_value
+  # to 180. The recorder showed it plainly: every write in a 10-day window was
+  # 45.0 and every one landed at an HA start event. Without `initial:` the
+  # helper restores its last value across restarts; on a fresh install it comes
+  # up unknown and all three consumers (the bridge condition and the two
+  # template blocks below — verified 2026-08-22, nothing outside this file
+  # reads the helper) fall back to `| float(45)`, i.e. exactly
+  # today's behaviour. Set the value once via input_number.set_value — editing
+  # this block alone does NOT change the restored value.
+  slytherm_sensor_stale_min:
+    name: SlyTherm room sensor stale after
+    min: 5
+    max: 1440   # was 240: below Dining's real tail, so no slider value worked
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:timer-alert
+
+template:
+  # Diagnostic + trigger source for the offline alert. Re-renders every minute.
+  # `state` = how many rooms are stale; `ages` shows every room's real reporting
+  # age, which is the data needed to tune the threshold above.
+  - trigger:
+      - platform: time_pattern
+        minutes: "/1"
+      - platform: homeassistant
+        event: start
+    variables:
+      rooms: *slytherm_rooms
+    sensor:
+      - name: "SlyTherm stale room sensors"
+        unique_id: slytherm_stale_room_sensors
+        icon: mdi:thermometer-alert
+        unit_of_measurement: rooms
+        # Rooms with fusion participation OFF are skipped (kazoo-home-assistant#5:
+        # a room the thermostat isn't using shouldn't page anyone). Only literal
+        # 'off' skips — unavailable/unknown fail open so a dead thermostat↔HA
+        # link can't silence real sensor-death alerts.
+        state: >-
+          {%- set limit = states('input_number.slytherm_sensor_stale_min') | float(45) -%}
+          {%- set ns = namespace(n=0) -%}
+          {%- for r in rooms -%}
+            {%- set part = states('binary_sensor.slytherm_climatetalk_thermostat_slytherm_sensor_' ~ r.id ~ '_participating') -%}
+            {%- if part != 'off' -%}
+              {%- set rr = namespace(best=99999) -%}
+              {%- if r.liveness | default('report') == 'availability' -%}
+                {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
+                  {%- set rr.best = 0 -%}
+                {%- endif -%}
+              {%- else -%}
+                {%- for ent in r.live | default([r.temp]) -%}
+                  {%- set s = states[ent] -%}
+                  {%- if s is not none and s.last_reported is not none -%}
+                    {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+                    {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- if rr.best > limit -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.n }}
+        attributes:
+          stale: >-
+            {%- set limit = states('input_number.slytherm_sensor_stale_min') | float(45) -%}
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in rooms -%}
+              {%- set part = states('binary_sensor.slytherm_climatetalk_thermostat_slytherm_sensor_' ~ r.id ~ '_participating') -%}
+              {%- if part != 'off' -%}
+                {%- set rr = namespace(best=99999) -%}
+                {%- if r.liveness | default('report') == 'availability' -%}
+                  {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
+                    {%- set rr.best = 0 -%}
+                  {%- endif -%}
+                {%- else -%}
+                  {%- for ent in r.live | default([r.temp]) -%}
+                    {%- set s = states[ent] -%}
+                    {%- if s is not none and s.last_reported is not none -%}
+                      {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+                      {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- if rr.best > limit -%}{%- set ns.out = ns.out + [r.name] -%}{%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out | join(', ') if ns.out else 'none' }}
+          # Rooms currently alert-exempt because participation is off.
+          excluded: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in rooms -%}
+              {%- if states('binary_sensor.slytherm_climatetalk_thermostat_slytherm_sensor_' ~ r.id ~ '_participating') == 'off' -%}
+                {%- set ns.out = ns.out + [r.name] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out | join(', ') if ns.out else 'none' }}
+          # Rooms whose canary VALUE hasn't changed within canary_max_min —
+          # wedged-cloud-data suspects, gated by the bridge (see roster note).
+          wedged: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in rooms if r.canary is defined -%}
+              {%- set c = states[r.canary] -%}
+              {%- set age = 99999 if c is none else
+                   (as_timestamp(now()) - as_timestamp(c.last_changed, 0)) / 60 -%}
+              {%- if age > r.canary_max_min | default(360) -%}
+                {%- set ns.out = ns.out + [r.name ~ ' (canary ' ~ (age/60) | round(1) ~ 'h)'] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out | join(', ') if ns.out else 'none' }}
+          # device age = freshest report across the room's `live` entities;
+          # temp age kept alongside so cadence tuning stays visible. These are
+          # RAW report ages for every room, including the `liveness:
+          # availability` ones — those are tagged [zha-avail] and their ages are
+          # diagnostic only, not what gates them (SlyTherm#192).
+          ages: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in rooms -%}
+              {%- set rr = namespace(best=99999) -%}
+              {%- for ent in r.live | default([r.temp]) -%}
+                {%- set s = states[ent] -%}
+                {%- if s is not none and s.last_reported is not none -%}
+                  {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+                  {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set ts = states[r.temp] -%}
+              {%- set tage = 99999 if ts is none else
+                   ((as_timestamp(now()) - as_timestamp(ts.last_reported, 0)) / 60) | round(1) -%}
+              {%- set tag = ' [zha-avail]' if r.liveness | default('report') == 'availability' else '' -%}
+              {%- set ns.out = ns.out + [r.name ~ ' dev ' ~ rr.best | round(1) ~ 'm / temp ' ~ tage ~ 'm' ~ tag] -%}
+            {%- endfor -%}
+            {{ ns.out | join(' | ') }}

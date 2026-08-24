@@ -1,0 +1,254 @@
+--- a/packages/slytherm_sensors.yaml
++++ b/packages/slytherm_sensors.yaml
+@@ -44,6 +44,34 @@
+ # sibling entities (humidity / CO2 / battery — attributes that fluctuate), so
+ # a stable-but-alive room keeps publishing while a dead device still goes
+ # all-attributes-silent and is dropped inside the same 45-min threshold.
++#
++# PER-ROOM LIVENESS MODE (2026-08-22, SlyTherm#192). Report-age gating turned
++# out to be the wrong instrument for the two ZHA rooms. Over 10 days the gate
++# was hot 65.6% of minutes and produced 48 of the 51 phone pushes in 48 h,
++# flapping offline→OK every ~55 min, while ZHA logged ZERO unavailable events
++# across all 97 entities and the Zigbee coordinator never reset. Dining Room's
++# worst gap between value-changes on ANY sibling was 801.7 min — longer than
++# ZHA's own 6 h battery timeout, i.e. the device was demonstrably in radio
++# contact for 13.4 h while this guard counted it silent. No reachable slider
++# value could fix that (the helper's ceiling was 240).
++#
++# So each room now declares HOW it is judged, via `liveness:` in the roster:
++#   report        (default) freshest last_reported across `live` siblings,
++#                 compared to input_number.slytherm_sensor_stale_min. Right for
++#                 the cloud-backed rooms, where a wedged cloud can serve frozen
++#                 data from a dead device — the 2026-07-27 failure mode.
++#   availability  the integration's own availability check is the liveness
++#                 signal: alive unless the temp entity is unavailable/unknown.
++#                 Right for ZHA end devices, which have no cloud cache to
++#                 freeze behind — when they die they go unavailable.
++# Trade-off accepted knowingly (owner decision 2026-08-22): a genuinely dead
++# SNZB-02D now keeps feeding fusion until ZHA marks it unavailable
++# (consider_unavailable_battery, 6 h default) instead of stale_min. That is
++# slower than 45 min but faster than the only threshold that would have
++# silenced the false alarms (~900 min), so it beats the alternative on both
++# axes. Do NOT lower consider_unavailable_battery to compensate without first
++# measuring the devices' real check-in cadence — setting it below that
++# reintroduces exactly this flapping.
+ 
+ automation:
+   # ---- Publish the retained roster: id / name / max_age / offset ----
+@@ -80,6 +108,10 @@
+       # Limitation: last_changed also resets on restart, so this check is
+       # blind for canary_max_min after a reboot. ZHA rooms need no canary —
+       # a dead Zigbee device goes silent on every attribute (no cloud cache).
++      # liveness: how this room is judged alive — 'report' (default, the
++      # last_reported logic above) or 'availability' (the integration's own
++      # availability check; ZHA rooms only). See the PER-ROOM LIVENESS MODE
++      # note in the header for why the ZHA rooms moved (SlyTherm#192).
+       rooms: &slytherm_rooms
+         - id: basement
+           name: Basement
+@@ -112,6 +144,9 @@
+             - sensor.sonoff_snzb_02d_temperature_2
+             - sensor.sonoff_snzb_02d_humidity_2
+             - sensor.sonoff_snzb_02d_battery_2
++          # ZHA end device: judged by ZHA availability, not value-change
++          # age (SlyTherm#192). `live` is kept for the `ages` diagnostic.
++          liveness: availability
+           occ: binary_sensor.apollo_msr_2_43faa4_radar_target
+           max_age_s: 900
+           offset: 0.0
+@@ -122,6 +157,10 @@
+             - sensor.sonoff_snzb_02d_temperature
+             - sensor.sonoff_snzb_02d_humidity
+             - sensor.sonoff_snzb_02d_battery
++          # ZHA end device: judged by ZHA availability, not value-change
++          # age (SlyTherm#192 — 801.7 min between value-changes while the
++          # radio link was healthy). `live` kept for the `ages` diagnostic.
++          liveness: availability
+           occ: binary_sensor.apollo_msr_2_4012d8_radar_target
+           max_age_s: 900
+           offset: 0.0
+@@ -162,14 +201,23 @@
+                 # stable, because unchanged writes don't advance last_reported).
+                 # A missing entity or null last_reported counts as dead.
+                 age_min: >-
+-                  {% set ns = namespace(best=99999) %}
+-                  {% for ent in repeat.item.live | default([repeat.item.temp]) %}
+-                    {% set s = states[ent] %}
+-                    {% if s is not none and s.last_reported is not none %}
+-                      {% set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 %}
+-                      {% if a < ns.best %}{% set ns.best = a %}{% endif %}
+-                    {% endif %}
+-                  {% endfor %}
++                  {%- set r = repeat.item -%}
++                  {%- set ns = namespace(best=99999) -%}
++                  {%- if r.liveness | default('report') == 'availability' -%}
++                    {#- ZHA rooms: alive unless the integration says otherwise;
++                        0 = fresh, 99999 = gated whatever the threshold is. -#}
++                    {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
++                      {%- set ns.best = 0 -%}
++                    {%- endif -%}
++                  {%- else -%}
++                    {%- for ent in r.live | default([r.temp]) -%}
++                      {%- set s = states[ent] -%}
++                      {%- if s is not none and s.last_reported is not none -%}
++                        {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
++                        {%- if a < ns.best -%}{%- set ns.best = a -%}{%- endif -%}
++                      {%- endif -%}
++                    {%- endfor -%}
++                  {%- endif -%}
+                   {{ ns.best | round(1) }}
+             - condition: template
+               value_template: "{{ t not in ['unknown', 'unavailable', 'none', ''] }}"
+@@ -316,18 +364,32 @@
+           message: "All room temp sensors are reporting again."
+ 
+ input_number:
+-  # Minutes of silence before a room sensor is considered dead. Tune from
+-  # sensor.slytherm_stale_room_sensors' `ages` attribute: set it comfortably
+-  # above the worst age a HEALTHY sensor reaches, or the bridge will drop good
+-  # rooms. 45 is a starting guess, not a measured value.
++  # Minutes of silence before a room sensor is considered dead. Applies to
++  # rooms in the default `report` liveness mode only — rooms marked
++  # `liveness: availability` in the roster ignore it (see the header note).
++  # Tune from sensor.slytherm_stale_room_sensors' `ages` attribute: set it
++  # comfortably above the worst age a HEALTHY sensor reaches, or the bridge
++  # will drop good rooms. Measured over 10 days: Living Room max 34.7 min,
++  # Basement max 383.9 min (Basement is currently participating=off).
++  #
++  # NO `initial:` — deliberately (SlyTherm#192). For input_number, a defined
++  # `initial:` OVERRIDES state restoration, so HA forced this helper back to 45
++  # on every restart and silently reverted kazoo-home-assistant#4's set_value
++  # to 180. The recorder showed it plainly: every write in a 10-day window was
++  # 45.0 and every one landed at an HA start event. Without `initial:` the
++  # helper restores its last value across restarts; on a fresh install it comes
++  # up unknown and all three consumers (the bridge condition and the two
++  # template blocks below — verified 2026-08-22, nothing outside this file
++  # reads the helper) fall back to `| float(45)`, i.e. exactly
++  # today's behaviour. Set the value once via input_number.set_value — editing
++  # this block alone does NOT change the restored value.
+   slytherm_sensor_stale_min:
+     name: SlyTherm room sensor stale after
+     min: 5
+-    max: 240
++    max: 1440   # was 240: below Dining's real tail, so no slider value worked
+     step: 5
+     unit_of_measurement: min
+     icon: mdi:timer-alert
+-    initial: 45
+ 
+ template:
+   # Diagnostic + trigger source for the offline alert. Re-renders every minute.
+@@ -356,13 +418,19 @@
+             {%- set part = states('binary_sensor.slytherm_climatetalk_thermostat_slytherm_sensor_' ~ r.id ~ '_participating') -%}
+             {%- if part != 'off' -%}
+               {%- set rr = namespace(best=99999) -%}
+-              {%- for ent in r.live | default([r.temp]) -%}
+-                {%- set s = states[ent] -%}
+-                {%- if s is not none and s.last_reported is not none -%}
+-                  {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+-                  {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
++              {%- if r.liveness | default('report') == 'availability' -%}
++                {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
++                  {%- set rr.best = 0 -%}
+                 {%- endif -%}
+-              {%- endfor -%}
++              {%- else -%}
++                {%- for ent in r.live | default([r.temp]) -%}
++                  {%- set s = states[ent] -%}
++                  {%- if s is not none and s.last_reported is not none -%}
++                    {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
++                    {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
++                  {%- endif -%}
++                {%- endfor -%}
++              {%- endif -%}
+               {%- if rr.best > limit -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+             {%- endif -%}
+           {%- endfor -%}
+@@ -375,13 +443,19 @@
+               {%- set part = states('binary_sensor.slytherm_climatetalk_thermostat_slytherm_sensor_' ~ r.id ~ '_participating') -%}
+               {%- if part != 'off' -%}
+                 {%- set rr = namespace(best=99999) -%}
+-                {%- for ent in r.live | default([r.temp]) -%}
+-                  {%- set s = states[ent] -%}
+-                  {%- if s is not none and s.last_reported is not none -%}
+-                    {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
+-                    {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
++                {%- if r.liveness | default('report') == 'availability' -%}
++                  {%- if states(r.temp) not in ['unknown', 'unavailable', 'none', ''] -%}
++                    {%- set rr.best = 0 -%}
+                   {%- endif -%}
+-                {%- endfor -%}
++                {%- else -%}
++                  {%- for ent in r.live | default([r.temp]) -%}
++                    {%- set s = states[ent] -%}
++                    {%- if s is not none and s.last_reported is not none -%}
++                      {%- set a = (as_timestamp(now()) - as_timestamp(s.last_reported, 0)) / 60 -%}
++                      {%- if a < rr.best -%}{%- set rr.best = a -%}{%- endif -%}
++                    {%- endif -%}
++                  {%- endfor -%}
++                {%- endif -%}
+                 {%- if rr.best > limit -%}{%- set ns.out = ns.out + [r.name] -%}{%- endif -%}
+               {%- endif -%}
+             {%- endfor -%}
+@@ -409,7 +483,10 @@
+             {%- endfor -%}
+             {{ ns.out | join(', ') if ns.out else 'none' }}
+           # device age = freshest report across the room's `live` entities;
+-          # temp age kept alongside so cadence tuning stays visible.
++          # temp age kept alongside so cadence tuning stays visible. These are
++          # RAW report ages for every room, including the `liveness:
++          # availability` ones — those are tagged [zha-avail] and their ages are
++          # diagnostic only, not what gates them (SlyTherm#192).
+           ages: >-
+             {%- set ns = namespace(out=[]) -%}
+             {%- for r in rooms -%}
+@@ -424,6 +501,7 @@
+               {%- set ts = states[r.temp] -%}
+               {%- set tage = 99999 if ts is none else
+                    ((as_timestamp(now()) - as_timestamp(ts.last_reported, 0)) / 60) | round(1) -%}
+-              {%- set ns.out = ns.out + [r.name ~ ' dev ' ~ rr.best | round(1) ~ 'm / temp ' ~ tage ~ 'm'] -%}
++              {%- set tag = ' [zha-avail]' if r.liveness | default('report') == 'availability' else '' -%}
++              {%- set ns.out = ns.out + [r.name ~ ' dev ' ~ rr.best | round(1) ~ 'm / temp ' ~ tage ~ 'm' ~ tag] -%}
+             {%- endfor -%}
+             {{ ns.out | join(' | ') }}
+--- a/packages/zigbee_sensors.yaml
++++ b/packages/zigbee_sensors.yaml
+@@ -1,15 +1,31 @@
+ # zigbee_sensors.yaml — availability alerts for the Zigbee (ZHA) room sensors.
+ #
+-# Both SONOFF SNZB-02D temp/humidity sensors talk directly to the ZHA
+-# coordinator (SONOFF ZBDongle-E on kdocker2) — no Zigbee routers in the mesh
+-# yet, so a dropped end device can't rejoin on its own. This package alerts
+-# when a sensor goes unavailable so you can re-pair it (ZHA "Add device" +
+-# ~5 s long-press on the sensor) instead of silently losing data.
++# Both SONOFF SNZB-02D temp/humidity sensors report to the ZHA coordinator
++# (SONOFF ZBDongle-E on kdocker2). This package alerts when a sensor goes
++# unavailable so you can re-pair it (ZHA "Add device" + ~5 s long-press on the
++# sensor) instead of silently losing data.
++#
++# MESH (corrected 2026-08-22, SlyTherm#192 §5d — this header used to say there
++# were no routers and to go buy one; there are two). Both Third Reality night
++# lights are mains-powered ZHA routers (logical_type 1), and both SNZB-02Ds are
++# parented through them — Dining Room at LQI 84 on the 2026-08-22 sweep. The
++# mesh has been clean: 0 unavailable events across all 97 ZHA entities in 10
++# days, and 0 USB re-enumerations of the coordinator in 12 days. No hardware
++# needed.
+ #
+ # NOTE on timing: ZHA only marks a *battery* device unavailable after a ~6 h
+ # "not seen" timeout (consider_unavailable_battery), so these alerts land a few
+-# hours after a real dropout — reliable, not instant. A mains-powered Zigbee
+-# router near the sensors would cut dropouts and speed detection.
++# hours after a real dropout — reliable, not instant.
++#
++# THIS IS NOW LOAD-BEARING (SlyTherm#192). The two ZHA rooms carry
++# `liveness: availability` in slytherm_sensors.yaml, so ZHA's availability
++# check — not report-age — is what gates them out of the thermostat's fusion.
++# A dead SNZB-02D therefore surfaces on the ~6 h timeout above, here and there
++# at once. Tempting knob, real trap: do NOT lower consider_unavailable_battery
++# to speed that up without first measuring these devices' true check-in cadence
++# (device last_seen, which advances on any received frame — NOT the value-change
++# age visible in the recorder). Set below the real cadence and both alerts flap,
++# which is the failure #192 fixed.
+ #
+ # Entities (from ZHA; auto-created, not defined here):
+ #   sensor.sonoff_snzb_02d_temperature      Dining Room
