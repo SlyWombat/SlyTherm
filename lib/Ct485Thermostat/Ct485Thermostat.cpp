@@ -338,6 +338,19 @@ void Ct485Thermostat::onFrame(const Frame& f, uint32_t nowMs) {
     case static_cast<uint8_t>(MsgType::kSetControlCmd) | kResponseFlag:
       handleControlResponse(f, nowMs);
       return;
+    case static_cast<uint8_t>(MsgType::kSetDiagnostics): {
+      // #195: equipment fault push. Only the coordinator speaks here, and we
+      // take it whatever the dst says — in observer mode the frame is addressed
+      // to the OEM thermostat, and a fault is a fault. Store and stay silent:
+      // no ACK, no state change, nothing that could delay a demand.
+      if (f.src != kAddrCoordinator) { unexpected_++; return; }
+      const DiagnosticsPush d = decodeDiagnosticsPush(f);
+      if (!d.ok) { unexpected_++; return; }
+      faultPushes_++;
+      fault_.seq++;
+      fault_.d = d;
+      return;
+    }
     default:
       // Probe answer: response msgType = the outstanding Get | kResponseFlag
       // (docs/02 §4). Stored raw for offline decode; like any answer it

@@ -1177,6 +1177,102 @@ static void test_probe_whitelist_and_silent_gates() {
   TEST_ASSERT_FALSE(t.probePending());
 }
 
+
+// ---------- #195 equipment fault push (Set Diagnostics 0x05) ----------
+// Payloads are the real ones off this bus: 3x HPC OPEN and 2x LPC OPEN on
+// 2026-07-09, REVERSED PLTY on 2026-08-22, each followed by an all-clear.
+static Frame coFaultPush(uint8_t codeA, uint8_t codeB, const char* text,
+                         uint8_t declaredLen = 0xFF, uint8_t dst = kAddrThermostat) {
+  Frame f;
+  f.dst = dst;
+  f.src = kAddrCoordinator;
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kCoordinator);
+  f.msgType = static_cast<uint8_t>(MsgType::kSetDiagnostics);
+  const size_t n = std::strlen(text);
+  f.payload[0] = 0x02;
+  f.payload[1] = codeA;
+  f.payload[2] = codeB;
+  f.payload[3] = declaredLen == 0xFF ? static_cast<uint8_t>(n) : declaredLen;
+  std::memcpy(f.payload + 4, text, n);
+  f.payloadLen = static_cast<uint8_t>(4 + n);
+  return f;
+}
+
+static void test_fault_push_decoded_and_never_answered() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_EQUAL_UINT32(0, t.lastFault().seq);
+
+  t.onFrame(coFaultPush(0x00, 0x57, "HPC OPEN"), now);
+  TEST_ASSERT_EQUAL_UINT32(1, t.lastFault().seq);
+  TEST_ASSERT_EQUAL_UINT32(1, t.faultPushes());
+  TEST_ASSERT_TRUE(t.lastFault().d.ok);
+  TEST_ASSERT_EQUAL_STRING("HPC OPEN", t.lastFault().d.text);
+  TEST_ASSERT_EQUAL_UINT8(0x57, t.lastFault().d.codeB);
+  TEST_ASSERT_EQUAL_UINT8(0x00, t.lastFault().d.codeA);
+  TEST_ASSERT_FALSE(t.lastFault().d.cleared);
+  TEST_ASSERT_FALSE(t.lastFault().d.truncated);
+  // Read-only channel: a push must never produce a frame, ever.
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+  TEST_ASSERT_EQUAL(0, drain(t));
+
+  // REVERSED PLTY populates the OTHER code slot (#194) — both are reported.
+  t.onFrame(coFaultPush(0x26, 0x00, "REVERSED PLTY"), now);
+  TEST_ASSERT_EQUAL_UINT8(0x26, t.lastFault().d.codeA);
+  TEST_ASSERT_EQUAL_UINT8(0x00, t.lastFault().d.codeB);
+  TEST_ASSERT_EQUAL_STRING("REVERSED PLTY", t.lastFault().d.text);
+
+  // The all-clear: no codes, no text.
+  t.onFrame(coFaultPush(0x00, 0x00, ""), now);
+  TEST_ASSERT_EQUAL_UINT32(3, t.lastFault().seq);
+  TEST_ASSERT_TRUE(t.lastFault().d.cleared);
+  TEST_ASSERT_EQUAL_STRING("", t.lastFault().d.text);
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+}
+
+static void test_fault_push_seen_while_silent_and_addressed_elsewhere() {
+  // The point of the feature: observer mode. Never joined, still silent, and
+  // the frame is addressed to the OEM thermostat rather than to us.
+  Ct485Thermostat t(baseCfg());
+  TEST_ASSERT_TRUE(t.silent());
+  TEST_ASSERT_FALSE(t.addressed());
+  t.onFrame(coFaultPush(0x00, 0x45, "LPC OPEN", 0xFF, /*dst=*/0x01), 1000);
+  TEST_ASSERT_EQUAL_UINT32(1, t.lastFault().seq);
+  TEST_ASSERT_EQUAL_STRING("LPC OPEN", t.lastFault().d.text);
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+  TEST_ASSERT_TRUE(t.silent());
+}
+
+static void test_fault_push_bounds_a_lying_length_and_ignores_impostors() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  // declaredLen says 200, only 8 bytes arrived: copy what exists, flag it.
+  t.onFrame(coFaultPush(0x00, 0x57, "HPC OPEN", /*declaredLen=*/200), now);
+  TEST_ASSERT_TRUE(t.lastFault().d.truncated);
+  TEST_ASSERT_EQUAL_STRING("HPC OPEN", t.lastFault().d.text);
+  TEST_ASSERT_EQUAL_UINT8(200, t.lastFault().d.declaredLen);
+
+  // Not from the coordinator: not a fault. Counted as unexpected, not stored.
+  const uint32_t seq = t.lastFault().seq;
+  Frame impostor = coFaultPush(0x00, 0x57, "HPC OPEN");
+  impostor.src = 0x07;
+  t.onFrame(impostor, now);
+  TEST_ASSERT_EQUAL_UINT32(seq, t.lastFault().seq);
+
+  // Prefix shorter than 4 bytes: rejected, nothing stored.
+  Frame runt;
+  runt.dst = kAddrThermostat;
+  runt.src = kAddrCoordinator;
+  runt.msgType = static_cast<uint8_t>(MsgType::kSetDiagnostics);
+  runt.payload[0] = 0x02;
+  runt.payloadLen = 1;
+  t.onFrame(runt, now);
+  TEST_ASSERT_EQUAL_UINT32(seq, t.lastFault().seq);
+  TEST_ASSERT_EQUAL_UINT32(0, t.txPending());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_boot_silent_no_demands_no_tx);
@@ -1228,5 +1324,8 @@ int main() {
   RUN_TEST(test_probe_timeout_is_quiet_never_comms_loss);    // #184
   RUN_TEST(test_probe_never_preempts_a_demand);              // #184
   RUN_TEST(test_probe_whitelist_and_silent_gates);           // #184
+  RUN_TEST(test_fault_push_decoded_and_never_answered);      // #195
+  RUN_TEST(test_fault_push_seen_while_silent_and_addressed_elsewhere);
+  RUN_TEST(test_fault_push_bounds_a_lying_length_and_ignores_impostors);
   return UNITY_END();
 }

@@ -165,6 +165,21 @@ class Ct485Thermostat {
   const ProbeResult& lastProbe() const { return probeResult_; }
   uint32_t probeTimeouts() const { return probeTimeouts_; }
 
+  // ---- Equipment fault push (#195) ----
+  // The furnace pushes Set Diagnostics (0x05) carrying a human-readable fault
+  // and, ~90 s later, an all-clear. We store the latest and never answer it:
+  // this node stays read-only on that channel (docs/04 §1 never babble).
+  // Captured from the COORDINATOR regardless of dst, so it works while silent
+  // or unaddressed — the whole point is that observer mode can see equipment
+  // faults. Five real trips (3x HPC OPEN, 2x LPC OPEN on 2026-07-09) went
+  // unnoticed before this existed.
+  struct FaultPush {
+    uint32_t seq = 0;   // increments per stored push; 0 = never seen
+    DiagnosticsPush d;  // decoded + bounded; d.cleared marks the all-clear
+  };
+  const FaultPush& lastFault() const { return fault_; }
+  uint32_t faultPushes() const { return faultPushes_; }
+
   // ---- Alarms ----
   // pairing latches until clearAlarms() (it needs a human: two masters on one
   // bus). comms-loss and starvation are CONDITIONS, not events: both describe
@@ -283,6 +298,8 @@ class Ct485Thermostat {
   uint32_t     txDropped_  = 0;
 
   ProbeResult  probeResult_;           // last answered probe (#184)
+  FaultPush    fault_;                 // last equipment fault push (#195)
+  uint32_t     faultPushes_ = 0;       // total pushes seen (asserts + clears)
   bool         probeQueued_  = false;  // queued or outstanding; one at a time
   uint32_t     probeTimeouts_ = 0;     // unanswered probes (quiet drops)
 };

@@ -181,4 +181,58 @@ struct Frame {
   size_t totalLen() const { return kHeaderLen + payloadLen + kChecksumLen; }
 };
 
+// ---------- Equipment fault push: Set Diagnostics 0x05 (docs/02 §5b, #195) ----------
+// The furnace PUSHES a human-readable fault to the thermostat node, unprompted
+// — nobody has to poll for it. Every 0x05 content frame in the archive:
+//
+//   02 00 57 08 "HPC OPEN"        high-pressure switch open  (2026-07-09 x3)
+//   02 00 45 08 "LPC OPEN"        low-pressure switch open   (2026-07-09 x2)
+//   02 26 00 0d "REVERSED PLTY"   reversed polarity (#194)   (2026-08-22)
+//   02 00 00 00                   the all-clear, ~90 s later
+//
+// Four-byte prefix, payload[3] = string length. The two code slots move
+// INDEPENDENTLY — payload[1] carried 0x26 for REVERSED PLTY (matching the Get
+// Status alarm byte) while payload[2] carried 0x57/0x45 for the pressure trips
+// with payload[1] zero. That reads as two code spaces, so both are reported
+// verbatim and neither is collapsed into "the" code until more samples land
+// (docs/02 confidence rule). declaredLen is off the wire and may lie; the text
+// copy is bounded by what actually arrived, never by what was claimed.
+struct DiagnosticsPush {
+  bool    ok          = false;  // a 4-byte prefix was present
+  uint8_t sub         = 0;      // payload[0]; 0x02 in every capture so far
+  uint8_t codeA       = 0;      // payload[1]
+  uint8_t codeB       = 0;      // payload[2]
+  uint8_t declaredLen = 0;      // payload[3] as claimed on the wire
+  char    text[41]    = {};     // NUL-terminated, non-printables -> '.'
+  uint8_t textLen     = 0;      // bytes actually copied into text
+  bool    truncated   = false;  // declaredLen ran past the payload
+  bool    cleared     = false;  // no codes, no text: the fault went away
+};
+
+inline DiagnosticsPush decodeDiagnosticsPush(const Frame& f) {
+  DiagnosticsPush d;
+  size_t pl = f.payloadLen;
+  if (pl > kMaxPayload) pl = kMaxPayload;   // the length byte can lie
+  if (pl < 4) return d;                     // no prefix: nothing to say
+  d.ok          = true;
+  d.sub         = f.payload[0];
+  d.codeA       = f.payload[1];
+  d.codeB       = f.payload[2];
+  d.declaredLen = f.payload[3];
+  const size_t avail = pl - 4;
+  size_t n = d.declaredLen;
+  if (n > avail) { n = avail; d.truncated = true; }
+  if (n > sizeof(d.text) - 1) { n = sizeof(d.text) - 1; d.truncated = true; }
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t c = f.payload[4 + i];
+    d.text[i] = (c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '.';
+  }
+  d.textLen = static_cast<uint8_t>(n);
+  while (d.textLen > 0 && d.text[d.textLen - 1] == ' ')  // captures pad with spaces
+    d.text[--d.textLen] = '\0';
+  d.text[d.textLen] = '\0';
+  d.cleared = d.codeA == 0 && d.codeB == 0 && d.textLen == 0;
+  return d;
+}
+
 }  // namespace ct485

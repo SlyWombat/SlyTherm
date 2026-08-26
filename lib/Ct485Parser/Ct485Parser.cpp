@@ -313,6 +313,20 @@ std::string summarize(const Frame& f) {
   } else if (f.msgType ==
              (static_cast<uint8_t>(MsgType::kGetDiagnostics) | kResponseFlag)) {
     for (const auto& s : decodeDiagnostics(f)) out += "  fault: " + s + "\n";
+  } else if (f.msgType == static_cast<uint8_t>(MsgType::kSetDiagnostics)) {
+    // #195: the furnace's unprompted fault push. Codes are reported verbatim —
+    // the two slots are separate code spaces until more samples say otherwise.
+    const DiagnosticsPush d = decodeDiagnosticsPush(f);
+    if (d.ok) {
+      if (d.cleared) {
+        out += "  fault cleared\n";
+      } else {
+        out += fmt("  fault push code_a=0x%02X code_b=0x%02X len=%u%s: \"%s\"\n",
+                   static_cast<unsigned>(d.codeA), static_cast<unsigned>(d.codeB),
+                   static_cast<unsigned>(d.declaredLen),
+                   d.truncated ? " TRUNCATED" : "", d.text);
+      }
+    }
   } else if (f.msgType ==
              (static_cast<uint8_t>(MsgType::kGetSensorData) | kResponseFlag)) {
     const SensorDataDecode d = decodeSensorData(f);

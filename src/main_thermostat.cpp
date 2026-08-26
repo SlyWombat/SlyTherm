@@ -326,6 +326,10 @@ struct Snapshot {
   // chars + wrapper); probeSeq keys the publish dedup (0 = none yet).
   uint32_t probeSeq = 0;
   char probeJson[560] = "{}";
+  // #195 last equipment fault push (Set Diagnostics 0x05). Retained, because a
+  // fault that asserted before HA connected must still be visible on connect.
+  uint32_t faultSeq = 0;
+  char faultJson[128] = "{}";
 #ifdef SLYTHERM_ACTUATOR_RELAY
   char relaysJson[80] = "{}";  // Case B diagnostic (docs/06 topic map)
 #endif
@@ -1614,6 +1618,16 @@ void publishSnapshot(bool force) {
     if (s.probeSeq != 0 && s.probeSeq != sPubbedSeq) {
       gMqtt.publish("slytherm/state/furnace_probe", s.probeJson, false);
       sPubbedSeq = s.probeSeq;
+    }
+  }
+  {  // #195: equipment fault pushes. RETAINED — an assert that happened before
+     // HA connected still has to be visible on connect, and the all-clear
+     // overwrites it. Republished on `force` so a bridge that lost the retain
+     // (see the availability note above) cannot strand a stale fault.
+    static uint32_t sPubbedFaultSeq = 0;
+    if (s.faultSeq != 0 && (force || s.faultSeq != sPubbedFaultSeq)) {
+      gMqtt.publish("slytherm/state/equipment_fault", s.faultJson, true);
+      sPubbedFaultSeq = s.faultSeq;
     }
   }
   // health/fault/last_error RETAINED: HA's problem binary_sensor + last_error
@@ -3053,6 +3067,36 @@ void fillSnapshot(const FusedTemp& fused, const OatReading& oat, const DemandSet
     }
     s.probeSeq = pr.seq;
     strlcpy(s.probeJson, sProbeJson, sizeof(s.probeJson));
+  }
+  {  // #195: the furnace's fault push, decoded (Ct485Core::decodeDiagnosticsPush)
+    const ct485::Ct485Thermostat::FaultPush& fp = gCt->lastFault();
+    static uint32_t sEncodedFaultSeq = 0;
+    static char sFaultJson[sizeof(s.faultJson)] = "{}";
+    if (fp.seq != sEncodedFaultSeq) {
+      if (fp.d.cleared) {
+        snprintf(sFaultJson, sizeof(sFaultJson),
+                 "{\"active\":false,\"seq\":%lu,\"n\":%lu}",
+                 static_cast<unsigned long>(fp.seq),
+                 static_cast<unsigned long>(gCt->faultPushes()));
+      } else {
+        char esc[sizeof(fp.d.text)];  // text is already printable-sanitized;
+        size_t j = 0;                 // quotes/backslashes still need escaping
+        for (size_t i = 0; fp.d.text[i] && j + 2 < sizeof(esc); i++) {
+          if (fp.d.text[i] == '"' || fp.d.text[i] == '\\') esc[j++] = '\\';
+          esc[j++] = fp.d.text[i];
+        }
+        esc[j] = '\0';
+        snprintf(sFaultJson, sizeof(sFaultJson),
+                 "{\"active\":true,\"text\":\"%s\",\"code_a\":\"0x%02X\","
+                 "\"code_b\":\"0x%02X\",\"truncated\":%s,\"seq\":%lu,\"n\":%lu}",
+                 esc, fp.d.codeA, fp.d.codeB, fp.d.truncated ? "true" : "false",
+                 static_cast<unsigned long>(fp.seq),
+                 static_cast<unsigned long>(gCt->faultPushes()));
+      }
+      sEncodedFaultSeq = fp.seq;
+    }
+    s.faultSeq = fp.seq;
+    strlcpy(s.faultJson, sFaultJson, sizeof(s.faultJson));
   }
   xSemaphoreGive(gCtMux);
 
