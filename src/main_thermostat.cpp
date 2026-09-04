@@ -1958,14 +1958,34 @@ void sniffFrame(const ct485::Frame& f) {
   if (!gSniffActive) return;
   gSniffFrames = gSniffFrames + 1;
   const unsigned long ms = millis();
-  char line[96];
-  int n = snprintf(line, sizeof(line), "%lu %02X>%02X t%02X l%u",
-                   ms, f.src, f.dst, f.msgType, f.payloadLen);
+  // Full header on every RX line (#204), same sn/sm/sp/nt/pk layout as
+  // mirrorTxFrame() so both streams parse identically. These five bytes are not
+  // decoration: sp (sendParamHi) IS the Set Control Command code, and pk
+  // (packetNum) carries kPktNumDataflowBit, the flag that marks an R2R/token
+  // frame. Without them a token frame and a real demand are indistinguishable
+  // once archived — which is how 94% of received t03 came to be read as
+  // commands. They cannot be backfilled; frames logged before this change are
+  // missing them for good.
+  char line[128];
+  int n = snprintf(line, sizeof(line),
+                   "%lu %02X>%02X t%02X l%u sn%02X sm%02X sp%02X nt%02X pk%02X",
+                   ms, f.src, f.dst, f.msgType, f.payloadLen,
+                   f.subnet, f.sendMethod, f.sendParamHi, f.srcNodeType,
+                   f.packetNum);
   int nb = f.payloadLen; if (nb > 16) nb = 16;
   for (int i = 0; i < nb && n < (int)sizeof(line) - 3; ++i)
     n += snprintf(line + n, sizeof(line) - n, " %02X", f.payload[i]);
   telnet_log::logf("[ct485] %s", line);
-  strlcpy(gSniffRing[gSniffHead].s, line, sizeof(gSniffRing[0].s));
+  // The on-screen ring is 56 chars and exists to be read by a human at a
+  // glance, so it keeps the old compact shape — header block omitted, payload
+  // preview intact. Built separately rather than truncating `line`, which would
+  // now spend the whole budget on the header and show no payload at all.
+  char ui[sizeof(gSniffRing[0].s)];
+  int u = snprintf(ui, sizeof(ui), "%lu %02X>%02X t%02X l%u",
+                   ms, f.src, f.dst, f.msgType, f.payloadLen);
+  for (int i = 0; i < nb && u > 0 && u < (int)sizeof(ui) - 3; ++i)
+    u += snprintf(ui + u, sizeof(ui) - u, " %02X", f.payload[i]);
+  strlcpy(gSniffRing[gSniffHead].s, ui, sizeof(gSniffRing[0].s));
   gSniffHead = (gSniffHead + 1) % 10;
   // Payload bytes past the 16-byte preview go out as continuation lines
   // ("[ct485+] <same millis> <chunk#> <hex...>", 24 B/chunk under the

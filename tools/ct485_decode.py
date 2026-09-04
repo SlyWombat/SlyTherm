@@ -286,14 +286,26 @@ LONG_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
 # Wall-unit telnet mirror (ct485cap.py): "[ct485] <millis> <SS>><DD> t<TT> l<N> <hex...>",
 # optionally prefixed with an ISO wall-clock stamp. Pre-parsed summary, not a raw
-# frame: header metadata beyond src/dst/msgType is absent and the preview line
-# clips payloads at 16 bytes (main_thermostat.cpp sniffFrame). Firmware >= 0.5.2
+# frame: the preview line clips payloads at 16 bytes
+# (main_thermostat.cpp sniffFrame). Firmware >= 0.5.2
 # follows the preview with "[ct485+]" payload-continuation chunks, mirrors
 # gap-framing rejects (torn/merged bursts) as raw "[ct485-rej]" chunks, and
 # emits periodic "[ct485-stats]" counter lines.
+#
+# SlyTherm #204 adds the rest of the header to the RX line, matching the
+# long-standing [ct485-tx] layout:
+#   "[ct485] <ms> <SS>><DD> t<TT> l<N> sn<..> sm<..> sp<..> nt<..> pk<..> <hex...>"
+# sp is the Set Control Command code and pk carries the R2R dataflow bit, so
+# without them a token frame and a real demand are indistinguishable. The block
+# is OPTIONAL here so one parser reads both eras of the archive; when absent the
+# fields stay zero-filled, as they were for every frame captured before the
+# firmware change. They cannot be backfilled.
 SUMMARY_RE = re.compile(
     r"\[ct485\]\s+(\d+)\s+([0-9A-Fa-f]{2})>([0-9A-Fa-f]{2})"
-    r"\s+t([0-9A-Fa-f]{2})\s+l(\d+)((?:\s+[0-9A-Fa-f]{2})*)\s*$")
+    r"\s+t([0-9A-Fa-f]{2})\s+l(\d+)"
+    r"(?:\s+sn([0-9A-Fa-f]{2})\s+sm([0-9A-Fa-f]{2})\s+sp([0-9A-Fa-f]{2})"
+    r"\s+nt([0-9A-Fa-f]{2})\s+pk([0-9A-Fa-f]{2}))?"
+    r"((?:\s+[0-9A-Fa-f]{2})*)\s*$")
 CONT_RE = re.compile(r"\[ct485\+\]\s+(\d+)\s+(\d+)((?:\s+[0-9A-Fa-f]{2})+)\s*$")
 REJ_RE = re.compile(r"\[ct485-rej\]\s+(\d+)\s+(\d+)((?:\s+[0-9A-Fa-f]{2})+)\s*$")
 STATS_RE = re.compile(r"\[ct485-stats\]\s")
@@ -321,13 +333,24 @@ def parse_summary_line(line: str) -> Frame | None:
     if not m:
         return None
     declared = int(m.group(5))
-    payload = bytes(int(t, 16) for t in m.group(6).split())
+    payload = bytes(int(t, 16) for t in m.group(11).split())
+
+    # Groups 6-10 are the #204 header block: present on frames captured by
+    # firmware that logs it, absent (None) on the whole earlier archive.
+    def _hdr(g: int) -> int:
+        v = m.group(g)
+        return int(v, 16) if v else 0
+
     header = bytes((
         int(m.group(3), 16),          # dst
         int(m.group(2), 16),          # src
-        0, 0, 0, 0, 0,                # subnet/sendMethod/param/nodeType: not mirrored
+        _hdr(6),                      # subnet
+        _hdr(7),                      # sendMethod
+        _hdr(8),                      # sendParamHi -- the Set Control command code
+        0,                            # sendParamLo: still not mirrored
+        _hdr(9),                      # srcNodeType
         int(m.group(4), 16),          # msgType
-        0,                            # packetNum: not mirrored
+        _hdr(10),                     # packetNum -- carries the R2R dataflow bit
         len(payload)))
     ts_ms = _parse_iso_ms(line)
     if ts_ms is None:

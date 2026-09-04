@@ -442,3 +442,34 @@ def test_telnet_rej_burst_recovers_merged_frames(tmp_path):
     assert [f.raw for f in frames] == [REAL_HEAT_60, REAL_HEAT_ACK]
     assert stats.garbage_bytes == 0
     assert not frames[0].synthesized  # rej bytes are the real wire bytes
+
+
+def test_summary_line_without_header_block_still_parses():
+    """Every frame captured before SlyTherm #204 lacks the sn/sm/sp/nt/pk block.
+    It must keep parsing, with those fields zero-filled as they always were."""
+    line = "2026-09-04T10:09:53 [ct485] 405461567 FF>07 t00 l16 " + \
+           " ".join(f"{b:02X}" for b in bytes(range(16)))
+    f = d.parse_summary_line(line)
+    assert f is not None
+    assert f.raw[0] == 0x07 and f.raw[1] == 0xFF     # dst, src
+    assert f.raw[7] == 0x00                          # msgType
+    assert f.raw[2:7] == b"\x00" * 5                 # subnet..srcNodeType absent
+    assert f.raw[8] == 0x00                          # packetNum absent
+    assert f.synthesized
+
+
+def test_summary_line_with_header_block_populates_header():
+    """#204: sp is the Set Control command code and pk carries the R2R dataflow
+    bit — the two fields that tell a real demand from a token frame."""
+    line = ("2026-09-04T11:00:00 [ct485] 405461567 FF>01 t03 l4 "
+            "sn02 sm01 sp65 nt01 pk80 65 00 10 3C")
+    f = d.parse_summary_line(line)
+    assert f is not None
+    assert f.raw[0] == 0x01 and f.raw[1] == 0xFF     # dst, src
+    assert f.raw[2] == 0x02                          # subnet
+    assert f.raw[3] == 0x01                          # sendMethod
+    assert f.raw[4] == 0x65                          # sendParamHi = COOL_DEMAND
+    assert f.raw[6] == 0x01                          # srcNodeType
+    assert f.raw[7] == 0x03                          # msgType = SET_CONTROL
+    assert f.raw[8] == 0x80                          # packetNum, dataflow bit set
+    assert f.raw[10:14] == bytes((0x65, 0x00, 0x10, 0x3C))
