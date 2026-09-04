@@ -302,14 +302,35 @@ def ensure_model() -> None:
     log.info("model %s ready", MODEL)
 
 
+def ollama_generate(prompt: str, num_ctx: int) -> str:
+    """One /api/generate round-trip, returning the raw response text.
+
+    think=false is required by the qwen3 family: with thinking left on, ollama
+    puts the reasoning in a separate "thinking" field and hands back an EMPTY
+    "response", which surfaced as an opaque JSONDecodeError. Older ollama
+    builds reject the key outright, so retry once without it.
+    """
+    body = {
+        "model": MODEL, "prompt": prompt, "stream": False, "format": "json",
+        "think": False,
+        "options": {"temperature": 0.2, "num_ctx": num_ctx},
+    }
+    resp = requests.post(f"{OLLAMA_URL}/api/generate", json=body,
+                         timeout=OLLAMA_TIMEOUT_S)
+    if resp.status_code == 400 and "think" in resp.text.lower():
+        body.pop("think")
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json=body,
+                             timeout=OLLAMA_TIMEOUT_S)
+    resp.raise_for_status()
+    raw = (resp.json().get("response") or "").strip()
+    if not raw:
+        raise ValueError(f"ollama returned an empty response (model={MODEL})")
+    return raw
+
+
 def ask_llm(digest: dict) -> dict:
     prompt = PROMPT_TEMPLATE.format(digest=jdumps(digest, indent=1))
-    resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-        "model": MODEL, "prompt": prompt, "stream": False, "format": "json",
-        "options": {"temperature": 0.2, "num_ctx": 8192},
-    }, timeout=OLLAMA_TIMEOUT_S)
-    resp.raise_for_status()
-    answer = json.loads(resp.json()["response"])
+    answer = json.loads(ollama_generate(prompt, 16384))
     # strict shape check
     for key in ("expected_cooling_hours", "expected_heating_hours",
                 "peak_window", "confidence", "recommendation"):

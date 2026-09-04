@@ -30,9 +30,8 @@ import os
 import time
 
 import psycopg
-import requests
 
-from predictor import MODEL, OLLAMA_TIMEOUT_S, OLLAMA_URL, connect_db, jdumps, q
+from predictor import MODEL, connect_db, jdumps, ollama_generate, q
 
 log = logging.getLogger("confidence")
 
@@ -134,12 +133,7 @@ def ask_llm(bucket: str, m: dict) -> tuple[int, str]:
     numbers = {k: v for k, v in m.items() if k not in ("window_start", "window_end")}
     prompt = PROMPT_TEMPLATE.format(bucket=bucket, temp_truth=m["temp_truth"],
                                     numbers=jdumps(numbers, indent=1))
-    resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-        "model": MODEL, "prompt": prompt, "stream": False, "format": "json",
-        "options": {"temperature": 0.2, "num_ctx": 4096},
-    }, timeout=OLLAMA_TIMEOUT_S)
-    resp.raise_for_status()
-    answer = json.loads(resp.json()["response"])
+    answer = json.loads(ollama_generate(prompt, 4096))
     conf = round(float(answer["confidence"]))
     if not 0 <= conf <= 100:
         raise ValueError(f"confidence out of range: {answer['confidence']!r}")

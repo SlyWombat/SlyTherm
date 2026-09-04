@@ -109,7 +109,9 @@ services:
     container_name: slylog-ollama
     restart: unless-stopped
     # NO host port published: 11434 is already in use on kdocker2.
-    # The predictor reaches it as http://ollama:11434 on the compose network.
+    # Reachable as http://ollama:11434 on the compose network. Kept as the
+    # fallback inference host — the predictor now points at kdocker3 by
+    # default (see OLLAMA_URL below).
     volumes:
       - ${DATA_DIR:-/data/slylog}/ollama:/root/.ollama
 
@@ -123,8 +125,17 @@ services:
       ollama:
         condition: service_started
     environment:
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      # kdocker3 (192.168.10.38) carries the GPU ollama with the 30B-class
+      # models. Addressed by IP on purpose: container DNS on this box cannot
+      # resolve the `kdocker3` hostname. To fall back to the local sidecar,
+      # override OLLAMA_URL=http://ollama:11434 in the stack env file.
+      #
+      # OLLAMA_MODEL is literal, NOT ${OLLAMA_MODEL:-...}: the stack env file
+      # still pins the old qwen2.5:7b-instruct, and a literal here wins over
+      # it. Drop that stale line when convenient, then this can go back to a
+      # ${...} default.
+      OLLAMA_URL: ${OLLAMA_URL:-http://192.168.10.38:11434}
+      OLLAMA_MODEL: qwen3.6:35b-a3b
       PREDICT_INTERVAL_H: ${PREDICT_INTERVAL_H:-4}
       OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-900}
       # weather-source confidence review (#141): daily, staggered 30 min after
