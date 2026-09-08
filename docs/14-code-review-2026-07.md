@@ -192,9 +192,11 @@ and the Remote violates it. **Fix:** mirror the Controller — UI hooks set a pe
   tests + the embedded compile set.
 - **Unpinned `lib_deps`** (ArduinoJson/PubSubClient/OneWire/lvgl carets) → CI cache vs fresh
   local checkout silently build different code for the same tag. Pin exact versions.
-- **The 2026-07-15 stale-mirror incident root cause is still live** in `ota_mirror_sync.sh:38`
+- ~~**The 2026-07-15 stale-mirror incident root cause is still live** in `ota_mirror_sync.sh:38`
   (`[ -s "$f" ] && continue` + no sha256 verify against the catalog). Verify every asset's sha256
-  after catalog sync and re-fetch on mismatch. · issue #170
+  after catalog sync and re-fetch on mismatch.~~ · issue #170 — **fixed 2026-09-08 (#206,
+  `ota_mirror_sync.sh` 2.0.0):** every catalog-named image is size+sha256-verified each pass and
+  re-fetched on mismatch; first live pass quarantined a wrong `remote-p4-vpn-1.4.6.app.bin`.
 - **Nothing prevents re-publishing a tag's assets** (`release.yml:92-101`, no "release exists"
   guard) — a workflow re-run recreates the incident. Add a `gh release view … && exit 1` guard.
   · issue #170

@@ -120,6 +120,37 @@ WiFi + broker within ~5 min); failure or a #80 reset-loop-latch trip while
 pending → `esp_ota_set_boot_partition(previous)` + reboot. Result recorded to
 NVS for the UI.
 
+## 6a. LAN mirror (kdocker2 `:8090`) — the path the fleet actually uses
+
+The fleet does not fetch from GitHub. `slytherm/cmd/ota_mirror` pointed every
+node at `http://192.168.10.12:8090`, and the device rewrites the catalog's
+`appUrl` to `<mirror>/<basename>`. The mirror is mandatory, not a convenience:
+the P4 remotes need its `Range` support and pacing to survive a download
+(#182), and it is the only place an unreleased image can be staged.
+
+```
+ GitHub raw catalog.json + release assets
+        │  ota-mirror-sync.service (systemd, watchdog, Restart=always)
+        │  every 5 min: catalog → merge overlay.d/*.json → verify every
+        │  image by size+sha256 → status.json
+        ▼
+ /data/stacks/ota-mirror/mirror  ──►  nginx container (Range, limit_rate)  ──►  fleet
+        ▲
+ ota-mirror-freshness.timer (15 min) reads status.json; a dead, wedged or
+ hour-stale sync pages through the house OnFailure handler.
+```
+
+Everything about it — ownership split with house IT, the hold / overlay /
+status.json contract, runbooks for release day, bench staging and diagnostic
+builds, install and migration — is in
+[`deploy/ota-mirror/README.md`](../deploy/ota-mirror/README.md) (#206).
+Script: `tools/ota_mirror_sync.sh`. Two rules that came out of #206:
+
+- **Read `status.json` before touching the sync.** `state: held` with a reason
+  is deliberate; restarting it once wiped a device's only OTA path (2026-09-04).
+- **Never hand-edit `catalog.json` on the mirror.** Put the signed target in
+  `overlay.d/`; it survives every sync and is visible in `status.json`.
+
 ## 7. Safety (the wall unit controls a gas appliance — docs/04)
 
 Non-negotiable gates for `wall-s3` (`remote-p4` exempt; it has no furnace):

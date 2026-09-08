@@ -1,0 +1,8 @@
+[Unit]
+Description=SlyTherm LAN OTA mirror freshness check (serving is not the same as serving current)
+Documentation=https://github.com/SlyWombat/SlyTherm/blob/main/deploy/ota-mirror/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ota_mirror_check.sh http://127.0.0.1:8090
