@@ -155,7 +155,8 @@ std::string decodeOneLiner(const uint8_t* raw, size_t len) {
                   ct485::msgTypeName(f.msgType);
   if (f.baseMsgType() == static_cast<uint8_t>(ct485::MsgType::kSetControlCmd)) {
     const ct485::SetControlDecode sc = ct485::decodeSetControl(f);
-    s += " cmd=" + (sc.hasCommand ? sc.command : std::string("(none)"));
+    s += sc.isDataflow ? std::string(" dataflow")
+                       : " cmd=" + (sc.hasCommand ? sc.command : std::string("(none)"));
     if (sc.isSystemSwitch && sc.hasSwitchValue) s += "->" + sc.switchName;
   }
   return s;

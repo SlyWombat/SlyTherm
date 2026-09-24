@@ -236,6 +236,84 @@ static void test_non_set_control_rejected() {
   TEST_ASSERT_FALSE(d.varB.valid);
 }
 
+// ---------- #204: dataflow frames and demand range ----------
+
+// Real frame, 2026-09-21 11:00:37, the furnace's reply to a HEAT_DEMAND:
+// [ct485] 02>FF t03 l17 sn02 sm01 sp64 nt02 pkA0 06 A5 0E DC 92 89 48 B8 31 02 0C 65 DC F9 DA 0F (+1B)
+// Before #204 this decoded as a 110% demand (0xDC at [13]).
+static void test_dataflow_frame_is_not_a_command() {
+  Frame f = mkFrame(0x03, {0x06, 0xA5, 0x0E, 0xDC, 0x92, 0x89, 0x48, 0xB8, 0x31,
+                           0x02, 0x0C, 0x65, 0xDC, 0xF9, 0xDA, 0x0F, 0x1B},
+                    0x64);
+  f.src = 0x02;
+  f.dst = kAddrCoordinator;
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kGasFurnace);
+  f.packetNum = kPktNumDataflowBit | kPktNumVersionBit;  // pkA0
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_TRUE(d.isSetControl);  // still msgType 0x03...
+  TEST_ASSERT_TRUE(d.isDataflow);    // ...but not a command
+  TEST_ASSERT_FALSE(d.hasCommand);
+  TEST_ASSERT_FALSE(d.isDemand);
+  TEST_ASSERT_FALSE(d.isSystemSwitch);
+  TEST_ASSERT_FALSE(d.varA.valid);
+  TEST_ASSERT_FALSE(d.varB.valid);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, d.varA.demandPct);
+  const std::string s = summarize(f);
+  TEST_ASSERT_TRUE(contains(s, "not a command"));
+  TEST_ASSERT_FALSE(contains(s, "110"));
+  TEST_ASSERT_FALSE(contains(s, "demand candidates"));
+}
+
+// The coordinator's form, same exchange (response direction):
+// [ct485] FF>02 t83 l17 sn02 sm01 sp64 ntA5 pkA0 06 00 00 0C 01 62 8A 71 E9 01 D7 34 76 02 D4 EA (+B8)
+static void test_dataflow_response_frame_is_not_a_command() {
+  Frame f = mkFrame(0x83, {0x06, 0x00, 0x00, 0x0C, 0x01, 0x62, 0x8A, 0x71, 0xE9,
+                           0x01, 0xD7, 0x34, 0x76, 0x02, 0xD4, 0xEA, 0xB8},
+                    0x64);
+  f.srcNodeType = 0xA5;  // coordinator
+  f.packetNum = kPktNumDataflowBit | kPktNumVersionBit;
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_TRUE(d.isResponse);
+  TEST_ASSERT_TRUE(d.isDataflow);
+  TEST_ASSERT_FALSE(d.hasCommand);
+  TEST_ASSERT_FALSE(d.varA.valid);
+}
+
+// The real command of that exchange, dataflow bit clear:
+// [ct485] FF>02 t03 l4 sn02 sm01 sp64 nt01 pk20 64 00 60 78
+static void test_real_command_passes_dataflow_gate() {
+  Frame f = mkFrame(0x03, {0x64, 0x00, 0x60, 0x78}, 0x64);
+  f.packetNum = kPktNumVersionBit;  // pk20
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_FALSE(d.isDataflow);
+  TEST_ASSERT_TRUE(d.hasCommand);
+  TEST_ASSERT_TRUE(d.isDemand);
+  TEST_ASSERT_TRUE(d.varA.valid);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 60.0f, d.varA.demandPct);
+  TEST_ASSERT_FALSE(d.varA.outOfRange);
+}
+
+static void test_demand_out_of_range_flagged() {
+  Frame f = mkFrame(0x03, {0x64, 0x00, 0x60, 0xDC}, 0x64);  // 0xDC = 220 -> 110%
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_TRUE(d.varA.valid);
+  TEST_ASSERT_TRUE(d.varA.outOfRange);
+  TEST_ASSERT_TRUE(contains(summarize(f), "OUT OF RANGE"));
+  Frame top = mkFrame(0x03, {0x64, 0x00, 0x60, 0xC8}, 0x64);  // 0xC8 = 100%: in spec
+  TEST_ASSERT_FALSE(decodeSetControl(top).varA.outOfRange);
+}
+
+static void test_non_demand_command_has_no_candidates() {
+  // SUBSYSTEM_BUSY carries 61 00 60 00: shaped like a demand, but it is not one.
+  Frame f = mkFrame(0x03, {0x61, 0x00, 0x60, 0x00}, 0x01,
+                    static_cast<uint8_t>(SendMethod::kByNodeType));
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_TRUE(d.hasCommand);
+  TEST_ASSERT_FALSE(d.isDemand);
+  TEST_ASSERT_FALSE(d.varA.valid);
+  TEST_ASSERT_FALSE(contains(summarize(f), "demand candidates"));
+}
+
 // ---------- SYSTEM_SWITCH_MODIFY ----------
 
 static void test_system_switch_decode() {
@@ -461,6 +539,11 @@ int main() {
   RUN_TEST(test_subsystem_busy_routed_by_node_type);
   RUN_TEST(test_set_control_response_flag);
   RUN_TEST(test_non_set_control_rejected);
+  RUN_TEST(test_dataflow_frame_is_not_a_command);
+  RUN_TEST(test_dataflow_response_frame_is_not_a_command);
+  RUN_TEST(test_real_command_passes_dataflow_gate);
+  RUN_TEST(test_demand_out_of_range_flagged);
+  RUN_TEST(test_non_demand_command_has_no_candidates);
   RUN_TEST(test_system_switch_decode);
   RUN_TEST(test_system_switch_unknown_value);
   RUN_TEST(test_system_switch_missing_value);

@@ -48,6 +48,7 @@ struct DemandCandidate {
   uint8_t demandRaw = 0;
   float demandPct = 0.0f;   // raw / 2.0 (reported as-is, no clamping — parser
                             //  surfaces, control modules clamp)
+  bool outOfRange = false;  // raw > 200, i.e. above 100%: out of spec (#204)
   uint8_t timerMinutes = 0; // high nibble
   uint8_t timerUnits = 0;   // low nibble, 3.75 s units
   float timerTotalS = 0.0f;
@@ -56,6 +57,11 @@ struct DemandCandidate {
 struct SetControlDecode {
   bool isSetControl = false;  // baseMsgType == 0x03; everything below invalid otherwise
   bool isResponse = false;
+  // #204: packetNum's dataflow bit marks the 17-byte ACK/session frame
+  // (06 A5 0E DC ... / 06 00 00 0C ...) that rides under every msgType,
+  // including 0x03. When set the frame carries no command: hasCommand stays
+  // false and neither demand candidate is valid.
+  bool isDataflow = false;
   // The command code is payload[0], frame [10], on every capture (#209). It is
   // NOT sendParamHi: that byte depends on sendMethod (see SendMethod).
   bool hasCommand = false;    // payload[0] present
@@ -76,6 +82,9 @@ struct SetControlDecode {
   uint8_t switchRaw = 0;
   bool switchKnown = false;
   std::string switchName;
+  // True for the demand commands (0x60, 0x62-0x69). The candidates below are
+  // read only for these; any other command leaves both invalid.
+  bool isDemand = false;
   // BOTH provisional demand layouts (docs/02 §5a: [12]/[13] vs [13]/[14]).
   DemandCandidate varA;
   DemandCandidate varB;

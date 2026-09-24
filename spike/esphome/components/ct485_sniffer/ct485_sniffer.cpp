@@ -54,7 +54,7 @@ void Ct485Sniffer::on_valid_frame_() {
   last_decode_ = head;
   if (f.baseMsgType() == 0x03) {
     const auto d = ct485::decodeSetControl(f);
-    last_decode_ += " cmd=" + d.command;
+    last_decode_ += d.isDataflow ? " dataflow" : " cmd=" + d.command;
     if (d.varA.valid)
       last_decode_ += " A:" + std::to_string(static_cast<int>(d.varA.demandPct)) + "%";
     if (d.varB.valid)

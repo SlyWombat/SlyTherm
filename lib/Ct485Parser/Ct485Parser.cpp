@@ -98,10 +98,31 @@ DemandCandidate readCandidate(const Frame& f, size_t payloadLen,
   c.timerRaw = f.payload[timerIdx];
   c.demandRaw = f.payload[valueIdx];
   c.demandPct = static_cast<float>(c.demandRaw) / 2.0f;
+  c.outOfRange = c.demandRaw > 200;  // pct*2 spans 0-200 (docs/02 §5a)
   c.timerMinutes = static_cast<uint8_t>(c.timerRaw >> 4);
   c.timerUnits = static_cast<uint8_t>(c.timerRaw & 0x0F);
   c.timerTotalS = c.timerMinutes * 60.0f + c.timerUnits * 3.75f;
   return c;
+}
+
+// Commands whose payload carries (timer, demand): the same set the PC-side
+// decoder gates on (PCT_DEMAND_CMDS in tools/ct485_decode.py) plus FAN_DEMAND,
+// which has an extra mode byte before its percent.
+bool isDemandCommand(uint8_t command) {
+  switch (static_cast<Command>(command)) {
+    case Command::kDamperPosition:
+    case Command::kDehumDemand:
+    case Command::kHumDemand:
+    case Command::kHeatDemand:
+    case Command::kCoolDemand:
+    case Command::kFanDemand:
+    case Command::kBackupHeatDemand:
+    case Command::kDefrostDemand:
+    case Command::kAuxHeatDemand:
+      return true;
+    default:
+      return false;
+  }
 }
 
 }  // namespace
@@ -137,12 +158,13 @@ SetControlDecode decodeSetControl(const Frame& f) {
   d.isResponse = f.isResponse();
   d.sendMethod = f.sendMethod;
   d.sendParamHi = f.sendParamHi;
+  d.isDataflow = (f.packetNum & kPktNumDataflowBit) != 0;
 
   // #209: the command is payload[0]. The collector learned the same lesson
   // (e38cddc, "opcode is 1 byte"): frame [11] is 0x00 on every real command,
   // so there is no 16-bit code to assemble.
   const size_t pl = effectivePayloadLen(f);
-  if (pl >= 1) {
+  if (pl >= 1 && !d.isDataflow) {
     d.hasCommand = true;
     d.commandCode = f.payload[0];
     d.command = commandName(d.commandCode);
@@ -165,9 +187,13 @@ SetControlDecode decodeSetControl(const Frame& f) {
   }
 
   // Both provisional layouts, always reported side by side (docs/02 §5a:
-  // the parser surfaces the ambiguity; resolution comes from captures).
-  d.varA = readCandidate(f, pl, kDemandTimerOffsetVarA, kDemandValueOffsetVarA);
-  d.varB = readCandidate(f, pl, kDemandTimerOffsetVarB, kDemandValueOffsetVarB);
+  // the parser surfaces the ambiguity; resolution comes from captures). Read
+  // only for a demand command: a dataflow frame's 0xDC at [13] used to come
+  // out as a 110% demand (#204). Out-of-range requests keep their offsets.
+  d.isDemand = d.hasCommand && isDemandCommand(d.commandCode);
+  const size_t demandLen = d.isDemand ? pl : 0;
+  d.varA = readCandidate(f, demandLen, kDemandTimerOffsetVarA, kDemandValueOffsetVarA);
+  d.varB = readCandidate(f, demandLen, kDemandTimerOffsetVarB, kDemandValueOffsetVarB);
   return d;
 }
 
@@ -308,7 +334,9 @@ std::string summarize(const Frame& f) {
   const uint8_t base = f.baseMsgType();
   if (base == static_cast<uint8_t>(MsgType::kSetControlCmd)) {
     const SetControlDecode d = decodeSetControl(f);
-    if (!d.hasCommand) {
+    if (d.isDataflow) {
+      out += "  dataflow ACK/session frame: not a command\n";
+    } else if (!d.hasCommand) {
       out += "  command: (empty payload)\n";
     } else if (d.routedByNodeType) {
       out += fmt("  command: %s (%s), routed by node type to %s\n",
@@ -326,13 +354,16 @@ std::string summarize(const Frame& f) {
       out += fmt("  system switch: %s (%s)\n", d.switchName.c_str(),
                  hexByte(d.switchRaw).c_str());
     }
-    out += "  demand candidates (PROVISIONAL offsets, docs/02 5a):\n";
-    for (const DemandCandidate* c : {&d.varA, &d.varB}) {
-      out += fmt("    [%zu/%zu]: ", c->timerFrameOffset, c->valueFrameOffset);
-      out += c->valid ? fmt("timer=%s (%.2f s) demand=%u -> %.1f%%\n",
-                            hexByte(c->timerRaw).c_str(), c->timerTotalS,
-                            static_cast<unsigned>(c->demandRaw), c->demandPct)
-                      : std::string("(payload too short)\n");
+    if (d.isDemand) {
+      out += "  demand candidates (PROVISIONAL offsets, docs/02 5a):\n";
+      for (const DemandCandidate* c : {&d.varA, &d.varB}) {
+        out += fmt("    [%zu/%zu]: ", c->timerFrameOffset, c->valueFrameOffset);
+        out += c->valid ? fmt("timer=%s (%.2f s) demand=%u -> %.1f%%%s\n",
+                              hexByte(c->timerRaw).c_str(), c->timerTotalS,
+                              static_cast<unsigned>(c->demandRaw), c->demandPct,
+                              c->outOfRange ? " OUT OF RANGE" : "")
+                        : std::string("(payload too short)\n");
+      }
     }
   } else if (f.msgType ==
              (static_cast<uint8_t>(MsgType::kGetDiagnostics) | kResponseFlag)) {
