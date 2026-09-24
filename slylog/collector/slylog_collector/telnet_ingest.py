@@ -125,6 +125,15 @@ class TelnetIngest:
         ts = self.line_ts(line)
         self.archive_write(line, ts)
 
+        # Go-live: frames SlyTherm transmits are mirrored as [ct485-tx]/[ct485+tx]
+        # (main_thermostat.cpp mirrorTxFrame). The raw archive above keeps the -tx
+        # tag so the flat capture stays TX/RX-distinguishable; feed the decoder the
+        # RX-shaped tag so our TX also lands in raw_frames (and Grafana). Our TX is
+        # identifiable there by src=1 (thermostat node; the OEM stat is gone after
+        # cutover). Same hex layout, so TelnetAssembler parses it unchanged.
+        if "-tx]" in line:
+            line = line.replace("[ct485-tx]", "[ct485]").replace("[ct485+tx]", "[ct485+]")
+
         stats = parse_stats_line(line)
         if stats is not None:
             self._flush_pending()

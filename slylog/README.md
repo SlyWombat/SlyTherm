@@ -10,11 +10,14 @@ controls nothing — SlyTherm behaves identically whether the stack is up or dow
 
 | service   | image                          | role |
 |-----------|--------------------------------|------|
-| db        | timescale/timescaledb:latest-pg16 | hypertables for time series, relational tables for events/forecasts/predictions |
+| db        | timescale/timescaledb:2.28.2-pg16 (digest-pinned) | hypertables for time series, relational tables for events/forecasts/predictions |
 | collector | ./collector (python:3.12-slim) | MQTT ingest (#132), CT-485 telnet ingest + live decode (#133), hourly Open-Meteo pull (#134) |
 | grafana   | grafana/grafana                | provisioned dashboards + event annotations (#135), host port **3300** |
-| ollama    | ollama/ollama                  | local CPU LLM (no host port — 11434 is taken on kdocker2) |
+| ollama    | ollama/ollama:0.31.2-rocm      | fallback LLM on the local iGPU (no host port — 11434 is taken on kdocker2); the predictor defaults to the kdocker3 GPU host |
 | predictor | ./predictor (python:3.12-slim) | 4-hourly LLM load forecast + degree-day baseline, record-only (#136); daily LLM forecast-confidence review (#141) |
+| graph-publisher | ./collector image | System-tab trend graph series to retained `slytherm/graph/system` (#156) |
+| annotator | ./annotator | capture-session annotation logger, port 8091 |
+| capture-receiver | python:3.12-alpine | audit-capture photo receiver + review page, port 8093 (#181) |
 
 ## Run
 
@@ -27,6 +30,9 @@ docker run --rm -v /data/slylog:/d alpine sh -c 'chown 70:70 /d/postgres; chown 
 docker compose up -d db     # schema in db/init/ auto-applies on first boot
 docker compose up -d --build
 ```
+
+The compose file is `compose.yaml` (the old `docker-compose.yml` is gone — keep
+exactly one, so there is no question which one Compose reads).
 
 On kdocker2 the stack is Dockge-managed and runs from
 `/data/stacks/slylog/compose.yaml` (project `slylog`) — apply repo changes

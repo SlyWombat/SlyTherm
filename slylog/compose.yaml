@@ -13,7 +13,9 @@
 
 services:
   db:
-    image: timescale/timescaledb:latest-pg16
+    # Pinned to the image that was running (2.28.2-pg16, published 2026-06-30) so a
+    # recreate or prune can never pull a different database. Upgrade = deliberate re-pin.
+    image: timescale/timescaledb:2.28.2-pg16@sha256:ba149561ad4ddff5940d6eb0a0df60aefd1355cee1a450928f271267038fc888
     container_name: slylog-db
     restart: unless-stopped
     environment:
@@ -61,6 +63,27 @@ services:
       # historical archives for migrate.py — READ-ONLY, never written
       - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
 
+  # #156: publishes the System-tab trend graph series (outside/setpoint/room)
+  # to retained slytherm/graph/system. Separate process from the collector,
+  # which by design never publishes; reuses the collector image.
+  graph-publisher:
+    build: ./collector
+    container_name: slylog-graph-publisher
+    restart: unless-stopped
+    command: python -m slylog_collector.graph_publisher
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BROKER: ${BROKER}
+      BROKER_PORT: ${BROKER_PORT:-1883}
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      TZ: ${TZ:-America/Toronto}
+
   # #27 aid: phone-friendly capture-session annotation logger (:8091).
   # Operator logs what they do at the OEM stat; entries are server-timestamped
   # (postgres now(), same clock as raw_frames) into events(kind='annotation').
@@ -82,7 +105,7 @@ services:
       - "8091:8091"
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:latest@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63   # pinned 2026-09-03: was latest
     container_name: slylog-grafana
     restart: unless-stopped
     depends_on:
@@ -105,9 +128,17 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
 
   ollama:
-    image: ollama/ollama:latest
+    # ROCm build + iGPU passthrough (2026-09-03): same device stanza as the other
+    # GPU stacks on this host. Pinned to the version that was running (0.31.2).
+    image: ollama/ollama:0.31.2-rocm
     container_name: slylog-ollama
     restart: unless-stopped
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "993"   # render
+      - "44"    # video
     # NO host port published: 11434 is already in use on kdocker2.
     # Reachable as http://ollama:11434 on the compose network. Kept as the
     # fallback inference host — the predictor now points at kdocker3 by
@@ -149,3 +180,20 @@ services:
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
+
+  # #181: audit-capture receiver — the camera Remote POSTs a JPEG + metadata
+  # here on every manual panel change; review page on :8093. Stdlib-only script,
+  # so a bare python image with the source bind-mounted is enough (no build).
+  capture-receiver:
+    image: python:3.12-alpine
+    container_name: slylog-capture-receiver
+    restart: unless-stopped
+    command: python /app/capture_receiver.py
+    ports:
+      - "8093:8093"
+    volumes:
+      - ./capture-receiver:/app:ro
+      # NOT /data/slylog/captures — that's the CT-485 frame archive
+      - ${DATA_DIR:-/data/slylog}/audit-captures:/captures
+    environment:
+      TZ: ${TZ:-America/Toronto}
