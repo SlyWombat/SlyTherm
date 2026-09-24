@@ -346,7 +346,7 @@ def parse_summary_line(line: str) -> Frame | None:
         int(m.group(2), 16),          # src
         _hdr(6),                      # subnet
         _hdr(7),                      # sendMethod
-        _hdr(8),                      # sendParamHi -- the Set Control command code
+        _hdr(8),                      # sendParamHi: command code under sm01, target node type under sm02 (#209)
         0,                            # sendParamLo: still not mirrored
         _hdr(9),                      # srcNodeType
         int(m.group(4), 16),          # msgType

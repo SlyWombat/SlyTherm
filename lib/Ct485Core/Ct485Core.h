@@ -60,6 +60,19 @@ constexpr uint8_t kSubnetMaintenance = 0x01;
 constexpr uint8_t kSubnetV1          = 0x02;
 constexpr uint8_t kSubnetV2          = 0x03;
 
+// ---------- Send method, header offset 3 (docs/02 §2) ----------
+// Decides what Send Parameter (hi), header offset 4, carries. #209: the OEM
+// sends demands under kByPriority (sendParamHi = command code) but HUM_DEMAND
+// and the furnace's SUBSYSTEM_BUSY under kByNodeType (sendParamHi = the TARGET
+// node type, 0x02 furnace / 0x01 thermostat). So sendParamHi is the command
+// code only under kByPriority; payload[0] is the command code always.
+enum class SendMethod : uint8_t {
+  kNonRouted  = 0x00,
+  kByPriority = 0x01,  // routed-by-priority / control command
+  kByNodeType = 0x02,
+  kBySocket   = 0x03,
+};
+
 // ---------- Node types (docs/02 §6) ----------
 enum class NodeType : uint8_t {
   kThermostat     = 0x01,
@@ -107,7 +120,8 @@ constexpr uint8_t kPktNumDataflowBit = 0x80;  // set on R2R/ACK
 constexpr uint8_t kPktNumVersionBit  = 0x20;  // 1 = CT-485 v1.0, 0 = v2.0
 constexpr uint8_t kPktNumChunkMask   = 0x1F;
 
-// ---------- Control command codes, header offset 4 (docs/02 §5a) ----------
+// ---------- Control command codes, payload[0] = frame offset 10 (docs/02 §5a) ----------
+// Also repeated in header offset 4, but only under SendMethod::kByPriority (#209).
 enum class Command : uint8_t {
   kHeatSetPointModify = 0x01,
   kCoolSetPointModify = 0x02,
@@ -117,9 +131,11 @@ enum class Command : uint8_t {
   kDehumSetPoint      = 0x5D,
   kHumSetPoint        = 0x5E,
   kDamperPosition     = 0x60,
-  kSubsystemBusy      = 0x61,  // coordinator->stat readiness handshake after operator-
-                               // initiated transitions; value 0 = not busy (field-observed
-                               // 2026-07-08/09; named per kdschlosser/ClimateTalk)
+  kSubsystemBusy      = 0x61,  // FURNACE->stat readiness handshake after a demand
+                               // transition; value 0 = not busy. Sent by node type
+                               // (sm 0x02, sp 0x01). It looked coordinator-sourced
+                               // only because the furnace was the coordinator until
+                               // 2026-08-27 (#209, #210). Named per kdschlosser.
   kDehumDemand        = 0x62,
   kHumDemand          = 0x63,
   kHeatDemand         = 0x64,  // gas heat capacity request; Chinook valid band 40-100% (+0)
@@ -147,7 +163,7 @@ enum class SystemSwitch : uint8_t {
 // (docs/02 §5a OFFSET WARNING — kdschlosser write path says timer at [13],
 // demand at [14]; its read path and earlier notes say [12]/[13]. Single-sourced;
 // resolve from real captures, then delete the wrong variant.)
-constexpr size_t kDemandCmdEchoOffset    = 10;  // 16-bit command code echo, little-endian
+constexpr size_t kDemandCmdEchoOffset    = 10;  // the command code itself (1 byte, #209)
 constexpr size_t kDemandTimerOffsetVarA  = 12;  // variant A: [12]=refresh timer, [13]=demand
 constexpr size_t kDemandValueOffsetVarA  = 13;
 constexpr size_t kDemandTimerOffsetVarB  = 13;  // variant B: [13]=refresh timer, [14]=demand

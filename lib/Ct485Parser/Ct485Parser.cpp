@@ -58,6 +58,7 @@ const char* commandNameOrNull(uint8_t command) {
     case Command::kDehumSetPoint:      return "DEHUMIDIFICATION_SET_POINT_MODIFY";
     case Command::kHumSetPoint:        return "HUMIDIFICATION_SET_POINT_MODIFY";
     case Command::kDamperPosition:     return "DAMPER_POSITION_DEMAND";
+    case Command::kSubsystemBusy:      return "SUBSYSTEM_BUSY_STATUS";
     case Command::kDehumDemand:        return "DEHUMIDIFICATION_DEMAND";
     case Command::kHumDemand:          return "HUMIDIFICATION_DEMAND";
     case Command::kHeatDemand:         return "HEAT_DEMAND";
@@ -134,18 +135,27 @@ SetControlDecode decodeSetControl(const Frame& f) {
   if (f.baseMsgType() != static_cast<uint8_t>(MsgType::kSetControlCmd)) return d;
   d.isSetControl = true;
   d.isResponse = f.isResponse();
-  d.commandCode = f.sendParamHi;
-  d.command = commandName(d.commandCode);
+  d.sendMethod = f.sendMethod;
+  d.sendParamHi = f.sendParamHi;
 
+  // #209: the command is payload[0]. The collector learned the same lesson
+  // (e38cddc, "opcode is 1 byte"): frame [11] is 0x00 on every real command,
+  // so there is no 16-bit code to assemble.
   const size_t pl = effectivePayloadLen(f);
-  if (pl >= 2) {
-    d.hasEcho = true;
-    d.echoCode = static_cast<uint16_t>(f.payload[0] |
-                                       (static_cast<uint16_t>(f.payload[1]) << 8));
-    d.echoMatches = (d.echoCode == d.commandCode);
+  if (pl >= 1) {
+    d.hasCommand = true;
+    d.commandCode = f.payload[0];
+    d.command = commandName(d.commandCode);
+    if (f.sendMethod == static_cast<uint8_t>(SendMethod::kByPriority)) {
+      d.sendParamMatches = (f.sendParamHi == d.commandCode);
+    }
+  }
+  if (f.sendMethod == static_cast<uint8_t>(SendMethod::kByNodeType)) {
+    d.routedByNodeType = true;
+    d.targetNodeType = f.sendParamHi;
   }
 
-  d.isSystemSwitch =
+  d.isSystemSwitch = d.hasCommand &&
       (d.commandCode == static_cast<uint8_t>(Command::kSystemSwitchModify));
   if (d.isSystemSwitch && pl >= 3) {  // value at frame [12] (provisional)
     d.hasSwitchValue = true;
@@ -222,12 +232,16 @@ FieldDictionary FieldDictionary::withStarterSet() {
   // Starter entries from docs/02 §5a/§5b — ALL provisional until confirmed
   // from real captures (the Phase 2 "done when" gate).
   FieldDictionary d;
-  d.add({0x03, 0x00, 4, "control command code",
-         "header Send Parameter Hi; echoed in payload", true});
-  d.add({0x03, 0x00, 10, "command code echo (LE16, low byte)",
-         "16-bit little-endian echo of header offset 4", true});
-  d.add({0x03, 0x00, 11, "command code echo (LE16, high byte)",
-         "expected 0x00 for known commands", true});
+  d.add({0x03, 0x00, 3, "send method",
+         "0x01 by priority (demands), 0x02 by node type (HUM_DEMAND, 0x61) (#209)",
+         true});
+  d.add({0x03, 0x00, 4, "send parameter hi",
+         "sm 0x01: repeats the command code; sm 0x02: target node type (#209)",
+         true});
+  d.add({0x03, 0x00, 10, "command code",
+         "the command on every capture, whatever the send method (#209)", true});
+  d.add({0x03, 0x00, 11, "command code high byte",
+         "0x00 on every real command in the archive", true});
   d.add({0x03, 0x64, 12, "HEAT_DEMAND refresh timer (variant A)",
          "hi nibble=min, lo nibble=3.75 s units; single-sourced", true});
   d.add({0x03, 0x64, 13, "HEAT_DEMAND: demand pct*2 (variant A) OR refresh timer (variant B)",
@@ -294,10 +308,20 @@ std::string summarize(const Frame& f) {
   const uint8_t base = f.baseMsgType();
   if (base == static_cast<uint8_t>(MsgType::kSetControlCmd)) {
     const SetControlDecode d = decodeSetControl(f);
-    out += fmt("  command: %s (%s), echo %s\n", d.command.c_str(),
-               hexByte(d.commandCode).c_str(),
-               !d.hasEcho ? "absent"
-                          : (d.echoMatches ? "matches" : "MISMATCH"));
+    if (!d.hasCommand) {
+      out += "  command: (empty payload)\n";
+    } else if (d.routedByNodeType) {
+      out += fmt("  command: %s (%s), routed by node type to %s\n",
+                 d.command.c_str(), hexByte(d.commandCode).c_str(),
+                 hexByte(d.targetNodeType).c_str());
+    } else if (d.sendMethod == static_cast<uint8_t>(SendMethod::kByPriority)) {
+      out += fmt("  command: %s (%s), send param %s\n", d.command.c_str(),
+                 hexByte(d.commandCode).c_str(),
+                 d.sendParamMatches ? "matches" : "MISMATCH");
+    } else {
+      out += fmt("  command: %s (%s), send method %s\n", d.command.c_str(),
+                 hexByte(d.commandCode).c_str(), hexByte(d.sendMethod).c_str());
+    }
     if (d.hasSwitchValue) {
       out += fmt("  system switch: %s (%s)\n", d.switchName.c_str(),
                  hexByte(d.switchRaw).c_str());

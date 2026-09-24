@@ -154,8 +154,8 @@ std::string decodeOneLiner(const uint8_t* raw, size_t len) {
                   " src=" + ct485::hexByte(f.src) + " " +
                   ct485::msgTypeName(f.msgType);
   if (f.baseMsgType() == static_cast<uint8_t>(ct485::MsgType::kSetControlCmd)) {
-    s += " cmd=" + ct485::commandName(f.sendParamHi);
     const ct485::SetControlDecode sc = ct485::decodeSetControl(f);
+    s += " cmd=" + (sc.hasCommand ? sc.command : std::string("(none)"));
     if (sc.isSystemSwitch && sc.hasSwitchValue) s += "->" + sc.switchName;
   }
   return s;
