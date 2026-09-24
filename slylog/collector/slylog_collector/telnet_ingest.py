@@ -60,9 +60,16 @@ def parse_stats_line(line: str) -> tuple[int, dict] | None:
 
 
 def frame_row(frame: Frame, ts: datetime, millis: int, source: str) -> tuple:
+    # #204: the five header bytes go in as NULL when they were never logged
+    # (every RX line before 2026-09-04 12:44 EDT), never as a misleading 0.
+    if frame.header_known:
+        hdr = (frame.subnet, frame.send_method, frame.param_hi,
+               frame.src_node_type, frame.packet_num)
+    else:
+        hdr = (None,) * 5
     return (ts, millis, frame.src, frame.dst, frame.msg_type,
             bytes(frame.payload), frame_hash(bytes(frame.raw)),
-            True, frame.synthesized, frame.truncated, source)
+            True, frame.synthesized, frame.truncated, source) + hdr
 
 
 class TelnetIngest:

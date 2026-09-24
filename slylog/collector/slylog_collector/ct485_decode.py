@@ -197,8 +197,17 @@ class Frame:
     index: int = 0                  # ordinal across the whole run
     terminals: str | None = None    # 24V annotation, filled by --terminals
     synthesized: bool = False       # built from a telnet [ct485] summary line —
-                                    # subnet/sendMethod/param/nodeType/pktNum are
-                                    # zero-filled, checksum recomputed
+                                    # checksum recomputed; header metadata is
+                                    # zero-filled unless header_logged
+    header_logged: bool = False     # the summary line carried the #204 sn/sm/sp/
+                                    # nt/pk block, so those bytes are real
+
+    @property
+    def header_known(self) -> bool:
+        """True when subnet/sendMethod/sendParamHi/srcNodeType/packetNum are
+        real bytes, not zero-fill: a wire-framed frame, or a summary line
+        logged with the #204 header (every RX line from 2026-09-04 12:44 EDT)."""
+        return not self.synthesized or self.header_logged
     truncated: bool = False         # telnet mirror clips payloads at 16 bytes
 
     @property
@@ -300,8 +309,10 @@ LONG_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 # SlyTherm #204 adds the rest of the header to the RX line, matching the
 # long-standing [ct485-tx] layout:
 #   "[ct485] <ms> <SS>><DD> t<TT> l<N> sn<..> sm<..> sp<..> nt<..> pk<..> <hex...>"
-# sp is the Set Control Command code and pk carries the R2R dataflow bit, so
-# without them a token frame and a real demand are indistinguishable. The block
+# pk carries the R2R dataflow bit, so without it a dataflow ACK frame and a
+# real demand are indistinguishable. sp repeats the command code only under
+# sm01; under sm02 it is the target node type (SlyTherm #209), so the command
+# is always payload[0] (Frame.command_code). The block
 # is OPTIONAL here so one parser reads both eras of the archive; when absent the
 # fields stay zero-filled, as they were for every frame captured before the
 # firmware change. They cannot be backfilled.
@@ -351,7 +362,7 @@ def parse_summary_line(line: str) -> Frame | None:
         int(m.group(2), 16),          # src
         _hdr(6),                      # subnet
         _hdr(7),                      # sendMethod
-        _hdr(8),                      # sendParamHi -- the Set Control command code
+        _hdr(8),                      # sendParamHi: command code under sm01, target node type under sm02 (#209)
         0,                            # sendParamLo: still not mirrored
         _hdr(9),                      # srcNodeType
         int(m.group(4), 16),          # msgType
@@ -361,7 +372,8 @@ def parse_summary_line(line: str) -> Frame | None:
     if ts_ms is None:
         ts_ms = float(m.group(1))
     return Frame(raw=build_frame(header, payload), ts_ms=ts_ms,
-                 synthesized=True, truncated=declared > len(payload))
+                 synthesized=True, truncated=declared > len(payload),
+                 header_logged=m.group(6) is not None)
 
 
 class TelnetAssembler:

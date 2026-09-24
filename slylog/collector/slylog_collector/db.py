@@ -59,13 +59,16 @@ class Db:
     # -- raw_frames ---------------------------------------------------------
     def insert_raw_frames(self, rows: list[tuple]) -> int:
         """rows: (ts, millis, src, dst, msg_type, payload, payload_hash,
-        valid, synthesized, truncated, source)"""
+        valid, synthesized, truncated, source, subnet, send_method,
+        send_param_hi, src_node_type, packet_num) — see telnet_ingest.frame_row.
+        Needs db/init/005_raw_frames_header.sql applied."""
         if not rows:
             return 0
         return self._exec(
             "INSERT INTO raw_frames (ts, millis, src, dst, msg_type, payload,"
-            " payload_hash, valid, synthesized, truncated, source)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " payload_hash, valid, synthesized, truncated, source,"
+            " subnet, send_method, send_param_hi, src_node_type, packet_num)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
             " ON CONFLICT (ts, millis, payload_hash) DO NOTHING",
             rows, many=True)
 
