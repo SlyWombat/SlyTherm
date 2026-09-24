@@ -145,7 +145,14 @@ class MqttIngest:
             detail["payload"] = payload.decode("utf-8", "replace").strip()
 
         if topic.endswith("/boot") or topic == "slytherm/boot":
-            self.db.insert_event(ts, "boot", detail)
+            # The firmware re-publishes the retained boot record on every MQTT
+            # RECONNECT, re-stamped with the current (climbing) uptimeS — so a
+            # reconnect echo otherwise looks like a fresh boot and inflates the
+            # reboot count (the 2026-07-13 false alarm). A REAL boot publishes
+            # within seconds of reset; skip republishes (large uptimeS).
+            up = data.get("uptimeS") if isinstance(data, dict) else None
+            if up is None or up < 120:
+                self.db.insert_event(ts, "boot", detail)
         elif topic.endswith("/ota"):
             self.db.insert_event(ts, "ota", detail)
         else:  # status / availability — only record transitions (retained
