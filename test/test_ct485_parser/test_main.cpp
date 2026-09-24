@@ -15,12 +15,15 @@ using namespace ct485;
 void setUp() {}
 void tearDown() {}
 
+// sendMethod defaults to kByPriority, the method every OEM demand uses.
 static Frame mkFrame(uint8_t msgType, std::initializer_list<uint8_t> payload,
-                     uint8_t sendParamHi = 0) {
+                     uint8_t sendParamHi = 0,
+                     uint8_t sendMethod = static_cast<uint8_t>(SendMethod::kByPriority)) {
   Frame f;
   f.dst = 0x02;
   f.src = kAddrThermostat;
   f.subnet = kSubnetV2;
+  f.sendMethod = sendMethod;
   f.sendParamHi = sendParamHi;
   f.srcNodeType = static_cast<uint8_t>(NodeType::kThermostat);
   f.msgType = msgType;
@@ -78,7 +81,7 @@ static void test_command_names() {
   TEST_ASSERT_EQUAL_STRING("SYSTEM_SWITCH_MODIFY", commandName(0x05).c_str());
   TEST_ASSERT_EQUAL_STRING("HEAT_SET_POINT_MODIFY", commandName(0x01).c_str());
   TEST_ASSERT_EQUAL_STRING("SET_MOTOR_TORQUE_PERCENT", commandName(0x70).c_str());
-  for (uint8_t c : {0x02, 0x07, 0x47, 0x5D, 0x5E, 0x60, 0x62, 0x63, 0x6A, 0x6B, 0x6C}) {
+  for (uint8_t c : {0x02, 0x07, 0x47, 0x5D, 0x5E, 0x60, 0x61, 0x62, 0x63, 0x6A, 0x6B, 0x6C}) {
     TEST_ASSERT_FALSE_MESSAGE(contains(commandName(c), "0x"), "command unmapped");
   }
   TEST_ASSERT_EQUAL_STRING("0xEE", commandName(0xEE).c_str());
@@ -96,16 +99,16 @@ static void test_system_switch_names() {
 // ---------- Set Control Command: dual demand variants ----------
 
 static void test_heat_demand_both_variants() {
-  // frame[10..11]=echo 0x0064, [12]=0x12, [13]=0x50, [14]=0x60
+  // frame[10]=command 0x64, [11]=0x00, [12]=0x12, [13]=0x50, [14]=0x60
   Frame f = mkFrame(0x03, {0x64, 0x00, 0x12, 0x50, 0x60}, 0x64);
   SetControlDecode d = decodeSetControl(f);
   TEST_ASSERT_TRUE(d.isSetControl);
   TEST_ASSERT_FALSE(d.isResponse);
   TEST_ASSERT_EQUAL_UINT8(0x64, d.commandCode);
   TEST_ASSERT_EQUAL_STRING("HEAT_DEMAND", d.command.c_str());
-  TEST_ASSERT_TRUE(d.hasEcho);
-  TEST_ASSERT_EQUAL_UINT16(0x0064, d.echoCode);
-  TEST_ASSERT_TRUE(d.echoMatches);
+  TEST_ASSERT_TRUE(d.hasCommand);
+  TEST_ASSERT_TRUE(d.sendParamMatches);
+  TEST_ASSERT_FALSE(d.routedByNodeType);
 
   // Variant A: timer at [12], demand at [13] — must NOT pick a winner.
   TEST_ASSERT_TRUE(d.varA.valid);
@@ -135,18 +138,26 @@ static void test_demand_short_payloads() {
   TEST_ASSERT_FALSE(d4.varB.valid);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, d4.varB.demandPct);  // invalid -> zero, never garbage
 
-  // Echo only: neither variant valid.
+  // Command bytes only: neither variant valid.
   Frame f2 = mkFrame(0x03, {0x64, 0x00}, 0x64);
   SetControlDecode d2 = decodeSetControl(f2);
-  TEST_ASSERT_TRUE(d2.hasEcho);
+  TEST_ASSERT_TRUE(d2.hasCommand);
   TEST_ASSERT_FALSE(d2.varA.valid);
   TEST_ASSERT_FALSE(d2.varB.valid);
 
-  // Single byte: no echo, nothing valid, no crash.
+  // Single byte: the command is still readable, no demand, no crash.
   Frame f1 = mkFrame(0x03, {0x64}, 0x64);
   SetControlDecode d1 = decodeSetControl(f1);
-  TEST_ASSERT_FALSE(d1.hasEcho);
+  TEST_ASSERT_TRUE(d1.hasCommand);
+  TEST_ASSERT_EQUAL_UINT8(0x64, d1.commandCode);
   TEST_ASSERT_FALSE(d1.varA.valid);
+
+  // Empty payload: no command at all.
+  Frame f0 = mkFrame(0x03, {}, 0x64);
+  SetControlDecode d0 = decodeSetControl(f0);
+  TEST_ASSERT_TRUE(d0.isSetControl);
+  TEST_ASSERT_FALSE(d0.hasCommand);
+  TEST_ASSERT_FALSE(d0.isSystemSwitch);
 }
 
 static void test_demand_payload_len_lies() {
@@ -160,12 +171,54 @@ static void test_demand_payload_len_lies() {
   TEST_ASSERT_EQUAL_UINT8(0x50, d.varA.demandRaw);
 }
 
-static void test_echo_mismatch_flagged() {
-  Frame f = mkFrame(0x03, {0x65, 0x00, 0x12, 0x50, 0x60}, 0x64);  // echo says COOL
+static void test_send_param_mismatch_flagged() {
+  // kByPriority, but the header says HEAT and the payload says COOL: the
+  // payload wins and the disagreement is surfaced.
+  Frame f = mkFrame(0x03, {0x65, 0x00, 0x12, 0x50, 0x60}, 0x64);
   SetControlDecode d = decodeSetControl(f);
-  TEST_ASSERT_TRUE(d.hasEcho);
-  TEST_ASSERT_EQUAL_UINT16(0x0065, d.echoCode);
-  TEST_ASSERT_FALSE(d.echoMatches);
+  TEST_ASSERT_EQUAL_UINT8(0x65, d.commandCode);
+  TEST_ASSERT_EQUAL_STRING("COOL_DEMAND", d.command.c_str());
+  TEST_ASSERT_EQUAL_UINT8(0x64, d.sendParamHi);
+  TEST_ASSERT_FALSE(d.sendParamMatches);
+  TEST_ASSERT_TRUE(contains(summarize(f), "MISMATCH"));
+}
+
+// #209: real OEM frames from the 2026-09-21 capture. Under sendMethod 0x02
+// sendParamHi is the TARGET node type, and the command is payload[0].
+static void test_hum_demand_routed_by_node_type() {
+  // [ct485] FF>02 t03 l4 sn02 sm02 sp02 nt01 pk20 63 00 60 A0
+  Frame f = mkFrame(0x03, {0x63, 0x00, 0x60, 0xA0}, 0x02,
+                    static_cast<uint8_t>(SendMethod::kByNodeType));
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_TRUE(d.hasCommand);
+  TEST_ASSERT_EQUAL_UINT8(0x63, d.commandCode);
+  TEST_ASSERT_EQUAL_STRING("HUMIDIFICATION_DEMAND", d.command.c_str());
+  TEST_ASSERT_TRUE(d.routedByNodeType);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeType::kGasFurnace), d.targetNodeType);
+  TEST_ASSERT_FALSE(d.sendParamMatches);  // not a kByPriority frame
+  TEST_ASSERT_TRUE(d.varA.valid);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 80.0f, d.varA.demandPct);  // 0xA0 -> 80%
+  // Before #209 this frame was named COOL_SET_POINT_MODIFY after sp02.
+  const std::string s = summarize(f);
+  TEST_ASSERT_TRUE(contains(s, "HUMIDIFICATION_DEMAND"));
+  TEST_ASSERT_FALSE(contains(s, "COOL_SET_POINT_MODIFY"));
+  TEST_ASSERT_TRUE(contains(s, "routed by node type to 0x02"));
+}
+
+static void test_subsystem_busy_routed_by_node_type() {
+  // [ct485] 02>FF t03 l4 sn02 sm02 sp01 nt02 pk20 61 00 60 00
+  Frame f = mkFrame(0x03, {0x61, 0x00, 0x60, 0x00}, 0x01,
+                    static_cast<uint8_t>(SendMethod::kByNodeType));
+  f.src = 0x02;
+  f.dst = kAddrCoordinator;
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kGasFurnace);
+  SetControlDecode d = decodeSetControl(f);
+  TEST_ASSERT_EQUAL_UINT8(0x61, d.commandCode);
+  TEST_ASSERT_EQUAL_STRING("SUBSYSTEM_BUSY_STATUS", d.command.c_str());
+  TEST_ASSERT_TRUE(d.routedByNodeType);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeType::kThermostat), d.targetNodeType);
+  // Before #209 this frame was named HEAT_SET_POINT_MODIFY after sp01.
+  TEST_ASSERT_FALSE(contains(summarize(f), "HEAT_SET_POINT_MODIFY"));
 }
 
 static void test_set_control_response_flag() {
@@ -403,7 +456,9 @@ int main() {
   RUN_TEST(test_heat_demand_both_variants);
   RUN_TEST(test_demand_short_payloads);
   RUN_TEST(test_demand_payload_len_lies);
-  RUN_TEST(test_echo_mismatch_flagged);
+  RUN_TEST(test_send_param_mismatch_flagged);
+  RUN_TEST(test_hum_demand_routed_by_node_type);
+  RUN_TEST(test_subsystem_busy_routed_by_node_type);
   RUN_TEST(test_set_control_response_flag);
   RUN_TEST(test_non_set_control_rejected);
   RUN_TEST(test_system_switch_decode);

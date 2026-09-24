@@ -56,11 +56,21 @@ struct DemandCandidate {
 struct SetControlDecode {
   bool isSetControl = false;  // baseMsgType == 0x03; everything below invalid otherwise
   bool isResponse = false;
-  uint8_t commandCode = 0;  // header offset 4 (Send Parameter Hi)
+  // The command code is payload[0], frame [10], on every capture (#209). It is
+  // NOT sendParamHi: that byte depends on sendMethod (see SendMethod).
+  bool hasCommand = false;    // payload[0] present
+  uint8_t commandCode = 0;
   std::string command;
-  bool hasEcho = false;       // 16-bit LE echo present at frame [10..11]
-  uint16_t echoCode = 0;
-  bool echoMatches = false;   // echo == header command code
+  uint8_t sendMethod = 0;     // header offset 3
+  uint8_t sendParamHi = 0;    // header offset 4, reported raw
+  // kByPriority: sendParamHi should repeat the command code. false on a
+  // kByPriority frame means a disagreement worth surfacing; always false
+  // under any other send method.
+  bool sendParamMatches = false;
+  // kByNodeType: sendParamHi is the target node type (0x02 furnace for
+  // HUM_DEMAND, 0x01 thermostat for SUBSYSTEM_BUSY). 0 under other methods.
+  bool routedByNodeType = false;
+  uint8_t targetNodeType = 0;
   bool isSystemSwitch = false;
   bool hasSwitchValue = false;  // value byte at frame [12] present
   uint8_t switchRaw = 0;

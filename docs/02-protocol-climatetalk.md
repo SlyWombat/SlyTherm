@@ -36,7 +36,7 @@ There is **no preamble/sync byte**. Frame boundaries are defined purely by the �
 | 1 | 1 | **Source Address** | sender node ID |
 | 2 | 1 | **Subnet** | `0x00`=broadcast, `0x01`=maintenance, `0x02`=V1, `0x03`=V2 |
 | 3 | 1 | **Send Method** | `0x00` non-routed, `0x01` routed-by-priority/control-command, `0x02` by node-type, `0x03` by socket |
-| 4 | 1 | **Send Parameter (hi)** | for control commands, the **command code** (e.g. `0x64`=HEAT). For node-type routing, the target node type. |
+| 4 | 1 | **Send Parameter (hi)** | depends on Send Method. Under `0x01` it repeats the **command code** (e.g. `0x64`=HEAT). Under `0x02` (node-type routing) it is the **target node type**, not the command. ✅ CONFIRMED 2026-09-24 (#209): the OEM sends HEAT/COOL/FAN demands as `sm01 sp=<cmd>`, but HUM_DEMAND as `sm02 sp02` (to the furnace) and the furnace sends SUBSYSTEM_BUSY as `sm02 sp01` (to the thermostat), with the command in `payload[0]` both times. **The command code is `payload[0]`; never read it from this byte.** |
 | 5 | 1 | **Send Parameter 1 (lo)** | coordinator→sub: "Nth node of that type"; sub→coordinator: `0x00` |
 | 6 | 1 | **Source Node Type** | `0x01`=thermostat, `0x02`=gas furnace, `0x05`=heat pump … (§6) |
 | 7 | 1 | **Message Type** | the message class/ID (§4). **Response = request \| 0x80.** |
@@ -129,7 +129,7 @@ Cross-confirmed kdschlosser `message_types.py` + Net485 `Net485API.hpp`. **Respo
 
 ### 5a. Commanding heat demand / modulation
 
-Issued via **Set Control Command (`0x03`)**. Command code goes in **Send Parameter (offset 4)** and is echoed in the payload as a **16-bit `command_code` at [10..11] (little-endian)**, followed by a **single-byte refresh timer** and the **demand value**.
+Issued via **Set Control Command (`0x03`)**. The command code is **`payload[0]` (frame [10])**; frame [11] is `0x00` on every real command captured. Next come a **single-byte refresh timer** and the **demand value**. Send Parameter (offset 4) repeats the command only when Send Method is `0x01` (§2, #209).
 
 > ✅ **OFFSETS FIELD-CONFIRMED (2026-07-08/09, real-furnace capture — the #11 gate is CLEARED).**
 > Live capture of the OEM thermostat (R02P032) driving the Chinook resolved kdschlosser's

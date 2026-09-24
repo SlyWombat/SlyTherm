@@ -223,7 +223,7 @@ bool Ct485Thermostat::setSystemSwitch(SystemSwitch sw, uint32_t nowMs) {
   Frame f = baseFrame(cfg_.demandDst, static_cast<uint8_t>(MsgType::kSetControlCmd));
   f.sendMethod  = 0x01;  // routed-by-priority/control-command (docs/02 §2)
   f.sendParamHi = static_cast<uint8_t>(Command::kSystemSwitchModify);
-  f.payload[0]  = f.sendParamHi;  // 16-bit LE command-code echo, frame [10..11]
+  f.payload[0]  = f.sendParamHi;  // command code, frame [10]; [11] stays 0x00 (#209)
   f.payload[1]  = 0x00;
   f.payload[2]  = static_cast<uint8_t>(sw);  // value at frame [12]
   f.payloadLen  = 3;
@@ -291,7 +291,7 @@ bool Ct485Thermostat::buildDemandFrame(DemandChannel ch, Frame& out) const {
   out = baseFrame(cfg_.demandDst, static_cast<uint8_t>(MsgType::kSetControlCmd));
   out.sendMethod  = 0x01;
   out.sendParamHi = cmd;
-  out.payload[0]  = cmd;  // command-code echo, frame [10..11] little-endian
+  out.payload[0]  = cmd;  // command code, frame [10]; [11] stays 0x00 (#209)
   out.payload[1]  = 0x00;
 
   // Demand bytes land under the capture-confirmed variant ONLY (docs/02 §5a:

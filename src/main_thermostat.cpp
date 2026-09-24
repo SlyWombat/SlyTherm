@@ -1960,9 +1960,10 @@ void sniffFrame(const ct485::Frame& f) {
   const unsigned long ms = millis();
   // Full header on every RX line (#204), same sn/sm/sp/nt/pk layout as
   // mirrorTxFrame() so both streams parse identically. These five bytes are not
-  // decoration: sp (sendParamHi) IS the Set Control Command code, and pk
-  // (packetNum) carries kPktNumDataflowBit, the flag that marks an R2R/token
-  // frame. Without them a token frame and a real demand are indistinguishable
+  // decoration: sm/sp say how the frame is routed (sp repeats the command
+  // code under sm01 but names the target node type under sm02, #209; the
+  // command itself is payload[0]), and pk (packetNum) carries
+  // kPktNumDataflowBit, the flag that marks an R2R/token frame. Without them a token frame and a real demand are indistinguishable
   // once archived — which is how 94% of received t03 came to be read as
   // commands. They cannot be backfilled; frames logged before this change are
   // missing them for good.
