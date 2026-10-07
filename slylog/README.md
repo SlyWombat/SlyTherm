@@ -4,6 +4,12 @@ The SlyLog stack lives on the Dockge host (`kdocker2:/data/stacks/slylog/`) and
 is **not** part of this git repo. These are reference copies of SlyTherm-owned
 additions so they're version-controlled alongside the firmware that consumes them.
 
+The full stack (`compose.yaml`, collector, predictor) is on the `slylog`
+branch. Its `slylog/README.md` documents the host-path variables
+`SLYLOG_BUILD_DIR` (source tree and build contexts, default: the stack
+directory) and `SLYLOG_CAPTURES_DIR` (read-only legacy capture archive) (#214).
+The fragments here use `SLYLOG_BUILD_DIR` the same way.
+
 ## `graph_publisher.py` — System-tab trend graph (#156)
 
 Publishes the retained `slytherm/graph/system` series the device renders on its
@@ -30,7 +36,8 @@ drops it).
 The camera Remote POSTs a JPEG + metadata to `:8093/capture` whenever a person
 makes a manual change at the panel (see `src/remote_capture.cpp`). Photos land
 in `/data/slylog/audit-captures/YYYY-MM-DD/` (NOT `captures/` — that's the
-CT-485 frame archive), the event index in `audit-captures/events.jsonl`, and
+CT-485 frame archive), the event index in `audit-captures/events.jsonl` (the
+container runs as root, so both are written as uid 0), and
 `http://kdocker2:8093/` serves a review page (newest first, inline photos).
 
 **Deploy** (on kdocker2):

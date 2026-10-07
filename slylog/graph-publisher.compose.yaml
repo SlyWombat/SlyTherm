@@ -2,7 +2,7 @@
   # to retained slytherm/graph/system. Separate process from the collector,
   # which by design never publishes; reuses the collector image.
   graph-publisher:
-    build: ./collector
+    build: ${SLYLOG_BUILD_DIR:-.}/collector
     container_name: slylog-graph-publisher
     restart: unless-stopped
     command: python -m slylog_collector.graph_publisher
