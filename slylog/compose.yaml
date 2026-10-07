@@ -9,6 +9,14 @@
 #   chown 70:70 /data/slylog/postgres && chown 472 /data/slylog/grafana
 #   (timescaledb alpine runs postgres as uid 70; grafana as 472; ollama root)
 #
+# Host paths (#214): nothing here lives in, or reads from, a personal home.
+#   SLYLOG_BUILD_DIR     source tree: build contexts + read-only source/config
+#                        mounts (default: this stack directory)
+#   SLYLOG_CAPTURES_DIR  pre-SlyLog CT-485 capture archives, mounted READ-ONLY
+#                        for migrate.py (default /data/stacks/slylog/captures).
+#                        Not $DATA_DIR/captures, the live archive the collector
+#                        writes.
+#
 # cp .env.example .env  (edit creds)  ->  docker compose up -d
 
 services:
@@ -25,7 +33,7 @@ services:
       TZ: ${TZ:-America/Toronto}
     volumes:
       - ${DATA_DIR:-/data/slylog}/postgres:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ${SLYLOG_BUILD_DIR:-.}/db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:5433:5432"   # host-local admin access only
     healthcheck:
@@ -35,7 +43,7 @@ services:
       retries: 12
 
   collector:
-    build: ./collector
+    build: ${SLYLOG_BUILD_DIR:-.}/collector
     container_name: slylog-collector
     restart: unless-stopped
     depends_on:
@@ -61,13 +69,13 @@ services:
       # shadow-vs-OEM comparison reports (#139, report_shadow_vs_oem.py)
       - ${DATA_DIR:-/data/slylog}/reports:/reports
       # historical archives for migrate.py — READ-ONLY, never written
-      - ${LEGACY_CAPTURES:-/home/dave/SlyTherm/captures}:/legacy-captures:ro
+      - ${SLYLOG_CAPTURES_DIR:-/data/stacks/slylog/captures}:/legacy-captures:ro
 
   # #156: publishes the System-tab trend graph series (outside/setpoint/room)
   # to retained slytherm/graph/system. Separate process from the collector,
   # which by design never publishes; reuses the collector image.
   graph-publisher:
-    build: ./collector
+    build: ${SLYLOG_BUILD_DIR:-.}/collector
     container_name: slylog-graph-publisher
     restart: unless-stopped
     command: python -m slylog_collector.graph_publisher
@@ -88,7 +96,7 @@ services:
   # Operator logs what they do at the OEM stat; entries are server-timestamped
   # (postgres now(), same clock as raw_frames) into events(kind='annotation').
   annotator:
-    build: ./annotator
+    build: ${SLYLOG_BUILD_DIR:-.}/annotator
     container_name: slylog-annotator
     restart: unless-stopped
     depends_on:
@@ -125,7 +133,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ${DATA_DIR:-/data/slylog}/grafana:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${SLYLOG_BUILD_DIR:-.}/grafana/provisioning:/etc/grafana/provisioning:ro
 
   ollama:
     # ROCm build + iGPU passthrough (2026-09-03): same device stanza as the other
@@ -147,7 +155,7 @@ services:
       - ${DATA_DIR:-/data/slylog}/ollama:/root/.ollama
 
   predictor:
-    build: ./predictor
+    build: ${SLYLOG_BUILD_DIR:-.}/predictor
     container_name: slylog-predictor
     restart: unless-stopped
     depends_on:
@@ -192,7 +200,7 @@ services:
     ports:
       - "8093:8093"
     volumes:
-      - ./capture-receiver:/app:ro
+      - ${SLYLOG_BUILD_DIR:-.}/capture-receiver:/app:ro
       # NOT /data/slylog/captures — that's the CT-485 frame archive
       - ${DATA_DIR:-/data/slylog}/audit-captures:/captures
     environment:

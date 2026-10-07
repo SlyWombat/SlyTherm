@@ -38,6 +38,24 @@ On kdocker2 the stack is Dockge-managed and runs from
 `/data/stacks/slylog/compose.yaml` (project `slylog`) — apply repo changes
 there too (copy files over, `docker compose up -d --build` from that dir).
 
+Host paths come from two variables, so nothing in the stack lives in or reads
+from a personal home directory (#214):
+
+- `SLYLOG_BUILD_DIR`: the source tree holding the build contexts
+  (`collector/`, `annotator/`, `predictor/`) and the read-only source/config
+  mounts (`db/init/`, `grafana/provisioning/`, `capture-receiver/`). Default:
+  the stack directory itself.
+- `SLYLOG_CAPTURES_DIR`: the pre-SlyLog CT-485 capture archives, mounted
+  read-only at `/legacy-captures` for the migration below. Default:
+  `/data/stacks/slylog/captures`. Nothing writes there any more; the live
+  archive is `$DATA_DIR/captures`, written by the collector.
+
+Which uid writes what: the collector writes `$DATA_DIR/captures` and
+`$DATA_DIR/reports`, and the capture-receiver writes
+`$DATA_DIR/audit-captures`. Both run as root (uid 0). No image sets a `USER`
+and no service sets `user:`. `SLYLOG_CAPTURES_DIR` and `SLYLOG_BUILD_DIR` are
+only ever read.
+
 Grafana: http://kdocker2:3300 (admin / $GRAFANA_ADMIN_PASSWORD), folder
 "SlyLog", five dashboards: temperatures+forecast, cycle timeline+duty stats,
 demand/action strip, predictions vs actuals, forecast accuracy (#138).
@@ -102,7 +120,7 @@ events `(ts, kind, detail_hash)`, weather_obs `(ts, source)`, shadow_demands
 ## Historical migration (#137)
 
 One-shot backfill of the pre-SlyLog capture archives (mounted read-only at
-`/legacy-captures` from `$LEGACY_CAPTURES`):
+`/legacy-captures` from `$SLYLOG_CAPTURES_DIR`):
 
 ```sh
 docker compose exec collector python -m slylog_collector.migrate \
@@ -135,12 +153,10 @@ docker compose exec collector python -m slylog_collector.migrate \
 
 ### Rollback
 
-`captures/run_capture.sh` stays in the main repo. To restore the old logger:
-
-```sh
-docker compose stop collector     # frees a telnet slot
-ssh kdocker2 'cd ~/SlyTherm && nohup captures/run_capture.sh >/dev/null 2>&1 &'
-```
+Retired. The old `run_capture.sh` logger ran from a checkout in the admin's
+home and wrote its archive there. That archive now lives at
+`$SLYLOG_CAPTURES_DIR` and is read-only (#214). If the collector is down, the
+telnet mirror is simply not recorded until it is back.
 
 ## Operating notes
 
