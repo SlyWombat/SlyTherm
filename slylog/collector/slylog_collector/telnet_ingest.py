@@ -22,6 +22,7 @@ from . import config
 from .ct485_decode import CaptureStats, Frame, TelnetAssembler, _parse_iso_ms
 from .db import Db, frame_hash
 from .events import EventDeriver
+from .furnace_menu import MSG_USER_MENU_REPLY, decode_menu_reply
 
 log = logging.getLogger("telnet")
 
@@ -112,6 +113,11 @@ class TelnetIngest:
     def _store_frame(self, frame: Frame, ts: datetime, millis: int) -> None:
         self.db.insert_raw_frames([frame_row(frame, ts, millis, self.source)])
         self.db.insert_events(self.deriver.feed_frame(frame, ts))
+        if frame.msg_type == MSG_USER_MENU_REPLY:
+            # #221: the furnace's own status pages, decoded into key/value rows.
+            page = decode_menu_reply(bytes(frame.payload))
+            if page is not None:
+                self.db.insert_furnace_menu(ts, page)
 
     def _flush_pending(self) -> None:
         if self._pending is not None:

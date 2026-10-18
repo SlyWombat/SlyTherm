@@ -113,6 +113,26 @@ class Db:
              sh["fan_pct"], sh["defrost_pct"], sh["fused_temp_c"],
              sh["set_heat_c"], sh["set_cool_c"], sh["mode"], sh["action"]))
 
+    def insert_furnace_menu(self, ts, page) -> int:
+        """One decoded 0xC1 Get User Menu reply (#221) -> furnace_menu rows
+        plus the raw page in furnace_menu_pages (kept even if the grammar
+        missed it, so it can be re-decoded)."""
+        n = self._exec(
+            "INSERT INTO furnace_menu_pages (ts, page, title, rows_n, payload,"
+            " complete) VALUES (%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (ts, page) DO NOTHING",
+            (ts, page.page, page.title, len(page.rows), bytes(page.payload),
+             page.complete))
+        if page.rows:
+            n += self._exec(
+                "INSERT INTO furnace_menu (ts, page, title, seq, label, value,"
+                " value_num) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (ts, page, seq) DO NOTHING",
+                [(ts, page.page, page.title, i, label, value, num)
+                 for i, (label, value, num) in enumerate(page.rows)],
+                many=True)
+        return n
+
     def insert_weather_obs(self, ts, temp_c, precip_mm, wind_kmh, gust_kmh,
                            source="open-meteo-current") -> int:
         return self._exec(

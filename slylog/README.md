@@ -193,3 +193,18 @@ telnet mirror is simply not recorded until it is back.
 | controller telnet :23 `[shadow]` (fw ≥0.5.8 would-be DemandSet, TX disabled) | shadow_demands + flat archive |
 | Open-Meteo hourly (next 48 h: temp, rain mm+prob, wind+gusts+dir, humidity, WMO code) | forecasts |
 | Open-Meteo hourly current conditions (temp, precip, wind, gusts) | weather_obs |
+
+## Furnace status pages (#221)
+
+`db/init/006_furnace_menu.sql` adds `furnace_menu` (one row per `label = value`:
+page, title, seq, label, value, value_num) and `furnace_menu_pages` (the raw
+page bytes plus a `complete` flag). The collector decodes every CT-485 `0xC1`
+Get User Menu reply (`furnace_menu.py`), so Status 1 (`GAS VLV PRCNT`, `FLAME`,
+`BLOWER CFM`, limits, pressure switches) is queryable beside `shadow_demands`
+and `events`. The Grafana dashboard "SlyLog / Furnace status pages" shows the
+latest values with last-seen age.
+
+Passive capture only sees pages while the Furnace menu is open on the OEM stat.
+Apply to a live database with `psql -f db/init/006_furnace_menu.sql`, then
+`python -m slylog_collector.backfill_furnace_menu` to decode pages already in
+`raw_frames`. Unit tests: `python -m unittest test_furnace_menu` in `collector/`.
