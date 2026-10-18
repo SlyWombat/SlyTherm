@@ -24,6 +24,30 @@ Once a month (1st at `RUN_AT`, summarizing the month that just ended): an email
 "Energy report — <Month Year>" with a 150-250 word narrative. If Ollama is
 unavailable the email still goes out with the plain figures and a note.
 
+## Solar, battery and tariffs (#220)
+
+`daily.grid_kwh` is whole-home grid energy and **includes whatever the EcoFlow
+Ultra drew from the grid**. Since 2026-07-15 the logger also keeps
+`ecoflow_savings`, one row per day: battery discharge and grid charge split by
+ULO / weekend / mid / on-peak tariff, `solar_kwh`, the rates used, and the
+dollar value of displaced grid energy minus the charging cost. The report:
+
+- adds a `battery_solar_tariff` block (month totals by tariff, solar, net saving)
+  and `grid_kwh_net_of_battery_charge` to the month figures;
+- judges "notable high days" on grid kWh **net of that day's grid charging**, so
+  a deliberate 30 kWh ULO charge is never reported as a heavy-appliance day
+  (the September 2026 report did exactly that before this change);
+- tells the model what the block means and to omit it for months without rows.
+
+Year-over-year stays a raw kWh comparison: earlier years have no battery or
+solar rows, so a cost comparison is not possible yet.
+
+Verify any change without sending mail:
+
+```sh
+docker compose run --rm energy-analysis --dry-run --month 2026-09
+```
+
 ## Mail: house-mail, not the old bridge
 
 Until 2026-10 the job posted to the kdocker1 mail-bridge (`:3501/send`). That
