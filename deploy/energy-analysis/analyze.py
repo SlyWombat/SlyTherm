@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 TZ           = os.environ.get("TZ", "America/Toronto")
 DB_PATH      = os.environ.get("DB_PATH", "/db/daily.db")
 OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-MODEL        = os.environ.get("MODEL", "qwen2.5:72b-instruct-q4_K_M")
+MODEL        = os.environ.get("MODEL", "gemma4:31b")
 KEEP_ALIVE   = os.environ.get("OLLAMA_KEEP_ALIVE", "0")   # unload after run -> free VRAM for Immich
 # house-mail: base URL of the service and the path of the mounted 0600 key file.
 # The key is read at call time (a rotation needs no restart) and is never logged.
@@ -275,7 +275,11 @@ def write_report(stats):
         "model": MODEL,
         "stream": False,
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0.3},
+        # num_ctx: the prompt is a few KB of JSON. Ollama's default 32k context
+        # on the 72B model asks for a 9 GB KV cache, which failed with
+        # out-of-memory on 2026-10-01 and 2026-10-18 while other models were
+        # resident on the GPU (HTTP 500, figures-only fallback). 8k is plenty.
+        "options": {"temperature": 0.3, "num_ctx": 8192},
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": json.dumps(stats)},

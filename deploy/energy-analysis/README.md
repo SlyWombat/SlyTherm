@@ -80,7 +80,7 @@ The second command sends a real email to `MAIL_TO`. First verified
 
 | var | default | meaning |
 |---|---|---|
-| `MODEL` | `qwen2.5:72b-instruct-q4_K_M` | any pulled Ollama model (`gemma4:31b` is lighter) |
+| `MODEL` | `gemma4:31b` | any pulled Ollama model that fits beside the GPU's other tenants; `qwen2.5:72b-instruct-q4_K_M` (44.5 GiB) no longer does |
 | `OLLAMA_KEEP_ALIVE` | `0` | unload model after each run → frees VRAM for Immich ML |
 | `HOUSE_MAIL_URL` | `http://192.168.10.11:3510` | house-mail base URL (LAN only) |
 | `HOUSE_MAIL_KEY_FILE` | `/run/secrets/house-mail.key` | container path of the mounted key |
@@ -102,5 +102,9 @@ docker compose run --rm energy-analysis --month 2025-06   # a specific month
   have temperature. YoY energy comparison works back to **2024-11**.
 - Depends on `energy-weather-log` for the DB at `../energy-weather-log/data/daily.db`,
   on Ollama (same host) and on house-mail being up.
-- Ollama answered HTTP 500 on 2026-10-01; the figures-only fallback covered it.
-  Check that `MODEL` is still pulled if that repeats.
+- Ollama answered HTTP 500 on 2026-10-01 and 2026-10-18 (figures-only fallback
+  went out). Cause, from `journalctl -u ollama`: `cudaMalloc failed: out of
+  memory` loading the 72B model's 44.5 GiB of weights, then its 9 GiB KV cache
+  for the default 32k context, while ~22 GiB of VRAM was held by other
+  services. Fixed by `MODEL: gemma4:31b` and `num_ctx: 8192` in the request.
+  If the fallback header reappears, read that journal before changing anything.

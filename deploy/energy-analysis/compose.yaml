@@ -15,7 +15,10 @@ services:
       TZ: America/Toronto
       DB_PATH: /db/daily.db
       OLLAMA_URL: http://localhost:11434
-      MODEL: qwen2.5:72b-instruct-q4_K_M     # any pulled Ollama model; gemma4:31b is a lighter option
+      # any pulled Ollama model. qwen2.5:72b-instruct-q4_K_M (44.5 GiB of weights)
+      # no longer fits beside the GPU's other tenants (~22 GiB resident) and
+      # failed out-of-memory on 2026-10-01 and 2026-10-18; gemma4:31b does.
+      MODEL: gemma4:31b
       OLLAMA_KEEP_ALIVE: "0"                  # unload after each run -> frees VRAM for Immich ML
       # house-mail (#218). The key is a 0600 file bind-mounted below and read at
       # send time; it is never an environment value and never on a command line.
