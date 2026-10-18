@@ -1,0 +1,3 @@
+# the house-mail service key lives only on the host, next to the stack
+house-mail.key
+*.key

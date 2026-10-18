@@ -1,0 +1,32 @@
+# energy-analysis — monthly grid-energy report written by local Ollama and
+# emailed through the house mail service (house-mail, kdocker2 :3510).
+# Dockge stack "energy-analysis" on kdocker2 at /data/stacks/energy-analysis.
+# See README.md. Canonical copy lives in the SlyTherm repo: deploy/energy-analysis/ (#218).
+services:
+  energy-analysis:
+    build: .
+    image: energy-analysis:local
+    container_name: energy-analysis
+    restart: unless-stopped
+    # host networking: reach Ollama on localhost:11434 and house-mail on the
+    # LAN address of this same host without extra wiring.
+    network_mode: host
+    environment:
+      TZ: America/Toronto
+      DB_PATH: /db/daily.db
+      OLLAMA_URL: http://localhost:11434
+      MODEL: qwen2.5:72b-instruct-q4_K_M     # any pulled Ollama model; gemma4:31b is a lighter option
+      OLLAMA_KEEP_ALIVE: "0"                  # unload after each run -> frees VRAM for Immich ML
+      # house-mail (#218). The key is a 0600 file bind-mounted below and read at
+      # send time; it is never an environment value and never on a command line.
+      HOUSE_MAIL_URL: http://192.168.10.11:3510
+      HOUSE_MAIL_KEY_FILE: /run/secrets/house-mail.key
+      MAIL_TO: dave@drscapital.com
+      RUN_AT: "06:00"                          # local time on the 1st of each month
+      RUN_ON_START: "false"                    # set true once to fire immediately
+    volumes:
+      # the energy-weather-log database. Mounted rw because it is WAL-mode (SQLite
+      # must touch the -wal/-shm sidecars); analyze.py enforces PRAGMA query_only.
+      - ../energy-weather-log/data:/db
+      # the house-mail service key: host file 0600, see README "Mail key".
+      - ./house-mail.key:/run/secrets/house-mail.key:ro

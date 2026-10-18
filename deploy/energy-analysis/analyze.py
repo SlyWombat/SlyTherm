@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""
+energy-analysis — monthly grid-energy report.
+
+Reads the energy-weather-log SQLite DB (read-only), computes a monthly rollup
+with year-over-year comparison plus a temperature-vs-energy view, asks a local
+Ollama model to write a plain-English report, and emails it through the house
+mail service (house-mail, #218). Pure stdlib — no pip dependencies.
+
+Modes:
+  --once          run now for the most recent COMPLETE month, then exit
+  --month YYYY-MM run for a specific month, then exit (testing/backfill)
+  --check-mail    verify the house-mail key and grant, then exit
+  (no flag)       daemon: verify house-mail, then sleep until the 1st of next
+                  month at RUN_AT, run for the month that just ended, repeat.
+
+Exit status is non-zero whenever the report could not be sent. The old mail
+bridge failed silently for weeks; this job now fails where `docker ps` and the
+container logs show it. The report text is still printed to the log on a mail
+failure so it is never lost.
+"""
+import os, sys, json, sqlite3, time, urllib.request, urllib.error, calendar
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+TZ           = os.environ.get("TZ", "America/Toronto")
+DB_PATH      = os.environ.get("DB_PATH", "/db/daily.db")
+OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+MODEL        = os.environ.get("MODEL", "qwen2.5:72b-instruct-q4_K_M")
+KEEP_ALIVE   = os.environ.get("OLLAMA_KEEP_ALIVE", "0")   # unload after run -> free VRAM for Immich
+# house-mail: base URL of the service and the path of the mounted 0600 key file.
+# The key is read at call time (a rotation needs no restart) and is never logged.
+HOUSE_MAIL_URL      = os.environ.get("HOUSE_MAIL_URL", "http://192.168.10.11:3510").rstrip("/")
+HOUSE_MAIL_KEY_FILE = os.environ.get("HOUSE_MAIL_KEY_FILE", "/run/secrets/house-mail.key")
+MAIL_TO      = os.environ.get("MAIL_TO", "dave@drscapital.com")
+RUN_AT       = os.environ.get("RUN_AT", "06:00")          # local HH:MM on the 1st
+RUN_ON_START = os.environ.get("RUN_ON_START", "false").lower() == "true"
+ZONE = ZoneInfo(TZ)
+
+
+def log(*a):
+    print(datetime.now(ZONE).isoformat(timespec="seconds"), *a, flush=True)
+
+
+def post_json(url, payload, timeout):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode()
+
+
+# ---- mail (house-mail) -----------------------------------------------------
+
+class MailError(Exception):
+    """The report could not be sent. The message never contains the key."""
+
+
+def house_mail_key():
+    try:
+        with open(HOUSE_MAIL_KEY_FILE) as f:
+            key = f.read().strip()
+    except OSError as e:
+        raise MailError(f"house-mail key unreadable at {HOUSE_MAIL_KEY_FILE}: {e.strerror}") from None
+    if not key:
+        raise MailError(f"house-mail key file {HOUSE_MAIL_KEY_FILE} is empty")
+    return key
+
+
+def house_mail(method, path, payload=None, timeout=60):
+    """One authenticated call to house-mail; returns the decoded JSON body."""
+    headers = {"Authorization": f"Bearer {house_mail_key()}"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(f"{HOUSE_MAIL_URL}{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        raise MailError(f"house-mail {method} {path} -> HTTP {e.code}: {detail}") from None
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise MailError(f"house-mail {method} {path} failed: {e}") from None
+
+
+def send_mail(subject, body):
+    # /send is house-mail's notify-style shim: {title, message, target?}. target is
+    # explicit here even though the key carries default_to = MAIL_TO.
+    house_mail("POST", "/send", {"title": subject, "message": body, "target": MAIL_TO})
+
+
+def check_mail():
+    """Startup self-test: the key file must be readable and the key must hold
+    mail.send. A bad key or grant therefore shows up today as a container that
+    will not stay up, instead of as a report that quietly never arrives."""
+    who = house_mail("GET", "/v1/whoami", timeout=15)
+    who = who.get("result", who)
+    grants = who.get("grants") or []
+    if not any("mail.send" in (g.get("caps") or []) for g in grants):
+        raise MailError(f"house-mail key '{who.get('client', '?')}' has no mail.send grant")
+    log(f"house-mail ok: key '{who.get('client')}' may send; reports go to {MAIL_TO}")
+
+
+# ---- data ----------------------------------------------------------------
+
+def connect():
+    # The DB is WAL-mode and held open by energy-weather-log, so SQLite needs to
+    # touch the -wal/-shm sidecars: open read-write, then hard-enforce read-only
+    # at the connection level. We only ever SELECT.
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.execute("PRAGMA query_only=ON")
+    return con
+
+
+def month_rows(con, y, m):
+    s = date(y, m, 1).isoformat()
+    e = (date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)).isoformat()
+    return con.execute(
+        "SELECT date,temp_min_c,temp_max_c,temp_mean_c,grid_kwh,complete "
+        "FROM daily WHERE date>=? AND date<? ORDER BY date", (s, e)).fetchall()
+
+
+def summarize(rows):
+    kwh   = [r[4] for r in rows if r[4] is not None]
+    highs = [r[2] for r in rows if r[2] is not None]
+    lows  = [r[1] for r in rows if r[1] is not None]
+    means = [r[3] for r in rows if r[3] is not None]
+    avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
+    return {
+        "days": len(rows),
+        "complete_days": sum(1 for r in rows if r[5] == 1),
+        "total_kwh": round(sum(kwh), 1) if kwh else None,
+        "avg_daily_kwh": avg(kwh),
+        "avg_high_c": round(sum(highs) / len(highs), 1) if highs else None,
+        "avg_low_c": round(sum(lows) / len(lows), 1) if lows else None,
+        "avg_mean_c": round(sum(means) / len(means), 1) if means else None,
+    }
+
+
+def linreg(xs, ys):
+    """Least-squares slope/intercept/pearson-r; None if not enough/degenerate."""
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    if sxx == 0:
+        return None
+    slope = sxy / sxx
+    r = sxy / ((sxx * syy) ** 0.5) if syy > 0 else 0.0
+    return slope, my - slope * mx, r
+
+
+def build_stats(con, y, m):
+    rows = month_rows(con, y, m)
+    if not rows:
+        return None
+    cur = summarize(rows)
+    month_name = calendar.month_name[m]
+
+    # year-over-year: same calendar month, every prior year on record
+    yoy = []
+    for py in range(y - 1, 2010, -1):
+        pr = month_rows(con, py, m)
+        if not pr:
+            continue
+        ps = summarize(pr)
+        delta_pct = None
+        if ps["total_kwh"] and cur["total_kwh"]:
+            delta_pct = round(100 * (cur["total_kwh"] - ps["total_kwh"]) / ps["total_kwh"], 1)
+        yoy.append({"year": py, "total_kwh": ps["total_kwh"],
+                    "avg_high_c": ps["avg_high_c"], "avg_mean_c": ps["avg_mean_c"],
+                    "vs_this_year_pct": delta_pct})
+
+    # monthly temp-vs-energy fit across all complete months that have temp,
+    # to estimate "expected kWh for this month's temperature".
+    mrows = con.execute(
+        "SELECT strftime('%Y-%m',date) ym, AVG(temp_mean_c), SUM(grid_kwh), COUNT(*) "
+        "FROM daily WHERE complete=1 AND temp_mean_c IS NOT NULL "
+        "GROUP BY ym HAVING COUNT(*) >= 25").fetchall()
+    temp_energy = None
+    if cur["avg_mean_c"] is not None:
+        xs = [r[1] for r in mrows]
+        ys = [r[2] for r in mrows]
+        fit = linreg(xs, ys)
+        if fit:
+            slope, intercept, r = fit
+            expected = slope * cur["avg_mean_c"] + intercept
+            dev = None
+            if cur["total_kwh"] and expected:
+                dev = round(100 * (cur["total_kwh"] - expected) / expected, 1)
+            temp_energy = {
+                "months_in_fit": len(mrows),
+                "kwh_per_degC": round(slope, 1),
+                "pearson_r": round(r, 2),
+                "expected_kwh_for_this_temp": round(expected, 1),
+                "actual_vs_expected_pct": dev,
+            }
+
+    # daily anomalies within the month: high kWh relative to temperature,
+    # judged against a trailing-365-day daily fit.
+    anomalies = []
+    drows = con.execute(
+        "SELECT date,temp_mean_c,grid_kwh FROM daily "
+        "WHERE complete=1 AND temp_mean_c IS NOT NULL AND grid_kwh IS NOT NULL "
+        "AND date >= date(?, '-365 days')", (date(y, m, 1).isoformat(),)).fetchall()
+    fit = linreg([r[1] for r in drows], [r[2] for r in drows]) if drows else None
+    if fit:
+        slope, intercept, _ = fit
+        resid = []
+        for d, t, k in drows:
+            if d.startswith(f"{y:04d}-{m:02d}"):
+                resid.append((round(k - (slope * t + intercept), 1), d, t, k))
+        resid.sort(reverse=True)
+        for r_, d, t, k in resid[:2]:
+            if r_ > 0:
+                anomalies.append({"date": d, "grid_kwh": k, "mean_temp_c": t,
+                                  "kwh_above_expected": r_})
+
+    return {
+        "report_for": f"{month_name} {y}",
+        "this_month": cur,
+        "year_over_year": yoy,
+        "temperature_vs_energy": temp_energy,
+        "notable_high_days": anomalies,
+        "data_notes": "grid_kwh = whole-home grid energy (Emporia Vue); temps from "
+                      "Ecowitt outdoor sensor (only available from 2025-06 onward).",
+    }
+
+
+# ---- report --------------------------------------------------------------
+
+SYSTEM = (
+    "You are a home-energy analyst writing a short monthly report for a homeowner. "
+    "Use ONLY the numbers in the JSON provided; never invent figures. Write 150-250 "
+    "words of clear, friendly plain text (no markdown headings, no bullet symbols). "
+    "Cover: the month's total grid energy and how it compares year-over-year; how "
+    "energy tracked with outdoor temperature (use the temperature_vs_energy fit if "
+    "present, noting whether usage was higher or lower than expected for the "
+    "temperature); and any notable high-usage days. Finish with one practical, "
+    "non-preachy observation. If a value is null, simply omit it rather than guessing."
+)
+
+
+def text_figures(stats):
+    """Readable plain-text figures — used only as a fallback if Ollama is down."""
+    t = stats["this_month"]
+    lines = [f"Figures for {stats['report_for']}:",
+             f"  Total grid energy: {t['total_kwh']} kWh over {t['days']} days "
+             f"(avg {t['avg_daily_kwh']}/day)"]
+    if t["avg_high_c"] is not None:
+        lines.append(f"  Outdoor temp: avg high {t['avg_high_c']}°C, "
+                     f"avg low {t['avg_low_c']}°C, mean {t['avg_mean_c']}°C")
+    for y in stats["year_over_year"]:
+        d = f" ({y['vs_this_year_pct']:+}% vs this year)" if y["vs_this_year_pct"] is not None else ""
+        lines.append(f"  {y['year']}: {y['total_kwh']} kWh{d}")
+    te = stats["temperature_vs_energy"]
+    if te and te["actual_vs_expected_pct"] is not None:
+        lines.append(f"  Expected for this temperature: {te['expected_kwh_for_this_temp']} kWh "
+                     f"({te['actual_vs_expected_pct']:+}% vs expected)")
+    for a in stats["notable_high_days"]:
+        lines.append(f"  High day {a['date']}: {a['grid_kwh']} kWh at {a['mean_temp_c']}°C "
+                     f"({a['kwh_above_expected']:+} vs expected)")
+    return "\n".join(lines)
+
+
+def write_report(stats):
+    payload = {
+        "model": MODEL,
+        "stream": False,
+        "keep_alive": KEEP_ALIVE,
+        "options": {"temperature": 0.3},
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": json.dumps(stats)},
+        ],
+    }
+    out = post_json(f"{OLLAMA_URL}/api/chat", payload, timeout=900)
+    return json.loads(out)["message"]["content"].strip()
+
+
+def run_for(y, m):
+    """Build and send the report for one month. Returns True when the mail went out."""
+    with connect() as con:
+        stats = build_stats(con, y, m)
+    if not stats or stats["this_month"]["total_kwh"] is None:
+        log(f"no usable data for {y}-{m:02d}; skipping")
+        return True
+    try:
+        body = write_report(stats)
+        log(f"ollama report generated ({len(body)} chars)")
+    except Exception as e:
+        log(f"WARN ollama failed ({e}); sending figures only")
+        body = f"(Automated report unavailable: {e})\n\n{text_figures(stats)}"
+
+    subject = f"Energy report — {stats['report_for']}"
+    try:
+        send_mail(subject, body)
+        log(f"emailed '{subject}' to {MAIL_TO} via house-mail")
+        return True
+    except MailError as e:
+        log(f"ERROR {e}")
+        log("report body follows so it is not lost:")
+        print(body, flush=True)
+        return False
+
+
+def prev_complete_month(now):
+    y, m = now.year, now.month
+    return (y - 1, 12) if m == 1 else (y, m - 1)
+
+
+def next_run(now):
+    hh, mm = map(int, RUN_AT.split(":"))
+    # if it's already the 1st and we haven't passed RUN_AT, fire today (so a
+    # restart on the 1st before RUN_AT doesn't skip the month's report).
+    todays = now.replace(day=1, hour=hh, minute=mm, second=0, microsecond=0)
+    if now.day == 1 and now < todays:
+        return todays
+    ny, nm = (now.year + 1, 1) if now.month == 12 else (now.year, now.month + 1)
+    return datetime(ny, nm, 1, hh, mm, tzinfo=ZONE)
+
+
+def main():
+    if "--check-mail" in sys.argv:
+        try:
+            check_mail()
+        except MailError as e:
+            log(f"ERROR {e}")
+            sys.exit(2)
+        return
+    if "--month" in sys.argv:
+        ym = sys.argv[sys.argv.index("--month") + 1]
+        y, m = map(int, ym.split("-"))
+        sys.exit(0 if run_for(y, m) else 1)
+    if "--once" in sys.argv:
+        y, m = prev_complete_month(datetime.now(ZONE))
+        sys.exit(0 if run_for(y, m) else 1)
+
+    log(f"daemon up; model={MODEL} db={DB_PATH} mail->{MAIL_TO} via {HOUSE_MAIL_URL}")
+    try:
+        check_mail()
+    except MailError as e:
+        # Refuse to idle for a month on a key that cannot send. With
+        # restart: unless-stopped this is a visible restart loop, not silence.
+        log(f"ERROR {e}")
+        sys.exit(2)
+    if RUN_ON_START:
+        y, m = prev_complete_month(datetime.now(ZONE))
+        if not run_for(y, m):
+            sys.exit(1)
+    while True:
+        now = datetime.now(ZONE)
+        nxt = next_run(now)
+        secs = (nxt - now).total_seconds()
+        log(f"next run {nxt.isoformat(timespec='minutes')} (in {secs/3600:.1f}h)")
+        time.sleep(max(60, secs))
+        y, m = prev_complete_month(datetime.now(ZONE))
+        if not run_for(y, m):
+            # Exit so the failure is visible (restart count, logs); the restart
+            # re-runs check_mail() and then waits for the next month.
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
