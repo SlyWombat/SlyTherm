@@ -5,19 +5,24 @@ from the 2026-10-18 captures:
 
     <idx> <page> 00 00 00 F0 <body>
 
-`page` echoes the requested page (00 = the menu list, 01 = Status 1, ...).
-A page body is   B6 C5 D0 <title> B7   then one row per value:
+`page` echoes the requested page (00 = the menu list, 01 = Status 1, 02 =
+Status 2, 03 = 2WK HIST, 04 = LIFE HIST, 05 = FAULT HIST, 06 = UNIT INFO,
+07 = SETUP). A page body is   B6 [C5 D0] <title> B7   (the C5 D0 marker only on
+Status 1/2), then one row per value. Row shapes seen on the real furnace:
 
-    C2 E2 <label> E0 <value> C3
+    C2 E2 <label> E0 <value> C3                      read-only (status, history)
+    C2 E1 <label> E0 <current> E0 <opt> E0 <opt> C3  editable (SETUP): the first
+                                                     field is the current value,
+                                                     the rest are its options
+    C2 E1 <label> E8 <current> E0 <opt> C3           same, with an E8 separator
 
-The menu list (page 0) is   A0 A6 { B6 [C5 D0] <title> B7 }*  with the C5 D0
-marker only on the first two titles. Values are fixed-width ASCII, padded
-with spaces ("  0%", "OPEN   ", "OFF       ").
+Fault history values read "DAYS 68" (days since the fault). The menu list
+(page 0) is  A0 A6 { B6 [C5 D0] <title> B7 }*. Values are fixed-width ASCII,
+padded with spaces.
 
-The grammar is deliberately tolerant: only Status 1 has been seen so far, and
-Status 2 / history / unit-info rows may carry formats we have not met. A reply
-that does not parse still returns a MenuPage (rows empty, complete False) with
-the raw payload attached, so the caller can store it for re-decoding.
+The grammar is tolerant. A reply that does not parse still returns a MenuPage
+(complete False) with the raw payload attached, so the caller can store it for
+re-decoding.
 """
 from __future__ import annotations
 
@@ -27,21 +32,31 @@ from dataclasses import dataclass, field
 MSG_GET_USER_MENU = 0x41
 MSG_USER_MENU_REPLY = 0xC1
 
-PAGE_HDR = b"\xb6\xc5\xd0"
 PAGE_END = b"\xb7"
-ROW_START = b"\xc2\xe2"
+ROW_START = b"\xc2"          # followed by E2 (read-only) or E1 (editable)
+ROW_KINDS = (0xE2, 0xE1)
 ROW_SEP = b"\xe0"
+ROW_SEP2 = b"\xe8"           # label/current separator on some editable rows
 ROW_END = b"\xc3"
-PREFIX_LEN = 6            # idx, page, 00 00 00, F0
+PREFIX_LEN = 6               # idx, page, 00 00 00, F0
 
 _NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?")
+_DAYS_RE = re.compile(r"^DAYS\s+(\d+)$")
+
+
+@dataclass
+class MenuRow:
+    label: str
+    value: str
+    number: float | None = None
+    options: str | None = None   # editable rows: the other choices, "|"-joined
 
 
 @dataclass
 class MenuPage:
     page: int
     title: str | None = None
-    rows: list[tuple[str, str, float | None]] = field(default_factory=list)
+    rows: list[MenuRow] = field(default_factory=list)
     menu_titles: list[str] = field(default_factory=list)   # page 0 only
     complete: bool = False
     payload: bytes = b""
@@ -52,9 +67,23 @@ def _text(b: bytes) -> str:
 
 
 def _number(value: str) -> float | None:
-    """Leading number of a value: '100%' -> 100, '1682' -> 1682, 'OPEN' -> None."""
+    """Reading of a value: '100%' -> 100, '1682' -> 1682, 'DAYS 68' -> 68."""
+    m = _DAYS_RE.match(value)
+    if m:
+        return float(m.group(1))
     m = _NUM_RE.match(value)
     return float(m.group(0)) if m else None
+
+
+def _title_at(body: bytes, start: int) -> tuple[str, int] | None:
+    """Title after the B6 at `start` (optional C5 D0 marker): (text, next pos)."""
+    t = start + 1
+    if body[t:t + 2] == b"\xc5\xd0":
+        t += 2
+    end = body.find(PAGE_END, t)
+    if end < 0:
+        return None
+    return _text(body[t:end]), end + 1
 
 
 def decode_menu_reply(payload: bytes) -> MenuPage | None:
@@ -65,40 +94,46 @@ def decode_menu_reply(payload: bytes) -> MenuPage | None:
     body = payload[PREFIX_LEN:]
 
     if page.page == 0:
-        # Menu list: each title sits between B6 (optionally B6 C5 D0) and B7.
-        for chunk in body.split(PAGE_END):
-            i = chunk.rfind(b"\xb6")
+        pos = 0
+        while True:
+            i = body.find(b"\xb6", pos)
             if i < 0:
-                continue
-            raw = chunk[i + 1:]
-            if raw[:2] == b"\xc5\xd0":
-                raw = raw[2:]
-            t = _text(raw)
-            if t:
-                page.menu_titles.append(t)
+                break
+            got = _title_at(body, i)
+            if got is None:
+                break
+            if got[0]:
+                page.menu_titles.append(got[0])
+            pos = got[1]
         page.complete = bool(page.menu_titles) and body.rstrip(b"\x00").endswith(PAGE_END)
         return page
 
-    start = body.find(PAGE_HDR)
+    start = body.find(b"\xb6")
     if start < 0:
         return page
-    end = body.find(PAGE_END, start + len(PAGE_HDR))
-    if end < 0:
+    got = _title_at(body, start)
+    if got is None:
         return page
-    page.title = _text(body[start + len(PAGE_HDR):end])
+    page.title, pos = got
 
-    pos = end + 1
     while True:
         r = body.find(ROW_START, pos)
-        if r < 0:
+        if r < 0 or r + 1 >= len(body) or body[r + 1] not in ROW_KINDS:
             break
-        sep = body.find(ROW_SEP, r + 2)
         stop = body.find(ROW_END, r + 2)
-        if sep < 0 or stop < 0 or sep > stop:
+        if stop < 0:
             break                      # row cut off: leave the page incomplete
-        label = _text(body[r + 2:sep])
-        value = _text(body[sep + 1:stop])
-        page.rows.append((label, value, _number(value)))
+        cells = body[r + 2:stop]
+        seps = [i for i in (cells.find(ROW_SEP), cells.find(ROW_SEP2)) if i >= 0]
+        if not seps:
+            break
+        sep = min(seps)
+        label = _text(cells[:sep])
+        fields = [_text(f) for f in
+                  cells[sep + 1:].replace(ROW_SEP2, ROW_SEP).split(ROW_SEP)]
+        value = fields[0]
+        options = "|".join(fields[1:]) if len(fields) > 1 else None
+        page.rows.append(MenuRow(label, value, _number(value), options))
         pos = stop + 1
     page.complete = bool(page.rows) and body[pos:].rstrip(b"\x00") == b""
     return page

@@ -17,8 +17,10 @@ CREATE TABLE IF NOT EXISTS furnace_menu (
     seq       smallint    NOT NULL,   -- row position on the page, 0-based
     label     text        NOT NULL,   -- e.g. 'GAS VLV PRCNT'
     value     text        NOT NULL,   -- trimmed text: '100%', 'CLOSED', 'GOOD'
-    value_num double precision        -- numeric reading (100, 1682) else NULL
+    value_num double precision,       -- numeric reading (100, 1682, 'DAYS 68' -> 68) else NULL
+    options   text                    -- editable SETUP rows: other choices, '|'-joined
 );
+ALTER TABLE furnace_menu ADD COLUMN IF NOT EXISTS options text;
 SELECT create_hypertable('furnace_menu', 'ts', if_not_exists => TRUE);
 CREATE UNIQUE INDEX IF NOT EXISTS furnace_menu_dedupe
     ON furnace_menu (ts, page, seq);
