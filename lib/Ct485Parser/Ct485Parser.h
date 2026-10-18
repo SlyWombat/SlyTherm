@@ -94,6 +94,29 @@ struct SensorDataDecode {
 
 SensorDataDecode decodeSensorData(const Frame& f);
 
+// ---------- Get User Menu reply (0xC1), SlyTherm #221 ----------
+// The furnace answers the OEM stat's 0x41 request with a text page:
+//   <idx> <page> 00 00 00 F0  B6 C5 D0 <title> B7  { C2 E2 <label> E0 <value> C3 }*
+// Page 0 is the menu list (titles only). Values are fixed-width ASCII; labels
+// and values come back trimmed. Bounded: never reads past effectivePayloadLen.
+struct MenuRow {
+  std::string label;
+  std::string value;
+  bool numeric = false;   // value starts with a number ("100%", "1682")
+  float number = 0.0f;
+};
+
+struct UserMenuPage {
+  bool ok = false;        // header recognised (idx.. F0 prefix)
+  uint8_t page = 0;       // 0 = menu list, 1 = Status 1, ...
+  std::string title;      // page title (page > 0)
+  std::vector<std::string> menuTitles;  // page 0 only
+  std::vector<MenuRow> rows;
+  bool complete = false;  // reached the end of the declared payload cleanly
+};
+
+UserMenuPage decodeUserMenuPage(const Frame& f);
+
 // ---------- Raw view for stimulus-response diffing ----------
 // Offset-labeled hex dump of the payload, rows of 8, labels in FRAME offsets
 // (decimal) so lines match the [12]/[13]/[14] notation in docs/02 §5a.

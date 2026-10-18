@@ -19,6 +19,10 @@ namespace ct485 {
 constexpr uint32_t kBaudDefault        = 9600;    // confirm by sniffing; EcoNet variant uses 38400
 constexpr uint32_t kBaudAlt            = 38400;
 constexpr uint32_t kInterFrameGapUs    = 3500;    // >3.5 ms idle = frame boundary (no preamble)
+// #221: a long frame still short of its declared length tolerates a mid-frame
+// pause this long (the furnace sends 0xC1 menu pages in ~30-140 ms bursts).
+constexpr uint32_t kLongFrameGapUs     = 250000;
+constexpr size_t   kLongFrameMinLen    = 100;     // only frames declaring >= this many bytes
 constexpr uint32_t kInterPacketDelayUs = 100000;  // 100 ms idle required before TX
 constexpr uint32_t kDePrePostUs        = 300;     // DE pre/post-drive hold (200-500 allowed)
 

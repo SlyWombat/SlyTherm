@@ -82,6 +82,15 @@ class FrameAccumulator {
   // Drop in-progress bytes and the completed frame; counters are kept.
   void reset();
 
+  // Idle time that ends the in-progress frame. Normally kInterFrameGapUs, but
+  // while a LONG frame's header has declared more bytes than have arrived the
+  // furnace may pause mid-frame: a 251-byte 0xC1 menu page (#221) arrives in
+  // three bursts 30-140 ms apart, which a 3.5 ms gap tore into [ct485-rej]
+  // pieces. Callers use this for BOTH the gapBefore test and the idle
+  // close-out. Short frames keep the strict gap, so a truncated short frame
+  // never swallows the next one.
+  uint32_t gapThresholdUs() const;
+
  private:
   bool closeFrame();
   // Total frame length the accumulated header declares (buf[9] + 12), or 0
