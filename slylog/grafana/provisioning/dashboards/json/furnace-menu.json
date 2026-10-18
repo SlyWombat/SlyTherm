@@ -1,0 +1,205 @@
+{
+  "uid": "slylog-furnace-menu",
+  "title": "SlyLog / Furnace status pages",
+  "description": "Furnace status read from CT-485 Get User Menu (0x41/0xC1) replies (#221). Passive: only populated while the Furnace menu is open on the OEM stat.",
+  "tags": [
+    "slylog"
+  ],
+  "timezone": "America/Toronto",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Latest furnace page values (and when last seen)",
+      "description": "Newest reading of every label on every furnace menu page. Only fills while someone has the menu open on the OEM stat.",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "slylog-pg"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "slylog-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DISTINCT ON (page, seq) title AS \"page\", label, value, ts AS \"last seen\", now() - ts AS \"age\" FROM furnace_menu WHERE ts > now() - interval '90 days' ORDER BY page, seq, ts DESC"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Gas valve % and blower CFM (Status 1)",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "slylog-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "BLOWER CFM"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GAS VLV PRCNT"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "slylog-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ts AS time, label AS metric, value_num AS value FROM furnace_menu WHERE $__timeFilter(ts) AND label IN ('GAS VLV PRCNT','BLOWER CFM','APPROX IDM RPM') AND value_num IS NOT NULL ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "state-timeline",
+      "title": "Flame / gas valve relay / pressure switches",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "slylog-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "slylog-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ts AS time, label AS metric, value FROM furnace_menu WHERE $__timeFilter(ts) AND label IN ('FLAME','GAS VLV RELAY','FURN LO PR SW','FURN HI PR SW','MAIN LIMIT') ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Furnace gas valve % against OEM heat demand",
+      "description": "Lines the furnace's own gas valve reading up with the OEM stat's 0x03 heat demand (events demand_change/cycle_*).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "slylog-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "slylog-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ts AS time, 'furnace gas valve' AS metric, value_num AS value FROM furnace_menu WHERE $__timeFilter(ts) AND label = 'GAS VLV PRCNT' ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "slylog-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ts AS time, 'OEM heat demand' AS metric, (detail->>'pct')::float AS value FROM events WHERE $__timeFilter(ts) AND kind IN ('cycle_start','cycle_stop','demand_change') AND detail->>'cmd' ILIKE '%HEAT%' ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}
