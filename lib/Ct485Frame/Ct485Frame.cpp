@@ -100,6 +100,12 @@ size_t FrameAccumulator::expectedLen() const {
   return static_cast<size_t>(plen) + kHeaderLen + kChecksumLen;
 }
 
+uint32_t FrameAccumulator::gapThresholdUs() const {
+  const size_t want = expectedLen();
+  if (!overflowed_ && want >= kLongFrameMinLen && len_ < want) return kLongFrameGapUs;
+  return kInterFrameGapUs;
+}
+
 bool FrameAccumulator::flush() { return closeFrame(); }
 
 size_t FrameAccumulator::takeRejected(uint8_t* out) {

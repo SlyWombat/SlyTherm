@@ -2141,7 +2141,7 @@ void ct485Task(void*) {
       gCtRxBytes = gCtRxBytes + 1;
       const uint32_t nowUs = micros();
       const bool gapBefore =
-          !gCtInProgress || (nowUs - gCtLastByteUs) >= ct485::kInterFrameGapUs;
+          !gCtInProgress || (nowUs - gCtLastByteUs) >= gCtAcc.gapThresholdUs();
       gCtLastByteUs = nowUs;
       gCtInProgress = true;
       if (gCtAcc.feed(static_cast<uint8_t>(c), gapBefore)) {
@@ -2158,7 +2158,7 @@ void ct485Task(void*) {
       sniffRejects();  // drain per byte: the salvage stash is single-slot
     }
     if (gCtInProgress &&
-        static_cast<uint32_t>(micros() - gCtLastByteUs) >= ct485::kInterFrameGapUs) {
+        static_cast<uint32_t>(micros() - gCtLastByteUs) >= gCtAcc.gapThresholdUs()) {
       gCtInProgress = false;
       if (gCtAcc.flush()) {
         ct485::Frame f;

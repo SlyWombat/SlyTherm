@@ -2,6 +2,8 @@
 
 #include "Ct485Parser.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -279,6 +281,70 @@ std::string FieldDictionary::toTable() const {
   return out;
 }
 
+UserMenuPage decodeUserMenuPage(const Frame& f) {
+  UserMenuPage out;
+  const size_t n = effectivePayloadLen(f);
+  constexpr size_t kPrefix = 6;
+  if (f.baseMsgType() != static_cast<uint8_t>(MsgType::kGetUserMenu) ||
+      (f.msgType & kResponseFlag) == 0 || n < kPrefix + 2 || f.payload[5] != 0xF0)
+    return out;
+  out.ok = true;
+  out.page = f.payload[1];
+
+  auto text = [&](size_t from, size_t to) {   // [from, to), trimmed
+    while (from < to && (f.payload[from] == ' ' || f.payload[from] == 0)) from++;
+    while (to > from && (f.payload[to - 1] == ' ' || f.payload[to - 1] == 0)) to--;
+    return std::string(reinterpret_cast<const char*>(f.payload) + from, to - from);
+  };
+  auto find = [&](size_t from, uint8_t b) {   // index of b at/after from, or n
+    while (from < n && f.payload[from] != b) from++;
+    return from;
+  };
+
+  if (out.page == 0) {
+    size_t i = kPrefix;
+    while (i < n) {
+      const size_t start = find(i, 0xB6);
+      if (start >= n) break;
+      size_t t = start + 1;
+      if (t + 1 < n && f.payload[t] == 0xC5 && f.payload[t + 1] == 0xD0) t += 2;
+      const size_t end = find(t, 0xB7);
+      if (end >= n) break;
+      const std::string title = text(t, end);
+      if (!title.empty()) out.menuTitles.push_back(title);
+      i = end + 1;
+    }
+    out.complete = !out.menuTitles.empty() && f.payload[n - 1] == 0xB7;
+    return out;
+  }
+
+  size_t i = kPrefix;
+  if (!(i + 2 < n && f.payload[i] == 0xB6 && f.payload[i + 1] == 0xC5 &&
+        f.payload[i + 2] == 0xD0))
+    return out;
+  const size_t tEnd = find(i + 3, 0xB7);
+  if (tEnd >= n) return out;
+  out.title = text(i + 3, tEnd);
+  i = tEnd + 1;
+  while (i + 1 < n && f.payload[i] == 0xC2 && f.payload[i + 1] == 0xE2) {
+    const size_t sep = find(i + 2, 0xE0);
+    const size_t stop = find(sep + 1, 0xC3);
+    if (sep >= n || stop >= n) break;
+    MenuRow r;
+    r.label = text(i + 2, sep);
+    r.value = text(sep + 1, stop);
+    const char* v = r.value.c_str();
+    char* endp = nullptr;
+    const float num = strtof(v, &endp);
+    if (endp != v) { r.numeric = true; r.number = num; }
+    out.rows.push_back(r);
+    i = stop + 1;
+  }
+  while (i < n && f.payload[i] == 0) i++;
+  out.complete = !out.rows.empty() && i == n;
+  return out;
+}
+
 std::string summarize(const Frame& f) {
   std::string out =
       fmt("%s src=%s dst=%s subnet=%s nodeType=%s pkt=%s len=%u\n",
@@ -326,6 +392,16 @@ std::string summarize(const Frame& f) {
                    static_cast<unsigned>(d.declaredLen),
                    d.truncated ? " TRUNCATED" : "", d.text);
       }
+    }
+  } else if (f.msgType ==
+             (static_cast<uint8_t>(MsgType::kGetUserMenu) | kResponseFlag)) {
+    const UserMenuPage d = decodeUserMenuPage(f);
+    if (d.ok) {
+      out += fmt("  menu page %u \"%s\"%s\n", static_cast<unsigned>(d.page),
+                 d.page == 0 ? "(menu list)" : d.title.c_str(),
+                 d.complete ? "" : " INCOMPLETE");
+      for (const auto& t : d.menuTitles) out += "    entry: " + t + "\n";
+      for (const auto& r : d.rows) out += "    " + r.label + " = " + r.value + "\n";
     }
   } else if (f.msgType ==
              (static_cast<uint8_t>(MsgType::kGetSensorData) | kResponseFlag)) {

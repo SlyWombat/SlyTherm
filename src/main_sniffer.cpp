@@ -318,7 +318,7 @@ void pumpRx() {
     gLastByteUs = nowUs;
     gTotalBytes++;
 
-    const bool gapBefore = !gHaveInProgress || gapUs >= ct485::kInterFrameGapUs;
+    const bool gapBefore = !gHaveInProgress || gapUs >= gAcc.gapThresholdUs();
     // feed() closes the PREVIOUS frame when gapBefore is set, so report it
     // with the gap/time captured at ITS first byte before rolling those over.
     const bool valid = gAcc.feed(static_cast<uint8_t>(c), gapBefore);
@@ -333,7 +333,7 @@ void pumpRx() {
 
   // Idle close-out: bus quiet >= one gap ends the in-progress frame.
   if (gHaveInProgress &&
-      static_cast<uint32_t>(micros() - gLastByteUs) >= ct485::kInterFrameGapUs) {
+      static_cast<uint32_t>(micros() - gLastByteUs) >= gAcc.gapThresholdUs()) {
     gHaveInProgress = false;
     closeShadow(gAcc.flush(), gCurFrameGapUs, gCurFrameStartMs);
   }

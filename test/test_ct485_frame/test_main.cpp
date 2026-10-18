@@ -369,6 +369,50 @@ static void test_accumulator_empty_gap_is_not_a_frame() {
   TEST_ASSERT_EQUAL_UINT32(0, acc.counters().framesOk);
 }
 
+// #221: the furnace sends a 251-byte 0xC1 menu page in three bursts 30-140 ms
+// apart. Driven the way the sniffers drive it (gap vs gapThresholdUs()), the
+// page must parse as ONE valid frame, not tear into [ct485-rej] pieces.
+static void test_accumulator_long_frame_tolerates_burst_gaps() {
+  ct485::Frame f{};
+  f.dst = 0xFF; f.src = 0x02; f.subnet = 0x02; f.sendMethod = 0x02;
+  f.srcNodeType = 0x02; f.msgType = 0xC1; f.packetNum = 0x20;
+  f.payloadLen = 239;
+  for (int i = 0; i < 239; i++) f.payload[i] = static_cast<uint8_t>(0x20 + i % 40);
+  uint8_t raw[ct485::kMaxFrame];
+  const size_t len = ct485::encode(f, raw);
+  TEST_ASSERT_EQUAL_UINT32(251, len);
+
+  ct485::FrameAccumulator acc;
+  bool done = false;
+  uint32_t lastUs = 0, nowUs = 0;
+  for (size_t i = 0; i < len; i++) {
+    uint32_t gap = 1000;                       // ~1 byte time at 9600 baud
+    if (i == 100) gap = 111000;                // burst boundaries
+    if (i == 180) gap = 30000;
+    if (i == 0) gap = 500000;
+    nowUs += gap;
+    const bool gapBefore = i == 0 || (nowUs - lastUs) >= acc.gapThresholdUs();
+    lastUs = nowUs;
+    if (acc.feed(raw[i], gapBefore)) done = true;
+  }
+  TEST_ASSERT_TRUE(done);
+  TEST_ASSERT_EQUAL_UINT32(1, acc.counters().framesOk);
+  TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badLength);
+  TEST_ASSERT_EQUAL_UINT32(0, acc.counters().badChecksum);
+}
+
+// The tolerance is for long frames only: a short frame, or any frame whose
+// header is not yet in, keeps the strict 3.5 ms boundary.
+static void test_accumulator_gap_threshold_strict_for_short_frames() {
+  ct485::Frame g = makeDemandFrame();
+  uint8_t raw[ct485::kMaxFrame];
+  const size_t len = ct485::encode(g, raw);
+  ct485::FrameAccumulator acc;
+  TEST_ASSERT_EQUAL_UINT32(ct485::kInterFrameGapUs, acc.gapThresholdUs());
+  for (size_t i = 0; i < len - 1; i++) acc.feed(raw[i], i == 0);
+  TEST_ASSERT_EQUAL_UINT32(ct485::kInterFrameGapUs, acc.gapThresholdUs());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fletcher_known_vector);
@@ -387,5 +431,7 @@ int main() {
   RUN_TEST(test_accumulator_back_to_back_frames_no_merge);
   RUN_TEST(test_accumulator_salvages_rejected_bytes);
   RUN_TEST(test_accumulator_empty_gap_is_not_a_frame);
+  RUN_TEST(test_accumulator_long_frame_tolerates_burst_gaps);
+  RUN_TEST(test_accumulator_gap_threshold_strict_for_short_frames);
   return UNITY_END();
 }
