@@ -256,7 +256,9 @@ def text_figures(stats):
         lines.append(f"  Outdoor temp: avg high {t['avg_high_c']}°C, "
                      f"avg low {t['avg_low_c']}°C, mean {t['avg_mean_c']}°C")
     for y in stats["year_over_year"]:
-        d = f" ({y['vs_this_year_pct']:+}% vs this year)" if y["vs_this_year_pct"] is not None else ""
+        # vs_this_year_pct is (this year - that year) / that year, so read it as
+        # "this year is N% above/below <year>", not the other way round.
+        d = f" (this year {y['vs_this_year_pct']:+}% vs {y['year']})" if y["vs_this_year_pct"] is not None else ""
         lines.append(f"  {y['year']}: {y['total_kwh']} kWh{d}")
     te = stats["temperature_vs_energy"]
     if te and te["actual_vs_expected_pct"] is not None:
@@ -264,7 +266,7 @@ def text_figures(stats):
                      f"({te['actual_vs_expected_pct']:+}% vs expected)")
     for a in stats["notable_high_days"]:
         lines.append(f"  High day {a['date']}: {a['grid_kwh']} kWh at {a['mean_temp_c']}°C "
-                     f"({a['kwh_above_expected']:+} vs expected)")
+                     f"({a['kwh_above_expected']:+} kWh vs expected)")
     return "\n".join(lines)
 
 
