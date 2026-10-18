@@ -126,10 +126,10 @@ class Db:
         if page.rows:
             n += self._exec(
                 "INSERT INTO furnace_menu (ts, page, title, seq, label, value,"
-                " value_num) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+                " value_num, options) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"
                 " ON CONFLICT (ts, page, seq) DO NOTHING",
-                [(ts, page.page, page.title, i, label, value, num)
-                 for i, (label, value, num) in enumerate(page.rows)],
+                [(ts, page.page, page.title, i, r.label, r.value, r.number,
+                  r.options) for i, r in enumerate(page.rows)],
                 many=True)
         return n
 
