@@ -56,6 +56,7 @@ void service(){
   if(now-lastRender>=250){ lastRender=now;
     if(gReduced){ DisplayState s; L(); s=gM->state(); U(); renderSafe(s); screenshotPoll(); lv_timer_handler(); return; }  // #80: minimal safe screen only
     if(gSniffOpen){ renderSniff(); screenshotPoll(); lv_timer_handler(); return; }  // dedicated LISTEN screen: no ambient/main render
+    if(gFurnOpen){ renderFurnace(); screenshotPoll(); lv_timer_handler(); return; }  // #226 Diag -> Furnace screen, same rule
     DisplayState s; L(); s=gM->state(); U();
     if(gWelcomeActive){   // #82: first-run onboarding gate — stay here until Wi-Fi is up
       if(wifi_prov::connected()){ gWelcomeActive=false; gWifiOpen=false; if(wifiOv) lv_obj_add_flag(wifiOv,LV_OBJ_FLAG_HIDDEN);

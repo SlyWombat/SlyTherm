@@ -165,6 +165,28 @@ class Ct485Thermostat {
   const ProbeResult& lastProbe() const { return probeResult_; }
   uint32_t probeTimeouts() const { return probeTimeouts_; }
 
+  // ---- Furnace user-menu page request (#228) ----
+  // Queue ONE Get User Menu (0x41) for `page` (1 = Status 1, 2 = Status 2,
+  // ...) to the furnace, on the same one-at-a-time, quiet-timeout probe
+  // channel as queueProbe(). Wire shape is byte-for-byte the OEM stat's
+  // request captured 2026-10-18 (sendMethod 0x02 = by node type, sendParamHi
+  // 0x02 = gas furnace, payload 01 <page> 00 00 00 F0), with SlyTherm's own
+  // address as src. The furnace's address is LEARNED from frames whose
+  // srcNodeType is 0x02 (it moved when the coordinator role did, #210), so
+  // this is refused until one has been heard. Also refused while silent
+  // (listen mode), unaddressed, or with another probe pending. The 0xC1 answer
+  // is matched by source + page, not dst, and lands in lastProbe().
+  bool queueMenuProbe(uint8_t page, uint32_t nowMs);
+  bool furnaceAddressKnown() const { return furnaceKnown_; }
+  uint8_t furnaceAddress() const { return furnaceAddr_; }
+
+  // ---- Furnace setting writes: refused (#229) ----
+  // Update User Menu (0x42) changes combustion/airflow settings on the
+  // furnace (heat rise, fire rate, reset defaults, clear faults). Its format
+  // has never been captured and SlyTherm does not send it: any 0x42 frame
+  // reaching the TX queue is dropped here and counted, whatever built it.
+  uint32_t menuWritesRefused() const { return menuWritesRefused_; }
+
   // ---- Equipment fault push (#195) ----
   // The furnace pushes Set Diagnostics (0x05) carrying a human-readable fault
   // and, ~90 s later, an all-clear. We store the latest and never answer it:
@@ -302,6 +324,9 @@ class Ct485Thermostat {
   uint32_t     faultPushes_ = 0;       // total pushes seen (asserts + clears)
   bool         probeQueued_  = false;  // queued or outstanding; one at a time
   uint32_t     probeTimeouts_ = 0;     // unanswered probes (quiet drops)
+  bool         furnaceKnown_ = false;  // a srcNodeType 0x02 frame has been heard (#228)
+  uint8_t      furnaceAddr_  = 0;
+  uint32_t     menuWritesRefused_ = 0; // 0x42 frames dropped at enqueueTx (#229)
 };
 
 }  // namespace ct485

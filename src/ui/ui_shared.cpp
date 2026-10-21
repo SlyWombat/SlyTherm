@@ -24,7 +24,7 @@ bool gWelcomeActive=false;  // #82: first-run onboarding gate (no saved WiFi)
 bool gBootActive=false,gBootExiting=false; uint32_t gBootStartMs=0;  // #92: warm-up splash gate (hold UI until key sensors live, <=60s)
 uint32_t gAmbShiftMs=0; uint8_t gAmbShiftIdx=0;  // ambient burn-in pixel-shift ring (#70)
 uint32_t gGraphLastMs=0;
-bool gWifiOpen=false, gSrvOpen=false, gSniffOpen=false;
+bool gWifiOpen=false, gSrvOpen=false, gSniffOpen=false, gFurnOpen=false;
 
 // ---- small helpers ----
 uint32_t nowS(){ return millis()/1000; }

@@ -1158,6 +1158,54 @@ static void test_parse_remote_intent_rejects_junk() {
       "{\"id\":1,\"type\":\"hold\",\"hold\":\"forever\"}", ri));
 }
 
+
+// ---------- #227/#228 furnace status entities ----------
+
+static void test_furnace_status_discovery_expires_and_never_collides() {
+  for (size_t i = 0; i < kFurnaceStatusKeyCount; i++) {
+    const char* k = kFurnaceStatusKeys[i];
+    const std::string j = furnaceStatusDiscoveryJson(k);
+    TEST_ASSERT_FALSE_MESSAGE(j.empty(), k);
+    assertCoherentJson(j);
+    TEST_ASSERT_TRUE_MESSAGE(has(j, "\"expire_after\":300"), k);
+    TEST_ASSERT_TRUE_MESSAGE(has(j, (std::string("\"unique_id\":\"slytherm_furnace_") + k + "\"").c_str()), k);
+    TEST_ASSERT_TRUE_MESSAGE(has(j, (std::string("\"state_topic\":\"slytherm/state/furnace/") + k + "\"").c_str()), k);
+    TEST_ASSERT_TRUE_MESSAGE(has(j, "\"name\":\"SlyTherm Furnace "), k);
+    TEST_ASSERT_TRUE_MESSAGE(has(j, "\"availability_topic\":\"slytherm/availability\""), k);
+    TEST_ASSERT_FALSE_MESSAGE(has(j, "command_topic"), k);   // read-only, always
+  }
+  TEST_ASSERT_TRUE(furnaceStatusDiscoveryJson("nope").empty());
+}
+
+static void test_furnace_status_units_and_components() {
+  const std::string gas = furnaceStatusDiscoveryJson("gas_valve_pct");
+  TEST_ASSERT_TRUE(has(gas, "\"unit_of_measurement\":\"%\""));
+  TEST_ASSERT_TRUE(has(gas, "\"state_class\":\"measurement\""));
+  const std::string cfm = furnaceStatusDiscoveryJson("blower_cfm");
+  TEST_ASSERT_TRUE(has(cfm, "\"device_class\":\"volume_flow_rate\""));
+  TEST_ASSERT_TRUE(has(cfm, "\"unit_of_measurement\":\"ft\xC2\xB3/min\""));
+  const std::string eac = furnaceStatusDiscoveryJson("eac");
+  TEST_ASSERT_TRUE(has(eac, "\"payload_on\":\"ON\""));
+  TEST_ASSERT_EQUAL_STRING("binary_sensor", furnaceStatusComponent("eac"));
+  TEST_ASSERT_EQUAL_STRING("sensor", furnaceStatusComponent("flame"));
+  TEST_ASSERT_FALSE(has(furnaceStatusDiscoveryJson("flame"), "state_class"));  // text
+  TEST_ASSERT_EQUAL_STRING("slytherm/state/furnace/mode", furnaceStateTopic("mode").c_str());
+}
+
+static void test_furnace_last_seen_poll_and_stall_entities() {
+  const std::string ls = furnaceLastSeenDiscoveryJson();
+  assertCoherentJson(ls);
+  TEST_ASSERT_TRUE(has(ls, "\"device_class\":\"timestamp\""));
+  TEST_ASSERT_FALSE(has(ls, "expire_after"));   // the age reference must not vanish
+  const std::string poll = furnaceMenuPollDiscoveryJson();
+  assertCoherentJson(poll);
+  TEST_ASSERT_TRUE(has(poll, "\"command_topic\":\"slytherm/cmd/furnace_menu_poll\""));
+  TEST_ASSERT_TRUE(has(poll, "\"entity_category\":\"config\""));
+  const std::string st = furnacePollStalledDiscoveryJson();
+  assertCoherentJson(st);
+  TEST_ASSERT_TRUE(has(st, "\"device_class\":\"problem\""));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_topic_map_matches_docs);
@@ -1212,5 +1260,8 @@ int main() {
   RUN_TEST(test_parse_remote_intent_setpoints_and_mode);
   RUN_TEST(test_parse_remote_intent_preset_hold_and_clear);
   RUN_TEST(test_parse_remote_intent_rejects_junk);
+  RUN_TEST(test_furnace_status_discovery_expires_and_never_collides);
+  RUN_TEST(test_furnace_status_units_and_components);
+  RUN_TEST(test_furnace_last_seen_poll_and_stall_entities);
   return UNITY_END();
 }

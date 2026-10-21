@@ -165,7 +165,28 @@ constexpr const char* kCmdOtaApply = SLYTHERM_TOPIC_PREFIX "cmd/ota_apply";
 
 constexpr const char* kDiscoveryPrefix = "homeassistant";
 
+// #227: the furnace's OWN status readings, from its Get User Menu pages
+// (lib/FurnaceMenu). One scalar topic per reading under this prefix, NOT
+// retained (a value only means something while it is fresh; HA expires each
+// one after kFurnaceExpireAfterS). last_seen is retained ISO-8601.
+constexpr const char* kStateFurnacePrefix = SLYTHERM_TOPIC_PREFIX "state/furnace/";
+constexpr const char* kStateFurnaceLastSeen = SLYTHERM_TOPIC_PREFIX "state/furnace/last_seen";
+// #228: SlyTherm asking the furnace for Status 1/2 itself (post-switch-back).
+// ON/OFF, NVS-backed, default OFF; a no-op in listen mode regardless.
+constexpr const char* kCmdFurnaceMenuPoll   = SLYTHERM_TOPIC_PREFIX "cmd/furnace_menu_poll";
+constexpr const char* kStateFurnaceMenuPoll = SLYTHERM_TOPIC_PREFIX "state/furnace_menu_poll";
+constexpr const char* kStateFurnacePollStalled = SLYTHERM_TOPIC_PREFIX "state/furnace_poll_stalled";
+
 }  // namespace topic
+
+// #227 furnace readings published to HA (keys = lib/FurnaceMenu
+// furnaceStatusValues()). Stale after this long: HA marks the entity
+// unavailable instead of showing a frozen value.
+constexpr uint32_t kFurnaceExpireAfterS = 300;
+constexpr const char* kFurnaceStatusKeys[] = {
+    "gas_valve_pct", "flame", "blower_cfm", "inducer_rpm", "mode", "motor_rpm", "eac"};
+constexpr size_t kFurnaceStatusKeyCount = sizeof(kFurnaceStatusKeys) / sizeof(kFurnaceStatusKeys[0]);
+std::string furnaceStateTopic(const char* reading);  // slytherm/state/furnace/<reading>
 
 // Per-id topic helpers.
 std::string sensorStateTopic(const std::string& sensorId);  // slytherm/sensors/<id>/state
@@ -548,6 +569,14 @@ std::string changeoverReasonDiscoveryJson();     // sensor, diagnostic
 std::string statusLineDiscoveryJson();           // sensor, diagnostic — composed action wording
 std::string trackingLineDiscoveryJson();         // sensor, diagnostic — composed presence wording
 std::string sensorAgeDiscoveryJson(const std::string& sensorId);            // diagnostic
+// #227: one discovery payload per furnace reading (component from
+// furnaceStatusComponent(): "binary_sensor" for eac, else "sensor"); empty
+// string for an unknown reading.
+const char* furnaceStatusComponent(const char* reading);
+std::string furnaceStatusDiscoveryJson(const char* reading);
+std::string furnaceLastSeenDiscoveryJson();       // sensor, device_class timestamp, diagnostic
+std::string furnaceMenuPollDiscoveryJson();       // #228 switch, entity_category config
+std::string furnacePollStalledDiscoveryJson();    // #228 binary_sensor problem, diagnostic
 std::string sensorParticipatingDiscoveryJson(const std::string& sensorId);  // diagnostic
 // number entity, entity_category config, ±kSensorOffsetMaxC, 0.1 step (G6);
 // also used for the local fallback sensor via kLocalSensorId.

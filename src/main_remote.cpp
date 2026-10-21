@@ -137,6 +137,11 @@ extern "C" void uiSniffStop() {}
 extern "C" bool uiSniffActive() { return false; }
 extern "C" uint32_t uiSniffFrames() { return 0; }
 extern "C" int uiSniffLines(char[10][56]) { return 0; }
+// #226: furnace pages are heard on the CT-485 bus, which only the Controller
+// is on; the Diag button is hidden here (hasBus=false) and these stay empty.
+extern "C" int  uiFurnacePageCount() { return 0; }
+extern "C" void uiFurnacePageName(int, char* out, size_t n) { if (out && n) out[0] = '\0'; }
+extern "C" void uiFurnacePageText(int, char* out, size_t n) { if (out && n) out[0] = '\0'; }
 extern "C" void uiClearReducedMode() { boot_guard::clearLatch(); ESP.restart(); }  // #122
 extern "C" void uiNoteTouch() {}                 // #90 sleep state is Controller-side
 

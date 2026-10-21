@@ -89,6 +89,7 @@
 #include "DettsonConfig.h"
 #include "DualFuelArbiter.h"
 #include "EquipmentHealth.h"  // #189 equipment-effectiveness watchdog
+#include "FurnaceMenu.h"      // #226-#228 the furnace's own status pages
 #include "FanCirculate.h"  // #128: runtime fan-circulate duty + clamp helpers
 #include "HaMqtt.h"
 #include "LatencyStats.h"  // #28 TX-turnaround jitter probe
@@ -382,6 +383,18 @@ volatile bool gFilterResetReq = false;  // set by the cmd handler, consumed by t
 // windows produce before/after status captures without manual triggering.
 volatile uint8_t gProbeReq  = 0;
 volatile bool    gProbeAuto = true;
+// #226-#228 the furnace's own status pages (CT-485 Get User Menu 0xC1). The
+// ct485Task stores every page it hears (listen mode included: the OEM stat
+// fetches them while its Furnace menu is open); the UI task renders them on
+// Diag -> Furnace, the MQTT task publishes the HA readings, and the control
+// task runs the post-switch-back poller. gFurnMux guards store + poller; it is
+// only ever taken INSIDE gCtMux (ct485Task) or alone, never the other way.
+ct485::FurnaceMenuStore  gFurnace;
+ct485::FurnaceMenuPoller gFurnPoller;
+SemaphoreHandle_t        gFurnMux = nullptr;
+// #228 polling switch: NVS "furnpoll", default OFF. Even ON it is a no-op in
+// listen mode — Ct485Thermostat is silent there and refuses the request.
+volatile bool gFurnPollEnabled = false;
 // #189 equipment-effectiveness watchdog: infers whether the ACTIVE equipment
 // is actually delivering (the 2026-08-09 outdoor-unit lockout was invisible to
 // every bus-level signal). Optional supply-air probe arrives over
@@ -1122,6 +1135,12 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     return;
   }
 
+  if (strcmp(topic, hm::topic::kCmdFurnaceMenuPoll) == 0) {  // #228 (exact ON/OFF only)
+    const hm::Parsed<bool> v = hm::parseEmHeatCommand(buf);
+    if (v.ok) { gFurnPollEnabled = v.value; gPrefs.putBool("furnpoll", v.value); }
+    return;
+  }
+
   if (strcmp(topic, "slytherm/cmd/supply_temp") == 0) {  // #189 optional plenum probe
     char* endp = nullptr;
     const float c = strtof(buf, &endp);
@@ -1334,6 +1353,46 @@ extern "C" int uiSniffLines(char out[10][56]) {  // newest-first; returns count
   return cnt;
 }
 
+// #226 Diag -> Furnace hooks (UI task). Text is rendered by lib/FurnaceMenu so
+// the wording is host-tested; these only copy it out under gFurnMux.
+extern "C" int uiFurnacePageCount() {
+  if (!gFurnMux) return 0;
+  xSemaphoreTake(gFurnMux, portMAX_DELAY);
+  const int n = gFurnace.pageCount();
+  xSemaphoreGive(gFurnMux);
+  return n;
+}
+extern "C" void uiFurnacePageName(int page, char* out, size_t n) {
+  if (!out || n == 0) return;
+  out[0] = '\0';
+  if (!gFurnMux || page < 0 || page >= ct485::kFurnaceMenuPages) return;
+  xSemaphoreTake(gFurnMux, portMAX_DELAY);
+  const std::string s = gFurnace.pageName(static_cast<uint8_t>(page));
+  xSemaphoreGive(gFurnMux);
+  strlcpy(out, s.c_str(), n);
+}
+extern "C" void uiFurnacePageText(int page, char* out, size_t n) {
+  if (!out || n == 0) return;
+  out[0] = '\0';
+  if (!gFurnMux || page < 0 || page >= ct485::kFurnaceMenuPages) return;
+  xSemaphoreTake(gFurnMux, portMAX_DELAY);
+  const std::string s = gFurnace.renderPage(static_cast<uint8_t>(page), millis());
+  xSemaphoreGive(gFurnMux);
+  strlcpy(out, s.c_str(), n);
+}
+
+// ct485Task (inside gCtMux): store every Get User Menu reply heard on the bus
+// and tell the #228 poller when the page it asked for has arrived.
+void onFurnaceMenuFrame(const ct485::Frame& f, uint32_t nowMs) {
+  if (f.msgType != (static_cast<uint8_t>(ct485::MsgType::kGetUserMenu) | ct485::kResponseFlag))
+    return;
+  const bool ours = !gCt->silent() && gCt->addressed() && f.dst == gCt->nodeAddress();
+  xSemaphoreTake(gFurnMux, portMAX_DELAY);
+  if (gFurnace.ingest(f, nowMs, ours) && f.payloadLen >= 2)
+    gFurnPoller.onPageHeard(f.payload[1], nowMs);
+  xSemaphoreGive(gFurnMux);
+}
+
 void publishDiscovery() {
   using namespace hm;
   // Climate entity: preset_modes rebuilt from the configured roster.
@@ -1368,6 +1427,17 @@ void publishDiscovery() {
               energySensorDiscoveryJson("SlyTherm Electric Cost", "slytherm_cost_elec", "cost_elec", "CAD", "monetary"));
   pubRetained(discoveryTopic("sensor", "suggested_schedule"), suggestedScheduleDiscoveryJson());  // #177
   pubRetained(discoveryTopic("sensor", "fault"), faultDiscoveryJson());
+  // #227 the furnace's own readings (expire after 5 min without a page) +
+  // #228 the polling switch and its stall flag.
+  for (size_t i = 0; i < kFurnaceStatusKeyCount; i++) {
+    const char* k = kFurnaceStatusKeys[i];
+    pubRetained(discoveryTopic(furnaceStatusComponent(k), std::string("furnace_") + k),
+                furnaceStatusDiscoveryJson(k));
+  }
+  pubRetained(discoveryTopic("sensor", "furnace_last_seen"), furnaceLastSeenDiscoveryJson());
+  pubRetained(discoveryTopic("switch", "furnace_menu_poll"), furnaceMenuPollDiscoveryJson());
+  pubRetained(discoveryTopic("binary_sensor", "furnace_poll_stalled"),
+              furnacePollStalledDiscoveryJson());
   pubRetained(discoveryTopic("binary_sensor", "health"), healthDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "last_error"), lastErrorDiscoveryJson());
   pubRetained(discoveryTopic("sensor", "compressor_min_off_remaining"),
@@ -1431,6 +1501,7 @@ void subscribeAll() {
   gMqtt.subscribe("slytherm/cmd/furnace_probe");  // #184 read-only Get probe
   gMqtt.subscribe("slytherm/cmd/supply_temp");    // #189 optional plenum probe
   gMqtt.subscribe("slytherm/cmd/bus_mode");       // #191 observer-mode latch
+  gMqtt.subscribe(hm::topic::kCmdFurnaceMenuPoll);  // #228 furnace status polling
   gMqtt.subscribe("slytherm/cmd/emergency_heat");  // #163 emergency (network-stale) setpoints
   gMqtt.subscribe("slytherm/cmd/emergency_cool");
   gMqtt.subscribe(hm::topic::kCmdSmartRecovery);  // #50 smart-recovery on/off
@@ -1450,6 +1521,8 @@ enum PubIdx : uint8_t {
   PUB_EMGHEAT, PUB_EMGCOOL,  // #163 configurable emergency setpoints (retained, NVS-backed)
   PUB_SMREC,                 // #50 smart-recovery on/off (retained, NVS-backed)
   PUB_BUSMODE,               // #191 observer-mode latch (retained, NVS-backed)
+  PUB_FURNPOLL,              // #228 furnace status polling switch (retained, NVS-backed)
+  PUB_FURNSTALL,             // #228 poll stalled flag
   PUB_RECOVERY,              // #183 recovery/coast diagnostics JSON (retained)
 #ifdef SLYTHERM_ACTUATOR_RELAY
   PUB_RELAYS,
@@ -1467,6 +1540,42 @@ void pubState(PubIdx i, const char* topic, const char* val, bool force, bool ret
   if (!force && strncmp(gPubCache[i], val, sizeof(gPubCache[i]) - 1) == 0) return;
   strlcpy(gPubCache[i], val, sizeof(gPubCache[i]));
   gMqtt.publish(topic, val, retain);
+}
+
+// #227: publish the furnace's own readings from every NEW status page. Values
+// are NOT diff-suppressed and NOT retained: HA's expire_after resets on each
+// message, so a reading that stops arriving goes unavailable instead of
+// freezing (the furnace only sends pages while someone, or #228, asks).
+// last_seen is retained so HA can show how old the last reading is.
+void publishFurnaceStatus(bool force) {
+  static uint32_t sPubbedGen = 0;
+  if (!gFurnMux) return;
+  std::vector<ct485::FurnaceStatusValue> vals;
+  bool stalled = false;
+  xSemaphoreTake(gFurnMux, portMAX_DELAY);
+  const uint32_t gen = gFurnace.generation();
+  if (gen != sPubbedGen) {
+    for (uint8_t p = 1; p < ct485::kFurnaceMenuPages; p++) {
+      if (gFurnace.pageGeneration(p) <= sPubbedGen) continue;
+      const auto v = ct485::furnaceStatusValues(*gFurnace.page(p));
+      vals.insert(vals.end(), v.begin(), v.end());
+    }
+    sPubbedGen = gen;
+  }
+  stalled = gFurnPoller.stalled();
+  xSemaphoreGive(gFurnMux);
+  for (const auto& v : vals)
+    gMqtt.publish(hm::furnaceStateTopic(v.key).c_str(), v.value.c_str(), false);
+  if (!vals.empty()) {
+    const time_t now = time(nullptr);
+    if (now > 1700000000) {  // wall clock is set (SNTP); else leave last_seen alone
+      struct tm tmv; gmtime_r(&now, &tmv);
+      char iso[32]; strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S+00:00", &tmv);
+      gMqtt.publish(hm::topic::kStateFurnaceLastSeen, iso, true);
+    }
+  }
+  pubState(PUB_FURNSTALL, hm::topic::kStateFurnacePollStalled,
+           stalled ? hm::payload::kOn : hm::payload::kOff, force);
 }
 
 #ifdef SLYTHERM_REMOTE_LINK
@@ -1602,6 +1711,9 @@ void publishSnapshot(bool force) {
   pubState(PUB_BUS, "slytherm/state/bus", s.busJson, force);
   pubState(PUB_BUSMODE, "slytherm/state/bus_mode",
            gBusListenOnly ? "listen" : "active", force, /*retain=*/true);  // #191
+  pubState(PUB_FURNPOLL, topic::kStateFurnaceMenuPoll,
+           gFurnPollEnabled ? payload::kOn : payload::kOff, force, /*retain=*/true);  // #228
+  publishFurnaceStatus(force);  // #227 (+ #228 stall flag)
   // #190 field lesson (first real failover night, 2026-08-09): the standby
   // bridge re-syncs RETAINED topics on reconnect and can overwrite this
   // broker's fresh truth with the other broker's stale snapshot — the
@@ -2153,6 +2265,7 @@ void ct485Task(void*) {
 #endif
           gLastBusRxS = nowSeconds();
           sniffFrame(f);
+          onFurnaceMenuFrame(f, nowMs);  // #226-#228
         }
       }
       sniffRejects();  // drain per byte: the salvage stash is single-slot
@@ -2169,6 +2282,7 @@ void ct485Task(void*) {
 #endif
           gLastBusRxS = nowSeconds();
           sniffFrame(f);
+          onFurnaceMenuFrame(f, nowMs);  // #226-#228
         }
       }
       sniffRejects();
@@ -3529,6 +3643,35 @@ void controlCycle(uint32_t nowS, uint32_t nowMs) {
       if (!ok) Serial.printf("[probe] refused (silent/pending) type=0x%02X\n", req);
     }
   }
+  // ---- #228 furnace status polling (parked until switch-back) ----
+  // Status 1 + 2 every 30 s during a call, every 5 min idle. "permitted" is
+  // the whole gate: switch ON, not in listen mode, Ct485Thermostat live and
+  // addressed, furnace address learned. In listen mode it is always false
+  // (and queueMenuProbe would refuse anyway: the stack is silent there).
+  {
+    xSemaphoreTake(gCtMux, portMAX_DELAY);
+    const bool busOurs = !gCt->silent() && gCt->addressed() && gCt->furnaceAddressKnown();
+    xSemaphoreGive(gCtMux);
+    const bool permitted = gFurnPollEnabled && !gBusListenOnly && busOurs;
+    const bool demandActive = out.fanPct > 0 || out.gasHeatPct > 0 ||
+                              out.hpHeatPct > 0 || out.coolPct > 0;
+    xSemaphoreTake(gFurnMux, portMAX_DELAY);
+    const uint8_t page = gFurnPoller.due(nowMs, permitted, demandActive);
+    const bool wasStalled = gFurnPoller.stalled();
+    xSemaphoreGive(gFurnMux);
+    if (page != 0) {
+      xSemaphoreTake(gCtMux, portMAX_DELAY);
+      const bool ok = gCt->queueMenuProbe(page, nowMs);
+      xSemaphoreGive(gCtMux);
+      if (ok) {
+        xSemaphoreTake(gFurnMux, portMAX_DELAY);
+        gFurnPoller.onRequested(page, nowMs);
+        xSemaphoreGive(gFurnMux);
+      }
+    }
+    glueAlarm(wasStalled, cfg::kAlarmFurnacePollStalled, safety::Severity::kAdvisory,
+              "furnace not answering status requests", nowS, /*autoClear=*/true);
+  }
 #endif
 
   // ---- #189 equipment-effectiveness watchdog ----
@@ -4136,6 +4279,7 @@ void setup() {
     }
     gFanMode = static_cast<hm::FanMode>(gPrefs.getUChar("fan", 0));
     gBusListenOnly = gPrefs.getBool("buslisten", false);  // #191 observer latch survives reboot
+    gFurnPollEnabled = gPrefs.getBool("furnpoll", false);  // #228 default OFF
     if (gBusListenOnly) Serial.println("[bus] LISTEN-ONLY latch active (cmd/bus_mode)");
     if (gFanMode > hm::FanMode::kCirculate) gFanMode = hm::FanMode::kAuto;
     // #128: restore the runtime circulate config (cfg:: constants are the
@@ -4262,6 +4406,7 @@ void setup() {
   gCmdMux = xSemaphoreCreateMutex();
   gSnapMux = xSemaphoreCreateMutex();
   gCtMux = xSemaphoreCreateMutex();
+  gFurnMux = xSemaphoreCreateMutex();  // #226-#228 furnace pages + poller
 #ifdef SLYTHERM_UI
   gUiMux = xSemaphoreCreateMutex();
   // #82: first-run onboarding gate — no NVS creds and no compile-time fallback

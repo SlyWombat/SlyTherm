@@ -109,6 +109,7 @@ constexpr uint16_t kAlarmFreeze          = 0x4D08;  // #175: indoor below the fr
 constexpr uint16_t kAlarmExtremeHeat     = 0x4D09;  // #175: indoor above the extreme-heat ceiling
 constexpr uint16_t kAlarmCoolIneffective = 0x4D0A;  // #189: cooling running but not delivering
 constexpr uint16_t kAlarmHeatIneffective = 0x4D0B;  // #189: heating running but not delivering
+constexpr uint16_t kAlarmFurnacePollStalled = 0x4D0C;  // #228: furnace stopped answering 0x41
 
 // #175 native alerts (table-stakes; competitors market freeze/burst-pipe).
 // Filter life is measured in BLOWER-on hours (F300 is in the airstream);
