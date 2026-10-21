@@ -6,42 +6,42 @@
       "name": "SlyTherm Controller (Waveshare ESP32-S3-4.3B)",
       "chipFamily": "ESP32-S3",
       "hwRev": "s3-43b-r1.1",
-      "version": "1.4.7",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.7/wall-s3-1.4.7.app.bin",
-      "appSize": 1842912,
-      "sha256": "6cb02c31a844efd18b6a0ec7caa6dbea3d048594d226621eff8992bb7f66a52c",
-      "sig": "MEQCIHtWKImqHmQe3W1f2NCmEKPzRTiNH13+KYBXRpyj50lsAiBDCT7YF0p6vFUh0VDP0KuDxMoIMAQ6G9MVZF30QZnnLQ==",
+      "version": "1.4.8",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.8/wall-s3-1.4.8.app.bin",
+      "appSize": 1859568,
+      "sha256": "e826c51dea519b3b7d44510512995d6152131693da1e5b0a21556764c2c67be2",
+      "sig": "MEYCIQCyaasSoPGVGUTffs26qnN4+dLKJLQNiQRwxMEIRwS4RgIhAPPDLdOYf3UmXfEDEcrNCS2YI6OfbBBKpbsWTa+madJz",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.7"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.8"
     },
     {
       "id": "remote-p4",
       "name": "SlyTherm Remote (Guition JC-ESP32P4-M3)",
       "chipFamily": "ESP32-P4",
       "hwRev": "p4-m3-r1",
-      "version": "1.4.7",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.7/remote-p4-1.4.7.app.bin",
-      "appSize": 1801856,
-      "sha256": "1497488bc35f58c56e655ef9fd80ee9cc86ae7d6809410daf398727a518d7394",
-      "sig": "MEUCIH7p7eKHE6WxO4jUDnppSzQ+vPjBlquxec0fyXPrdkqSAiEA040pxGFAge0cglSxk/Mdu3Q54uepAj6RTuBLOVEStXw=",
+      "version": "1.4.8",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.8/remote-p4-1.4.8.app.bin",
+      "appSize": 1803680,
+      "sha256": "795a14eafbf96dfc97f09ab053fe07daf3bca0ff5b0280e54e59d58bebd8d014",
+      "sig": "MEUCIQCMaiRNAYzMOq1auEyCPg9g9RSMQeoKJm7qieH/vgOfzwIgVjG1Wv18e74Gro9IjpErKQRVNZS61rrCwCkUhETL9cA=",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.7"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.8"
     },
     {
       "id": "remote-p4-vpn",
       "name": "SlyTherm Remote + WireGuard uplink (#148/#149 off-LAN)",
       "chipFamily": "ESP32-P4",
       "hwRev": "p4-m3-r1",
-      "version": "1.4.7",
-      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.7/remote-p4-vpn-1.4.7.app.bin",
-      "appSize": 1925312,
-      "sha256": "a017dfd30db78e3e9f27a8d23d07a25f12e765776f9b9161063b0853f6317db9",
-      "sig": "MEUCIFm3kYQKadYkhjPZFYStqnXpwWQ10ocVUx2YDfkTzKjWAiEAtLpRcNxhh6niZZ1UrNKtN925br90RfRBwzDowuFWLds=",
+      "version": "1.4.8",
+      "appUrl": "https://github.com/SlyWombat/SlyTherm/releases/download/v1.4.8/remote-p4-vpn-1.4.8.app.bin",
+      "appSize": 1927120,
+      "sha256": "947916b2e1794353e2aca849b8ef438e8345e748bc706316375870e69e558d1e",
+      "sig": "MEUCID1qoHRmjDnS6TeTUe9s965kOgCvYpsUQqYlqmtUfdKKAiEA0/tgrlCFqVCnv5QTo0JX0MXdghmHGZwn9XHcDcqo4f8=",
       "minVersion": "0.0.0",
       "mandatory": false,
-      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.7"
+      "notesUrl": "https://github.com/SlyWombat/SlyTherm/releases/tag/v1.4.8"
     }
   ]
 }
