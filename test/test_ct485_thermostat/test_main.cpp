@@ -1178,6 +1178,138 @@ static void test_probe_whitelist_and_silent_gates() {
 }
 
 
+
+// ---------- #228 furnace menu probe / #229 no menu writes ----------
+
+// Any frame the furnace originates (srcNodeType 0x02) teaches its address.
+static Frame furnaceFrame(uint8_t src = 0x02) {
+  Frame f;
+  f.dst = kAddrCoordinator;
+  f.src = src;
+  f.subnet = kSubnetV1;
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kGasFurnace);
+  f.msgType = static_cast<uint8_t>(MsgType::kSetControlCmd) | kResponseFlag;
+  f.payload[0] = 0x06;
+  f.payloadLen = 1;
+  return f;
+}
+
+static Frame menuReplyFrom(uint8_t src, uint8_t page, uint8_t dst) {
+  Frame f;
+  f.dst = dst;
+  f.src = src;
+  f.srcNodeType = static_cast<uint8_t>(NodeType::kGasFurnace);
+  f.msgType = static_cast<uint8_t>(MsgType::kGetUserMenu) | kResponseFlag;
+  const uint8_t p[] = {0x01, page, 0x00, 0x00, 0x00, 0xF0, 0xB6, 'X', 0xB7};
+  memcpy(f.payload, p, sizeof(p));
+  f.payloadLen = sizeof(p);
+  return f;
+}
+
+static void test_menu_probe_needs_a_known_furnace_and_a_live_bus() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  TEST_ASSERT_FALSE(t.queueMenuProbe(1, now));            // silent at boot (listen)
+  t.onFrame(furnaceFrame(0x02), now);                     // learned even while silent
+  TEST_ASSERT_TRUE(t.furnaceAddressKnown());
+  TEST_ASSERT_EQUAL_UINT8(0x02, t.furnaceAddress());
+  TEST_ASSERT_FALSE(t.queueMenuProbe(1, now));            // still silent
+  join(t, now);
+  TEST_ASSERT_TRUE(t.queueMenuProbe(1, now));
+  TEST_ASSERT_FALSE(t.queueMenuProbe(2, now));            // one at a time
+  t.goSilent();                                           // listen latch engaged
+  TEST_ASSERT_FALSE(t.probePending());
+  TEST_ASSERT_FALSE(t.queueMenuProbe(1, now));
+}
+
+static void test_menu_probe_refused_until_furnace_heard() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  TEST_ASSERT_FALSE(t.furnaceAddressKnown());
+  TEST_ASSERT_FALSE(t.queueMenuProbe(1, now));
+  TEST_ASSERT_FALSE(t.probePending());
+}
+
+static void test_menu_probe_wire_shape_matches_oem_capture() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  t.onFrame(furnaceFrame(0x02), now);
+  TEST_ASSERT_TRUE(t.queueMenuProbe(2, now));
+  const Frame f = grant1(t, now);
+  // OEM stat 2026-10-18: FF>02 t41 l6 sn02 sm02 sp02 nt01  01 01 00 00 00 F0
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetUserMenu), f.msgType);
+  TEST_ASSERT_EQUAL_UINT8(0x02, f.dst);
+  TEST_ASSERT_EQUAL_UINT8(t.nodeAddress(), f.src);
+  TEST_ASSERT_EQUAL_UINT8(0x02, f.sendMethod);
+  TEST_ASSERT_EQUAL_UINT8(0x02, f.sendParamHi);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeType::kThermostat), f.srcNodeType);
+  TEST_ASSERT_EQUAL_UINT8(6, f.payloadLen);
+  const uint8_t want[6] = {0x01, 0x02, 0x00, 0x00, 0x00, 0xF0};
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(want, f.payload, 6);
+}
+
+static void test_menu_probe_answer_matched_by_source_and_page() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  t.onFrame(furnaceFrame(0x02), now);
+  TEST_ASSERT_TRUE(t.queueMenuProbe(1, now));
+  (void)grant1(t, now);
+  // Wrong page or wrong source: not our answer.
+  t.onFrame(menuReplyFrom(0x02, 2, kAddrCoordinator), now);
+  t.onFrame(menuReplyFrom(0x05, 1, t.nodeAddress()), now);
+  TEST_ASSERT_TRUE(t.probePending());
+  // The right page from the furnace, whatever the dst: answered.
+  t.onFrame(menuReplyFrom(0x02, 1, kAddrCoordinator), now);
+  TEST_ASSERT_FALSE(t.probePending());
+  TEST_ASSERT_EQUAL_UINT32(1, t.lastProbe().seq);
+  TEST_ASSERT_EQUAL_UINT8(0xC1, t.lastProbe().msgType);
+  TEST_ASSERT_EQUAL_UINT32(0, t.probeTimeouts());
+}
+
+static void test_menu_probe_follows_the_furnace_when_it_moves() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  t.onFrame(furnaceFrame(0x02), now);
+  t.onFrame(furnaceFrame(kAddrCoordinator), now);   // regime A: furnace coordinates
+  TEST_ASSERT_EQUAL_UINT8(kAddrCoordinator, t.furnaceAddress());
+  TEST_ASSERT_TRUE(t.queueMenuProbe(1, now));
+  TEST_ASSERT_EQUAL_UINT8(kAddrCoordinator, grant1(t, now).dst);
+}
+
+static void test_menu_probe_never_preempts_a_demand() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  t.onFrame(furnaceFrame(0x02), now);
+  TEST_ASSERT_TRUE(t.setDemand(DemandChannel::kHeat, 60.0f, now));
+  TEST_ASSERT_TRUE(t.queueMenuProbe(1, now));
+  Frame f = grant1(t, now);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kSetControlCmd), f.msgType);
+  ackOutstanding(t, f.sendParamHi, now);
+  f = grant1(t, now);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetUserMenu), f.msgType);
+}
+
+static void test_menu_writes_are_structurally_refused() {
+  Ct485Thermostat t(baseCfg());
+  uint32_t now = 1000;
+  join(t, now);
+  // Neither probe entry point can carry 0x42 ...
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kUpdateUserMenu), now));
+  TEST_ASSERT_FALSE(t.queueProbe(static_cast<uint8_t>(MsgType::kGetUserMenu), now));
+  TEST_ASSERT_FALSE(t.probePending());
+  // ... and nothing else the stack transmits is a menu write.
+  t.onFrame(furnaceFrame(0x02), now);
+  TEST_ASSERT_TRUE(t.queueMenuProbe(7, now));            // reading SETUP is fine
+  const Frame f = grant1(t, now);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(MsgType::kGetUserMenu), f.msgType);
+  TEST_ASSERT_EQUAL_UINT32(0, t.menuWritesRefused());
+}
+
 // ---------- #195 equipment fault push (Set Diagnostics 0x05) ----------
 // Payloads are the real ones off this bus: 3x HPC OPEN and 2x LPC OPEN on
 // 2026-07-09, REVERSED PLTY on 2026-08-22, each followed by an all-clear.
@@ -1324,6 +1456,13 @@ int main() {
   RUN_TEST(test_probe_timeout_is_quiet_never_comms_loss);    // #184
   RUN_TEST(test_probe_never_preempts_a_demand);              // #184
   RUN_TEST(test_probe_whitelist_and_silent_gates);           // #184
+  RUN_TEST(test_menu_probe_needs_a_known_furnace_and_a_live_bus);   // #228
+  RUN_TEST(test_menu_probe_refused_until_furnace_heard);            // #228
+  RUN_TEST(test_menu_probe_wire_shape_matches_oem_capture);         // #228
+  RUN_TEST(test_menu_probe_answer_matched_by_source_and_page);      // #228
+  RUN_TEST(test_menu_probe_follows_the_furnace_when_it_moves);      // #228
+  RUN_TEST(test_menu_probe_never_preempts_a_demand);                // #228
+  RUN_TEST(test_menu_writes_are_structurally_refused);              // #229
   RUN_TEST(test_fault_push_decoded_and_never_answered);      // #195
   RUN_TEST(test_fault_push_seen_while_silent_and_addressed_elsewhere);
   RUN_TEST(test_fault_push_bounds_a_lying_length_and_ignores_impostors);

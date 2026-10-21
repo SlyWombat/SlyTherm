@@ -95,15 +95,24 @@ struct SensorDataDecode {
 SensorDataDecode decodeSensorData(const Frame& f);
 
 // ---------- Get User Menu reply (0xC1), SlyTherm #221 ----------
-// The furnace answers the OEM stat's 0x41 request with a text page:
-//   <idx> <page> 00 00 00 F0  B6 C5 D0 <title> B7  { C2 E2 <label> E0 <value> C3 }*
-// Page 0 is the menu list (titles only). Values are fixed-width ASCII; labels
-// and values come back trimmed. Bounded: never reads past effectivePayloadLen.
+// The furnace answers a 0x41 request with a text page:
+//   <idx> <page> 00 00 00 F0  B6 [C5 D0] <title> B7  { row }*
+// The C5 D0 title marker appears only on Status 1/2. Row shapes, all seen on
+// the real furnace (captures 2026-10-18):
+//   C2 E2 <label> E0 <value> C3                          read-only
+//   C2 E1 <label> E0 <current> { E0 <option> }* C3       editable (SETUP)
+//   C2 E1 <label> E8 <current> { E0 <option> }* C3       editable, E8 separator
+// FAULT HIST values read "DAYS n". Page 0 is the menu list (titles only).
+// Values are fixed-width ASCII; labels and values come back trimmed. Bounded:
+// never reads past effectivePayloadLen. Pages are 1 = STATUS 1, 2 = STATUS 2,
+// 3 = 2WK HIST, 4 = LIFE HIST, 5 = FAULT HIST, 6 = UNIT INFO, 7 = SETUP.
 struct MenuRow {
   std::string label;
-  std::string value;
-  bool numeric = false;   // value starts with a number ("100%", "1682")
+  std::string value;      // the current value
+  bool numeric = false;   // value reads as a number ("100%", "1682", "DAYS 68")
   float number = 0.0f;
+  bool editable = false;  // E1 row: the furnace offers other choices
+  std::vector<std::string> options;  // editable rows: the other choices
 };
 
 struct UserMenuPage {

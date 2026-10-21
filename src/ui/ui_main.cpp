@@ -61,6 +61,7 @@ volatile bool gGraphDirty=false; bool gGraphCentral=false;
 lv_obj_t *gNavMenu=nullptr,*wCaret=nullptr;  // pull-down navigation
 lv_obj_t *modeBtns[4];
 lv_obj_t *gBtnListen=nullptr;   // Diag LISTEN button — render-gated on DisplayState.hasBus (#101)
+lv_obj_t *gBtnFurnace=nullptr;  // Diag Furnace button (#226) — same gate: only a bus node hears the pages
 // ---- event handlers (touch runs on the UI task; take the mutex around model) ----
 int gHoldReps=0;
 void spEvt(lv_event_t*e){ const lv_event_code_t c=lv_event_get_code(e);
@@ -217,7 +218,8 @@ void buildDiag(lv_obj_t*tab){ header(tab,"Diagnostics");
   wDiagBody=lv_label_create(tab); lv_obj_set_style_text_color(wDiagBody,lv_color_hex(COL_MUTED),0); lv_obj_align(wDiagBody,LV_ALIGN_TOP_LEFT,4,48); lv_label_set_text(wDiagBody,"");
   // #101: built unconditionally, render-gated on DisplayState.hasBus so the
   // busless Remote persona never shows a dead LISTEN button.
-  gBtnListen=mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300); }
+  gBtnListen=mkBtn(tab,LV_SYMBOL_EYE_OPEN "  LISTEN on RS-485",openSniff,LV_ALIGN_BOTTOM_LEFT,4,-8,COL_CRYO,300);
+  gBtnFurnace=mkBtn(tab,LV_SYMBOL_LIST "  Furnace status",openFurnace,LV_ALIGN_BOTTOM_LEFT,316,-8,COL_RAISED,240); }  // #226
 
 // System Mode sub-sheet (Settings): the Off/Heat/Cool/Auto selector, relocated
 // off Home (set-once, not a daily control). Same segmented-control grammar as
@@ -378,7 +380,7 @@ void buildUi(){ scrMain=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrMain,l
   buildKeypad(scrMain); buildWifi(scrMain); buildServer(scrMain); buildHoldSheet(scrMain); buildVacationSheet(scrMain); buildFanSheet(scrMain);
   buildModeSheet(scrMain);   // System Mode sheet (Off/Heat/Cool/Auto) — must run before first renderMain so modeBtns[] exist
   buildNetSheet(scrMain); buildDisplaySheet(scrMain); buildSecuritySheet(scrMain); buildSystemSheet(scrMain);   // Settings reorg drill-in sheets
-  buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); lv_scr_load(scrMain); }
+  buildAmbient(); buildWelcome(); buildBoot(); buildSniff(); buildFurnace(); lv_scr_load(scrMain); }
 
 // #fix6: lay a setpoint card out as either the big single-mode card or a short
 // Auto row (3px left color-rail). Children order in buildHome: [0]=eyebrow,
@@ -582,6 +584,7 @@ void renderMain(const DisplayState& s){ char b[128];
     else         snprintf(lk,sizeof(lk),"\nLINKS\n  WiFi %s   MQTT %s",s.wifiOk?"up":"down",s.mqttOk?"up":"down");
     strncat(d,lk,sizeof(d)-strlen(d)-1); setTxt(wDiagBody,d); }
   if(gBtnListen){ if(s.hasBus) lv_obj_clear_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gBtnListen,LV_OBJ_FLAG_HIDDEN); }   // #101
+  if(gBtnFurnace){ if(s.hasBus) lv_obj_clear_flag(gBtnFurnace,LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(gBtnFurnace,LV_OBJ_FLAG_HIDDEN); }  // #226
   // Settings category-card live summaries (IA reorg): one condensed line per
   // card, refreshed every renderMain like the old WiFi/Home status words were.
   if(wCatMode){ const char*mnm; switch(s.mode){ case UserMode::kHeat:mnm="Heat"; break; case UserMode::kCool:mnm="Cool"; break;

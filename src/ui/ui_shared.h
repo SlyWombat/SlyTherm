@@ -73,6 +73,12 @@ extern "C" void uiSniffStop();
 extern "C" bool uiSniffActive();
 extern "C" uint32_t uiSniffFrames();
 extern "C" int uiSniffLines(char out[10][56]);     // newest-first; returns count
+// #226 Diag -> Furnace: the furnace's own status pages as heard on the bus
+// (read-only). Page 1..pageCount; text is pre-rendered by lib/FurnaceMenu on
+// the Controller. The Remote hears no bus and returns 0 / empty.
+extern "C" int  uiFurnacePageCount();
+extern "C" void uiFurnacePageName(int page, char* out, size_t n);
+extern "C" void uiFurnacePageText(int page, char* out, size_t n);
 extern "C" void uiClearReducedMode();              // clear the #80 safe-UI latch + reboot
 extern "C" void uiNoteTouch();                     // #90 sleep-state touch note (press edge)
 
@@ -101,7 +107,7 @@ extern bool gBootActive, gBootExiting;   // #92 warm-up splash gate
 extern uint32_t gBootStartMs;
 extern uint32_t gAmbShiftMs, gGraphLastMs;
 extern uint8_t  gAmbShiftIdx;
-extern bool gWifiOpen, gSrvOpen, gSniffOpen;
+extern bool gWifiOpen, gSrvOpen, gSniffOpen, gFurnOpen;
 
 // ---- small helpers (ui_shared.cpp) ----
 uint32_t nowS();
@@ -135,6 +141,7 @@ void buildDisplaySheet(lv_obj_t* scr);   // Display: 12/24h clock (room for brig
 void buildSecuritySheet(lv_obj_t* scr);  // Security: Set PIN / Lock / Unlock
 void buildSystemSheet(lv_obj_t* scr);    // System: firmware id + OTA stub + restore-full-screen
 void buildSniff();
+void buildFurnace();               // ui_overlays.cpp — #226 Diag -> Furnace screen
 void buildAmbient();               // ui_modes.cpp
 void buildWelcome();
 void buildBoot();
@@ -148,6 +155,7 @@ extern bool gGraphCentral;                    // #156 — true once a central se
 void renderWifi();                           // ui_overlays.cpp
 void renderServer();
 void renderSniff();
+void renderFurnace();              // #226
 void screenshotPoll();
 void renderAmbient(const DisplayState& s);   // ui_modes.cpp
 void renderBoot(const DisplayState& s);
@@ -172,6 +180,7 @@ void renderSysOta(const DisplayState& s);  // ui_overlays.cpp — refresh the Sy
 void renderMatterPairing(const DisplayState& s);  // ui_overlays.cpp — modal QR while uncommissioned (epic #179)
 #endif
 void openSniff(lv_event_t*);       // ui_overlays.cpp — RS-485 LISTEN screen (#71)
+void openFurnace(lv_event_t*);     // ui_overlays.cpp — Diag -> Furnace screen (#226)
 void openWifi(lv_event_t*);        // ui_overlays.cpp
 void openServer(lv_event_t*);      // ui_overlays.cpp
 

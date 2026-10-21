@@ -590,6 +590,54 @@ void renderSniff(){ if(!wSniffCount) return;
   for(int i=0;i<n;i++){ strncat(body,lines[i],sizeof(body)-strlen(body)-1); if(i<n-1) strncat(body,"\n",sizeof(body)-strlen(body)-1); }
   setTxt(wSniffList,body); }
 
+// ---- Diag -> Furnace: the furnace's own status pages (#226) ----
+// READ-ONLY by design (#229): the page list and the selected page's rows as the
+// furnace sent them, with how long ago it was heard. Pages arrive while the
+// OEM thermostat's Furnace menu is open, or from SlyTherm's own poll after
+// switch-back (#228). Rendering is generic — the furnace's titles, labels and
+// row order — so a page we have not met still shows. Text comes pre-rendered
+// from lib/FurnaceMenu (host-tested) via the uiFurnacePage* hooks.
+constexpr int kFurnBtnMax = 7;
+lv_obj_t *scrFurn=nullptr,*wFurnBody=nullptr,*wFurnPanel=nullptr;
+lv_obj_t *gFurnBtn[kFurnBtnMax]={}, *gFurnBtnLbl[kFurnBtnMax]={};
+int gFurnPage=1;
+uint32_t gFurnLastMs=0;   // render throttle; 0 = redraw on the next call
+void onFurnBack(lv_event_t*){ gFurnOpen=false; lv_scr_load(scrMain); }
+void onFurnPage(lv_event_t*e){ gFurnPage=(int)(intptr_t)lv_event_get_user_data(e);
+  if(wFurnPanel) lv_obj_scroll_to_y(wFurnPanel,0,LV_ANIM_OFF); gFurnLastMs=0; renderFurnace(); }
+void buildFurnace(){ scrFurn=lv_obj_create(NULL); lv_obj_set_style_bg_color(scrFurn,lv_color_hex(COL_BG),0);
+  lv_obj_set_style_pad_all(scrFurn,0,0); lv_obj_set_style_text_font(scrFurn,&lv_font_montserrat_20,0);
+  lv_obj_set_style_text_color(scrFurn,lv_color_hex(COL_INK),0); lv_obj_clear_flag(scrFurn,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t*title=lv_label_create(scrFurn); lv_label_set_text(title,"Furnace");
+  lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0); lv_obj_set_style_text_color(title,lv_color_hex(COL_EMBER),0); lv_obj_align(title,LV_ALIGN_TOP_LEFT,10,8);
+  lv_obj_t*sub=lv_label_create(scrFurn); lv_label_set_text(sub,"The furnace's own status, read-only. Settings stay on the OEM thermostat.");
+  lv_obj_set_style_text_font(sub,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(sub,lv_color_hex(COL_TEXT3),0); lv_obj_align(sub,LV_ALIGN_TOP_LEFT,140,18);
+  mkBtn(scrFurn,LV_SYMBOL_LEFT "  Back",onFurnBack,LV_ALIGN_TOP_RIGHT,-8,6,COL_RAISED,120);
+  for(int i=0;i<kFurnBtnMax;i++){ lv_obj_t*b=lv_btn_create(scrFurn); lv_obj_set_size(b,196,50); lv_obj_align(b,LV_ALIGN_TOP_LEFT,8,62+i*58);
+    lv_obj_set_style_bg_color(b,lv_color_hex(COL_RAISED),0); lv_obj_add_event_cb(b,onFurnPage,LV_EVENT_CLICKED,(void*)(intptr_t)(i+1));
+    lv_obj_t*l=lv_label_create(b); lv_label_set_text(l,""); lv_obj_set_style_text_font(l,&lv_font_montserrat_16,0); lv_obj_center(l);
+    gFurnBtn[i]=b; gFurnBtnLbl[i]=l; }
+  wFurnPanel=card(scrFurn); lv_obj_set_size(wFurnPanel,580,412); lv_obj_align(wFurnPanel,LV_ALIGN_TOP_LEFT,212,60);
+  lv_obj_add_flag(wFurnPanel,LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_scroll_dir(wFurnPanel,LV_DIR_VER);
+  wFurnBody=lv_label_create(wFurnPanel); lv_obj_set_width(wFurnBody,548); lv_label_set_long_mode(wFurnBody,LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_font(wFurnBody,&lv_font_montserrat_16,0); lv_obj_set_style_text_color(wFurnBody,lv_color_hex(COL_INK),0);
+  lv_obj_align(wFurnBody,LV_ALIGN_TOP_LEFT,0,0); lv_label_set_text(wFurnBody,""); }
+void openFurnace(lv_event_t*){ gFurnOpen=true; if(gFurnPage<1) gFurnPage=1; gFurnLastMs=0; renderFurnace(); lv_scr_load(scrFurn);
+  telnet_log::logf("[ui] Furnace screen (page %d)",gFurnPage); }
+void renderFurnace(){ if(!wFurnBody) return;
+  const uint32_t now=millis(); if(gFurnLastMs!=0 && now-gFurnLastMs<500) return; gFurnLastMs=now?now:1;
+  int n=uiFurnacePageCount(); if(n>kFurnBtnMax) n=kFurnBtnMax;
+  if(gFurnPage>n && n>0) gFurnPage=1;
+  for(int i=0;i<kFurnBtnMax;i++){
+    if(i>=n){ lv_obj_add_flag(gFurnBtn[i],LV_OBJ_FLAG_HIDDEN); continue; }
+    lv_obj_clear_flag(gFurnBtn[i],LV_OBJ_FLAG_HIDDEN);
+    char nm[24]; uiFurnacePageName(i+1,nm,sizeof(nm)); setTxt(gFurnBtnLbl[i],nm);
+    const bool sel=(i+1)==gFurnPage;
+    lv_obj_set_style_bg_color(gFurnBtn[i],lv_color_hex(sel?COL_EMBER:COL_RAISED),0);
+    lv_obj_set_style_text_color(gFurnBtnLbl[i],lv_color_hex(sel?0x2A1300:COL_INK),0); }
+  if(n<=0){ setTxt(wFurnBody,"Furnace pages are read on the wall controller.\nOpen Diag > Furnace there."); return; }
+  static char body[2048]; uiFurnacePageText(gFurnPage,body,sizeof(body)); setTxt(wFurnBody,body); }
+
 // Drive the display to a named screen for automated documentation capture.
 // VIEW-ONLY: switches tabs and opens sheets, never actuates a control (no
 // mode/setpoint change — those go over MQTT during capture), and BYPASSES the

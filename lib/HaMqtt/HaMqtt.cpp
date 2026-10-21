@@ -686,6 +686,9 @@ struct EntitySpec {
   bool hasRange = false;  // adds min/max/step (number entities)
   float minV = 0.0f, maxV = 0.0f, stepV = 0.0f;
   const char* optionsJson = nullptr;  // pre-built JSON array for a select entity
+  const char* stateClass = nullptr;   // e.g. "measurement" (long-term statistics)
+  uint32_t expireAfterS = 0;          // > 0: HA marks unavailable when no update this long
+  const char* icon = nullptr;
 };
 
 std::string entityDiscoveryJson(const EntitySpec& e) {
@@ -704,6 +707,9 @@ std::string entityDiscoveryJson(const EntitySpec& e) {
   if (e.diagnostic) o.str("entity_category", "diagnostic");
   else if (e.config) o.str("entity_category", "config");
   if (e.binary) o.str("payload_on", payload::kOn).str("payload_off", payload::kOff);
+  if (e.stateClass != nullptr) o.str("state_class", e.stateClass);
+  if (e.expireAfterS > 0) o.num("expire_after", e.expireAfterS);
+  if (e.icon != nullptr) o.str("icon", e.icon);
   o.str("availability_topic", topic::kAvailability)
       .str("payload_available", payload::kOnline)
       .str("payload_not_available", payload::kOffline)
@@ -921,6 +927,82 @@ std::string smartRecoveryDiscoveryJson() {
   e.commandTopic = topic::kCmdSmartRecovery;
   e.binary = true;   // ON/OFF payloads, both directions
   e.config = true;   // entity_category config
+  return entityDiscoveryJson(e);
+}
+
+// ---------- #227/#228 furnace status ----------
+
+std::string furnaceStateTopic(const char* reading) {
+  return std::string(topic::kStateFurnacePrefix) + reading;
+}
+
+const char* furnaceStatusComponent(const char* reading) {
+  return std::strcmp(reading, "eac") == 0 ? "binary_sensor" : "sensor";
+}
+
+std::string furnaceStatusDiscoveryJson(const char* reading) {
+  // Names say "Furnace" so they never read as SlyTherm's own commanded
+  // values (the existing Gas Modulation and Blower entities).
+  struct Row { const char* id; const char* name; const char* unit;
+               const char* devClass; const char* stateClass; const char* icon; };
+  static const Row kRows[] = {
+      {"gas_valve_pct", "SlyTherm Furnace Gas Valve", "%", nullptr, "measurement", "mdi:valve"},
+      {"flame", "SlyTherm Furnace Flame", nullptr, nullptr, nullptr, "mdi:fire"},
+      {"blower_cfm", "SlyTherm Furnace Blower Airflow", "ft\xC2\xB3/min", "volume_flow_rate",
+       "measurement", "mdi:fan"},
+      {"inducer_rpm", "SlyTherm Furnace Inducer Speed", "rpm", nullptr, "measurement",
+       "mdi:fan-chevron-up"},
+      {"mode", "SlyTherm Furnace Mode", nullptr, nullptr, nullptr, "mdi:hvac"},
+      {"motor_rpm", "SlyTherm Furnace Blower Motor Speed", "rpm", nullptr, "measurement", "mdi:fan"},
+      {"eac", "SlyTherm Furnace Air Cleaner Output", nullptr, nullptr, nullptr, "mdi:air-filter"},
+  };
+  for (const Row& r : kRows) {
+    if (std::strcmp(r.id, reading) != 0) continue;
+    EntitySpec e;
+    e.name = r.name;
+    e.uniqueId = std::string("slytherm_furnace_") + r.id;
+    e.stateTopic = furnaceStateTopic(r.id);
+    e.unit = r.unit;
+    e.deviceClass = r.devClass;
+    e.stateClass = r.stateClass;
+    e.icon = r.icon;
+    e.binary = std::strcmp(r.id, "eac") == 0;
+    e.expireAfterS = kFurnaceExpireAfterS;
+    return entityDiscoveryJson(e);
+  }
+  return std::string();
+}
+
+std::string furnaceLastSeenDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Furnace Status Last Seen";
+  e.uniqueId = "slytherm_furnace_last_seen";
+  e.stateTopic = topic::kStateFurnaceLastSeen;
+  e.deviceClass = "timestamp";
+  e.diagnostic = true;
+  return entityDiscoveryJson(e);
+}
+
+std::string furnaceMenuPollDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Furnace Status Polling";
+  e.uniqueId = "slytherm_furnace_menu_poll";
+  e.stateTopic = topic::kStateFurnaceMenuPoll;
+  e.commandTopic = topic::kCmdFurnaceMenuPoll;
+  e.binary = true;
+  e.config = true;
+  e.icon = "mdi:transit-connection-variant";
+  return entityDiscoveryJson(e);
+}
+
+std::string furnacePollStalledDiscoveryJson() {
+  EntitySpec e;
+  e.name = "SlyTherm Furnace Status Poll Stalled";
+  e.uniqueId = "slytherm_furnace_poll_stalled";
+  e.stateTopic = topic::kStateFurnacePollStalled;
+  e.deviceClass = "problem";
+  e.binary = true;
+  e.diagnostic = true;
   return entityDiscoveryJson(e);
 }
 

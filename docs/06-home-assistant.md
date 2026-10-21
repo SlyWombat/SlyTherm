@@ -42,6 +42,18 @@ Local-only, over MQTT, using **MQTT Discovery** so HA auto-creates the entities.
 | `sensor.slytherm_lock` | `sensor` (diagnostic) | wall-screen lock state (`unlocked` / `user_locked` / `installer_locked`); lock level and `pin_set` as attributes — see "Screen lock" below (issue #45) |
 | `sensor.slytherm_sensor_<id>_age` / `binary_sensor.slytherm_sensor_<id>_participating` | diagnostics | per-remote-sensor staleness and fusion participation (`entity_category: diagnostic`) |
 | `number.slytherm_sensor_<id>_offset` | `number` (`entity_category: config`) | per-sensor calibration offset, ±5 °C in 0.1 steps (gap G6) — includes the local DS18B20 fallback (id `local`) |
+| `sensor.slytherm_furnace_gas_valve_pct` | `sensor` (%) | **the furnace's own** gas valve reading (Status 1 `GAS VLV PRCNT`), not SlyTherm's commanded modulation (#227) |
+| `sensor.slytherm_furnace_flame` | `sensor` | furnace flame proof: `OFF` / `GOOD` (other values unseen so far) |
+| `sensor.slytherm_furnace_blower_cfm` | `sensor` (ft³/min, `volume_flow_rate`) | delivered blower airflow (Status 1/2 `BLOWER CFM`); 1682 at 100 % gas, 1995 in cooling on 2026-10-18 |
+| `sensor.slytherm_furnace_inducer_rpm` | `sensor` (rpm) | inducer speed (`APPROX IDM RPM`; `OFF` reads 0) |
+| `sensor.slytherm_furnace_mode` | `sensor` | the furnace's operating mode (Status 2 `MODE`): seen `OFF`, `AC`; manual lists Mod/Lo/Hi Heat, AC1/AC2, Fan, HP1/HP2 |
+| `sensor.slytherm_furnace_motor_rpm` | `sensor` (rpm) | blower motor speed (Status 2 `MOTOR RPM`) |
+| `binary_sensor.slytherm_furnace_eac` | `binary_sensor` | electronic air cleaner output (Status 2 `EAC OUTPUT`) |
+| `sensor.slytherm_furnace_last_seen` | `sensor` (timestamp, diagnostic) | when the last furnace status page was heard — **gate automations on this**, not on the readings' `last_reported` |
+| `switch.slytherm_furnace_menu_poll` | `switch` (config) | #228: SlyTherm asks the furnace for Status 1/2 itself. Default OFF; a no-op in listen mode |
+| `binary_sensor.slytherm_furnace_poll_stalled` | `binary_sensor` (problem, diagnostic) | #228: three polls in a row went unanswered; polling backs off 15 min |
+
+**Furnace readings are only as fresh as the pages.** The furnace sends its status pages only when asked: today that means while someone has *Installer Menu → Communicating Devices → Furnace* open on the OEM thermostat (the stat re-requests the open page every ~7–10 s); after switch-back, SlyTherm's own poll (#228) when enabled. Each reading is published on every page, **not retained**, with `expire_after: 300`, so it goes `unavailable` five minutes after the last page instead of freezing at a stale value. The live HA instance prefixes entity IDs with the device name (`sensor.slytherm_climatetalk_thermostat_slytherm_furnace_…`), like every other SlyTherm entity there.
 
 At ~16 entities, prefer **device-based discovery** (one discovery payload for the whole device) over per-entity discovery topics.
 
@@ -96,6 +108,10 @@ Notes:
 | HA → ESP32 | `slytherm/cmd/target_temp_high` | float °C (cool side, heat_cool mode) |
 | HA → ESP32 | `slytherm/cmd/mode` | `off` / `heat` / `cool` / `heat_cool` |
 | HA → ESP32 | `slytherm/cmd/fan_mode` | `auto` / `on` / `circulate` |
+| HA → ESP32 | `slytherm/cmd/furnace_menu_poll` | `ON` / `OFF` (#228; NVS-backed, default OFF; ignored in listen mode) |
+| ESP32 → HA | `slytherm/state/furnace/<reading>` | one scalar per furnace reading (`gas_valve_pct`, `flame`, `blower_cfm`, `inducer_rpm`, `mode`, `motor_rpm`, `eac`); published on every status page, **not retained** (#227) |
+| ESP32 → HA | `slytherm/state/furnace/last_seen` | ISO-8601 UTC time of the last status page (retained) |
+| ESP32 → HA | `slytherm/state/furnace_menu_poll` / `slytherm/state/furnace_poll_stalled` | `ON` / `OFF` (#228) |
 | HA → ESP32 | `slytherm/cmd/fan_circulate_min` | int minutes-per-hour the blower runs in `circulate` mode, clamped 0–60 (default 15). Set by the on-panel Fan sheet or the `number.slytherm_fan_circulate_min` entity (#128) |
 | HA → ESP32 | `slytherm/cmd/fan_circulate_pct` | int circulate blower speed %, snapped to Low 25 / Med 50 / High 75 (default 25). Set by the on-panel Fan sheet or the `number.slytherm_fan_circulate_pct` entity (#128) |
 | HA → ESP32 | `slytherm/cmd/preset` | preset name from the roster (default `home` / `away` / `sleep`) |

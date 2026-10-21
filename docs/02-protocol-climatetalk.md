@@ -106,7 +106,7 @@ Cross-confirmed kdschlosser `message_types.py` + Net485 `Net485API.hpp`. **Respo
 | `0x1D`/`0x9D` | **DMA Read / Resp** | **read raw MDI tables by start-byte + count — best for harvesting modulation/blower telemetry** |
 | `0x1E` | DMA Read Resp (Motor) | motor payload at offset 13 |
 | `0x1F`/`0x20` (+0x80) | Set/Get Mfg Generic Data | vendor blob w/ mfg ID |
-| `0x41`/`0x42` (+0x80) | Get/Update User Menu | installer-menu nav & writes |
+| `0x41`/`0x42` (+0x80) | Get/Update User Menu | installer-menu nav & writes. **`0x41`/`0xC1` decoded (#221):** request `01 <page> 00 00 00 F0` (sendMethod 0x02, sendParamHi 0x02 = furnace); reply is a text page `B6 [C5 D0] <title> B7` + rows `C2 E2 label E0 value C3` (read-only) or `C2 E1 label E0\|E8 current E0 option… C3` (editable). Pages on the C105-MV: 0 menu, 1 Status 1, 2 Status 2, 3 2WK HIST, 4 LIFE HIST, 5 FAULT HIST, 6 UNIT INFO, 7 SETUP. Replies up to 251 B arrive in bursts 30–140 ms apart (accumulator tolerance, v1.4.7). **`0x42` is never sent by SlyTherm** (#229): format uncaptured, refused at the TX queue |
 | `0x5A`/`0xDA` | Echo / Resp | bus test |
 
 ### Data-link / network-management messages

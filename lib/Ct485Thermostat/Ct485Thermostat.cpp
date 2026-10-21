@@ -69,6 +69,13 @@ Frame Ct485Thermostat::baseFrame(uint8_t dst, uint8_t msgType) const {
 
 void Ct485Thermostat::enqueueTx(const Frame& f) {
   if (silent_) return;  // hard gate: silence wins over everything
+  // #229: never write furnace settings. Checked at the last gate every frame
+  // passes, so no future caller can route a 0x42 around it.
+  if ((f.msgType & static_cast<uint8_t>(~kResponseFlag)) ==
+      static_cast<uint8_t>(MsgType::kUpdateUserMenu)) {
+    menuWritesRefused_++;
+    return;
+  }
   if (txCount_ == kTxQueueDepth) {
     txDropped_++;  // drop, never block / never babble
     return;
@@ -282,6 +289,21 @@ bool Ct485Thermostat::queueProbe(uint8_t getMsgType, uint32_t nowMs) {
 
 bool Ct485Thermostat::probePending() const { return probeQueued_; }
 
+bool Ct485Thermostat::queueMenuProbe(uint8_t page, uint32_t nowMs) {
+  (void)nowMs;
+  if (silent_ || probeQueued_ || !addressed() || !furnaceKnown_) return false;
+  if (page > 7) return false;
+  Frame f = baseFrame(furnaceAddr_, static_cast<uint8_t>(MsgType::kGetUserMenu));
+  f.sendMethod  = 0x02;                                        // by node type
+  f.sendParamHi = static_cast<uint8_t>(NodeType::kGasFurnace);  // target type
+  const uint8_t payload[6] = {0x01, page, 0x00, 0x00, 0x00, 0xF0};
+  std::memcpy(f.payload, payload, sizeof(payload));
+  f.payloadLen = sizeof(payload);
+  if (!queueCommand(f)) return false;
+  probeQueued_ = true;
+  return true;
+}
+
 bool Ct485Thermostat::buildDemandFrame(DemandChannel ch, Frame& out) const {
   if (silent_ || cfg_.offsetVariant == OffsetVariant::kUnset) return false;
   const ChannelState& cs = chan_[idx(ch)];
@@ -311,6 +333,13 @@ bool Ct485Thermostat::buildDemandFrame(DemandChannel ch, Frame& out) const {
 void Ct485Thermostat::onFrame(const Frame& f, uint32_t nowMs) {
   if (f.src == kAddrCoordinator)
     versionBit_ = f.packetNum & kPktNumVersionBit;  // mirror the bus CT version
+  // #228: the furnace's address follows the coordinator role (#210), so learn
+  // it from the originator node type rather than assume one.
+  if (f.srcNodeType == static_cast<uint8_t>(NodeType::kGasFurnace) &&
+      f.src != kAddrBroadcast) {
+    furnaceAddr_ = f.src;
+    furnaceKnown_ = true;
+  }
 
   switch (f.msgType) {
     case static_cast<uint8_t>(MsgType::kR2R): {
@@ -355,8 +384,18 @@ void Ct485Thermostat::onFrame(const Frame& f, uint32_t nowMs) {
       // Probe answer: response msgType = the outstanding Get | kResponseFlag
       // (docs/02 §4). Stored raw for offline decode; like any answer it
       // proves the round-trip. Everything else: silence (docs/04 §1).
-      if (out_.active && out_.isProbe && addressed() && f.dst == addr_ &&
-          f.msgType == (out_.frame.msgType | kResponseFlag)) {
+      // #228 menu answers are matched by SOURCE + page: the captured replies
+      // went to the requester's address, but the reply dst is not proven for
+      // SlyTherm as requester, and a miss would cost three retransmissions.
+      const bool menuProbe =
+          out_.frame.msgType == static_cast<uint8_t>(MsgType::kGetUserMenu);
+      const bool menuAnswer =
+          out_.active && out_.isProbe && menuProbe &&
+          f.msgType == (out_.frame.msgType | kResponseFlag) &&
+          f.src == out_.frame.dst && f.payloadLen >= 2 &&
+          f.payload[1] == out_.frame.payload[1];
+      if (menuAnswer || (!menuProbe && out_.active && out_.isProbe && addressed() &&
+          f.dst == addr_ && f.msgType == (out_.frame.msgType | kResponseFlag))) {
         probeResult_.seq++;
         probeResult_.msgType    = f.msgType;
         probeResult_.payloadLen = f.payloadLen;

@@ -3,6 +3,7 @@
 #include "Ct485Parser.h"
 
 #include <cstdlib>
+#include <cstring>
 
 #include <algorithm>
 #include <cstdarg>
@@ -319,21 +320,37 @@ UserMenuPage decodeUserMenuPage(const Frame& f) {
   }
 
   size_t i = kPrefix;
-  if (!(i + 2 < n && f.payload[i] == 0xB6 && f.payload[i + 1] == 0xC5 &&
-        f.payload[i + 2] == 0xD0))
-    return out;
-  const size_t tEnd = find(i + 3, 0xB7);
+  if (!(i < n && f.payload[i] == 0xB6)) return out;
+  size_t t = i + 1;
+  if (t + 1 < n && f.payload[t] == 0xC5 && f.payload[t + 1] == 0xD0) t += 2;
+  const size_t tEnd = find(t, 0xB7);
   if (tEnd >= n) return out;
-  out.title = text(i + 3, tEnd);
+  out.title = text(t, tEnd);
   i = tEnd + 1;
-  while (i + 1 < n && f.payload[i] == 0xC2 && f.payload[i + 1] == 0xE2) {
-    const size_t sep = find(i + 2, 0xE0);
-    const size_t stop = find(sep + 1, 0xC3);
-    if (sep >= n || stop >= n) break;
+  while (i + 1 < n && f.payload[i] == 0xC2 &&
+         (f.payload[i + 1] == 0xE2 || f.payload[i + 1] == 0xE1)) {
+    const size_t stop = find(i + 2, 0xC3);
+    if (stop >= n) break;                       // row cut off: page incomplete
+    size_t sep = i + 2;                         // label ends at the first E0/E8
+    while (sep < stop && f.payload[sep] != 0xE0 && f.payload[sep] != 0xE8) sep++;
+    if (sep >= stop) break;
     MenuRow r;
+    r.editable = f.payload[i + 1] == 0xE1;
     r.label = text(i + 2, sep);
-    r.value = text(sep + 1, stop);
+    // Fields after the label: the first is the current value, the rest are
+    // the editable row's other choices.
+    size_t a = sep + 1;
+    bool first = true;
+    while (a <= stop) {
+      size_t b = a;
+      while (b < stop && f.payload[b] != 0xE0 && f.payload[b] != 0xE8) b++;
+      if (first) { r.value = text(a, b); first = false; }
+      else r.options.push_back(text(a, b));
+      a = b + 1;
+    }
     const char* v = r.value.c_str();
+    if (strncmp(v, "DAYS", 4) == 0) v += 4;     // FAULT HIST "DAYS 68"
+    while (*v == ' ') v++;
     char* endp = nullptr;
     const float num = strtof(v, &endp);
     if (endp != v) { r.numeric = true; r.number = num; }
